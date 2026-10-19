@@ -23,8 +23,18 @@ pub enum TermAction {
 /// tested with synthetic events.
 pub fn handle_events(model: &mut TermModel, events: &[Event]) -> Vec<TermAction> {
     let mut actions = Vec::new();
+    // On macOS, Option+digit also sends a text event (`¡`, `™`, ...) next to the key event. The
+    // app uses Alt+1..4 to switch devices, so that text must not reach the input line.
+    let device_switch = events.iter().any(|e| {
+        matches!(
+            e,
+            Event::Key { key: Key::Num1 | Key::Num2 | Key::Num3 | Key::Num4, pressed: true, modifiers, .. }
+                if modifiers.alt
+        )
+    });
     for ev in events {
         match ev {
+            Event::Text(_) if device_switch => {}
             Event::Text(s) => {
                 for ch in s.chars() {
                     if ch == '?' {
@@ -61,20 +71,33 @@ pub fn handle_events(model: &mut TermModel, events: &[Event]) -> Vec<TermAction>
 }
 
 fn handle_key(model: &mut TermModel, key: Key, m: Modifiers) -> Option<TermAction> {
-    match (key, m.ctrl || m.command) {
-        (Key::Enter, _) => return Some(TermAction::Submit(model.take_line())),
-        (Key::Tab, _) => return Some(TermAction::Tab(model.input())),
-        (Key::Backspace, _) => model.backspace(),
-        (Key::Delete, _) => model.delete(),
-        (Key::ArrowLeft, _) => model.left(),
-        (Key::ArrowRight, _) => model.right(),
-        (Key::ArrowUp, _) => model.history_prev(),
-        (Key::ArrowDown, _) => model.history_next(),
-        (Key::Home, _) | (Key::A, true) => model.home(),
-        (Key::End, _) | (Key::E, true) => model.end(),
-        (Key::U, true) => model.kill_to_start(),
-        (Key::L, true) => model.scrollback.clear(),
-        (Key::Escape, _) => model.clear_line(),
+    // Word-wise: Option on macOS, Ctrl on Windows/Linux (either works anywhere).
+    let word = m.alt || m.ctrl;
+    let ctrl = m.ctrl || m.command;
+    match key {
+        Key::Enter => return Some(TermAction::Submit(model.take_line())),
+        Key::Tab => return Some(TermAction::Tab(model.input())),
+        Key::Backspace if word => model.delete_word_back(),
+        Key::Backspace => model.backspace(),
+        Key::Delete => model.delete(),
+        // Cmd+Left/Right are line start/end on macOS.
+        Key::ArrowLeft if m.mac_cmd => model.home(),
+        Key::ArrowRight if m.mac_cmd => model.end(),
+        Key::ArrowLeft if word => model.word_left(),
+        Key::ArrowRight if word => model.word_right(),
+        Key::ArrowLeft => model.left(),
+        Key::ArrowRight => model.right(),
+        Key::ArrowUp => model.history_prev(),
+        Key::ArrowDown => model.history_next(),
+        Key::Home => model.home(),
+        Key::End => model.end(),
+        Key::A if ctrl => model.home(),
+        Key::E if ctrl => model.end(),
+        Key::U if ctrl => model.kill_to_start(),
+        Key::L if ctrl => model.scrollback.clear(),
+        // Ctrl only: Cmd+W would collide with closing the window or tab.
+        Key::W if m.ctrl => model.delete_word_back(),
+        Key::Escape => model.clear_line(),
         _ => {}
     }
     None
@@ -302,6 +325,71 @@ mod tests {
         assert_eq!(m.input(), "XhelloY");
         handle_events(&mut m, &[key(Key::Escape)]);
         assert_eq!(m.input(), "");
+    }
+
+    fn with(k: Key, modifiers: Modifiers) -> Event {
+        Event::Key {
+            key: k,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    #[test]
+    fn alt_or_ctrl_arrows_jump_words() {
+        for m in [Modifiers::ALT, Modifiers::CTRL] {
+            let mut model = TermModel::default();
+            model.insert("show ip route");
+            handle_events(&mut model, &[with(Key::ArrowLeft, m)]);
+            assert_eq!(model.cursor(), 8, "{m:?}: start of `route`");
+            handle_events(
+                &mut model,
+                &[with(Key::ArrowLeft, m), with(Key::ArrowLeft, m)],
+            );
+            assert_eq!(model.cursor(), 0);
+            handle_events(&mut model, &[with(Key::ArrowRight, m)]);
+            assert_eq!(model.cursor(), 4, "{m:?}: end of `show`");
+        }
+    }
+
+    #[test]
+    fn mac_cmd_arrows_go_to_line_start_and_end() {
+        let mut m = TermModel::default();
+        m.insert("show ip route");
+        handle_events(&mut m, &[with(Key::ArrowLeft, Modifiers::MAC_CMD)]);
+        assert_eq!(m.cursor(), 0);
+        handle_events(&mut m, &[with(Key::ArrowRight, Modifiers::MAC_CMD)]);
+        assert_eq!(m.cursor(), 13);
+    }
+
+    #[test]
+    fn word_deletion_shortcuts() {
+        let mut m = TermModel::default();
+        m.insert("show ip route");
+        handle_events(&mut m, &[with(Key::Backspace, Modifiers::ALT)]);
+        assert_eq!(m.input(), "show ip ");
+        handle_events(&mut m, &[with(Key::W, Modifiers::CTRL)]);
+        assert_eq!(m.input(), "show ");
+        // Plain Backspace still deletes one character.
+        handle_events(&mut m, &[with(Key::Backspace, Modifiers::NONE)]);
+        assert_eq!(m.input(), "show");
+    }
+
+    #[test]
+    fn option_digit_shortcut_does_not_type_its_character() {
+        let mut m = TermModel::default();
+        m.insert("ab");
+        // macOS sends both the key event and the text it would normally produce.
+        handle_events(
+            &mut m,
+            &[with(Key::Num1, Modifiers::ALT), Event::Text("¡".into())],
+        );
+        assert_eq!(m.input(), "ab");
+        // Option+digit for a device that is not 1..4 and plain digits are unaffected.
+        handle_events(&mut m, &[Event::Text("1".into())]);
+        assert_eq!(m.input(), "ab1");
     }
 
     #[test]

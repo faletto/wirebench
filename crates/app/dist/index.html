@@ -6,8 +6,8 @@
     <title>ptclone</title>
     
 <script type="module">
-import init, * as bindings from '/ptclone-app-69ffd23959adb5df.js';
-const wasm = await init({ module_or_path: '/ptclone-app-69ffd23959adb5df_bg.wasm' });
+import init, * as bindings from '/ptclone-app-af67d89c3022142b.js';
+const wasm = await init({ module_or_path: '/ptclone-app-af67d89c3022142b_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -21,7 +21,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
       canvas { width: 100%; height: 100%; display: block; }
       #loading { position: absolute; inset: 0; display: grid; place-items: center; }
     </style>
-  <link rel="modulepreload" href="/ptclone-app-69ffd23959adb5df.js" crossorigin="anonymous" integrity="sha384-q6bmfIZnFKLZyIBaYS8RFMb3Zzw/YlGxty4z7p/IWc4bZ159vjrSt7JMn+D9x0d4"><link rel="preload" href="/ptclone-app-69ffd23959adb5df_bg.wasm" crossorigin="anonymous" integrity="sha384-ISzuRsuGCmf1dDgvG/QB9wc9tvaJ1gRzibet16eq3d8qZ8+QyxXqPpgd/D4kzFyf" as="fetch" type="application/wasm"></head>
+  <link rel="modulepreload" href="/ptclone-app-af67d89c3022142b.js" crossorigin="anonymous" integrity="sha384-XDblHPRM9MtJ9LipxBvpvfhJDruyLocV9GAEECxSNNIVmUERaUrhwhPjz1GOUpEw"><link rel="preload" href="/ptclone-app-af67d89c3022142b_bg.wasm" crossorigin="anonymous" integrity="sha384-j4qtJalpVhs8+4EpmSHfTU6/HYNHuiLN5nXrYdLuoNjpBge6FxVoacFFimp5e0yX" as="fetch" type="application/wasm"></head>
   <body>
     <canvas id="the_canvas_id"></canvas>
     <div id="loading">Loading ptclone…</div>

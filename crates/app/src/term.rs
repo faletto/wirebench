@@ -72,6 +72,42 @@ impl TermModel {
         self.cursor = (self.cursor + 1).min(self.input.len());
     }
 
+    /// Start of the previous word (words are runs of non-whitespace).
+    fn word_start_before(&self) -> usize {
+        let mut i = self.cursor;
+        while i > 0 && self.input[i - 1].is_whitespace() {
+            i -= 1;
+        }
+        while i > 0 && !self.input[i - 1].is_whitespace() {
+            i -= 1;
+        }
+        i
+    }
+
+    pub fn word_left(&mut self) {
+        self.cursor = self.word_start_before();
+    }
+
+    /// Move to the end of the next word.
+    pub fn word_right(&mut self) {
+        let n = self.input.len();
+        let mut i = self.cursor;
+        while i < n && self.input[i].is_whitespace() {
+            i += 1;
+        }
+        while i < n && !self.input[i].is_whitespace() {
+            i += 1;
+        }
+        self.cursor = i;
+    }
+
+    /// Delete the word before the cursor (Ctrl+W, Alt+Backspace).
+    pub fn delete_word_back(&mut self) {
+        let start = self.word_start_before();
+        self.input.drain(start..self.cursor);
+        self.cursor = start;
+    }
+
     pub fn home(&mut self) {
         self.cursor = 0;
     }
@@ -165,6 +201,42 @@ mod tests {
         assert_eq!(t.input(), "ho");
         t.kill_to_start();
         assert_eq!((t.input(), t.cursor()), (String::new(), 0));
+    }
+
+    #[test]
+    fn word_movement_and_deletion() {
+        let mut t = TermModel::default();
+        t.insert("show  ip   route");
+        t.word_left();
+        assert_eq!(t.cursor(), 11, "start of `route`");
+        t.word_left();
+        assert_eq!(t.cursor(), 6, "start of `ip`");
+        t.word_left();
+        t.word_left();
+        assert_eq!(t.cursor(), 0, "stops at the line start");
+        t.word_right();
+        assert_eq!(t.cursor(), 4, "end of `show`");
+        t.word_right();
+        assert_eq!(t.cursor(), 8, "end of `ip`");
+        t.end();
+        t.delete_word_back();
+        assert_eq!(t.input(), "show  ip   ");
+        t.delete_word_back();
+        assert_eq!(t.input(), "show  ");
+        t.delete_word_back();
+        t.delete_word_back();
+        assert_eq!(t.input(), "");
+    }
+
+    #[test]
+    fn delete_word_back_in_the_middle_keeps_the_tail() {
+        let mut t = TermModel::default();
+        t.insert("conf term");
+        for _ in 0..4 {
+            t.left();
+        }
+        t.delete_word_back();
+        assert_eq!((t.input().as_str(), t.cursor()), ("term", 0));
     }
 
     #[test]
