@@ -1,5 +1,6 @@
 //! The world: kernel plus devices, and the dispatch loop between them.
 
+pub mod chain;
 pub mod scenarios;
 
 use kernel::{DeviceId, Event, Kernel, LinkConfig, LinkId, PortId, SimTime, Trace};

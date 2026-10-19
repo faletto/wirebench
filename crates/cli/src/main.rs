@@ -8,6 +8,8 @@ fn main() -> ExitCode {
         Some("det") => {
             let (w, _, _) = engine::scenarios::two_hosts_ping();
             println!("two_hosts_ping {:016x}", w.trace_hash());
+            let c = engine::chain::static_chain_ping();
+            println!("static_chain_ping {:016x}", c.world.trace_hash());
             ExitCode::SUCCESS
         }
         _ => {

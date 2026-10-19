@@ -12,3 +12,6 @@ workspace = true
 [dependencies]
 wire = { path = "../wire" }
 kernel = { path = "../kernel" }
+
+[dev-dependencies]
+proptest.workspace = true

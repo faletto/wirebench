@@ -62,3 +62,74 @@ mod tests {
         }
     }
 }
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum IcmpErrorKind {
+    /// Type 3, with the code (0 = net unreachable, 1 = host unreachable).
+    DestUnreachable(u8),
+    /// Type 11 code 0: TTL expired in transit.
+    TimeExceeded,
+}
+
+/// ICMP error carrying the offending IP header plus 8 bytes (RFC 792).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct IcmpError {
+    pub kind: IcmpErrorKind,
+    pub original: Vec<u8>,
+}
+
+impl IcmpError {
+    pub fn emit(&self) -> Vec<u8> {
+        let (t, c) = match self.kind {
+            IcmpErrorKind::DestUnreachable(c) => (3, c),
+            IcmpErrorKind::TimeExceeded => (11, 0),
+        };
+        let mut o = vec![t, c, 0, 0, 0, 0, 0, 0];
+        o.extend_from_slice(&self.original);
+        let sum = internet_checksum(&o);
+        o[2..4].copy_from_slice(&sum.to_be_bytes());
+        o
+    }
+
+    pub fn parse(b: &[u8]) -> Result<Self, ParseError> {
+        if b.len() < 8 {
+            return Err(ParseError::Truncated);
+        }
+        let kind = match (b[0], b[1]) {
+            (3, c) => IcmpErrorKind::DestUnreachable(c),
+            (11, 0) => IcmpErrorKind::TimeExceeded,
+            _ => return Err(ParseError::Unsupported),
+        };
+        if internet_checksum(b) != 0 {
+            return Err(ParseError::BadChecksum);
+        }
+        Ok(IcmpError {
+            kind,
+            original: b[8..].to_vec(),
+        })
+    }
+
+    /// Build the quoted-original field from an offending packet's bytes.
+    pub fn quote(packet: &[u8]) -> Vec<u8> {
+        packet[..packet.len().min(28)].to_vec()
+    }
+}
+
+#[cfg(test)]
+mod error_tests {
+    use super::*;
+
+    #[test]
+    fn icmp_error_roundtrip() {
+        for kind in [
+            IcmpErrorKind::TimeExceeded,
+            IcmpErrorKind::DestUnreachable(1),
+        ] {
+            let e = IcmpError {
+                kind,
+                original: vec![7; 28],
+            };
+            assert_eq!(IcmpError::parse(&e.emit()).unwrap(), e);
+        }
+    }
+}
