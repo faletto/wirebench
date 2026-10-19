@@ -1,0 +1,108 @@
+--- r1
+r1>enable
+r1#configure terminal
+r1(config)#hostname r1
+r1(config)#interface g0/0
+r1(config-if)#ip address 10.0.1.1 255.255.255.0
+r1(config-if)#no shutdown
+r1(config-if)#exit
+r1(config)#interface g0/1
+r1(config-if)#ip address 10.0.12.1 255.255.255.252
+r1(config-if)#no shutdown
+r1(config-if)#exit
+r1(config)#ip route 10.0.2.0 255.255.255.0 10.0.12.2
+r1(config)#end
+r1#show ip route
+Codes: C connected, S static
+
+C  10.0.1.0/24  directly connected, GigabitEthernet0/0
+S  10.0.2.0/24  via 10.0.12.2, GigabitEthernet0/1
+C  10.0.12.0/30  directly connected, GigabitEthernet0/1
+r1#show ip interface brief
+Interface             Address           Status
+GigabitEthernet0/0    10.0.1.1          up
+GigabitEthernet0/1    10.0.12.1         up
+r1#copy running-config startup-config
+Configuration saved.
+r1#show running-config
+hostname r1
+!
+interface GigabitEthernet0/0
+ ip address 10.0.1.1 255.255.255.0
+ no shutdown
+!
+interface GigabitEthernet0/1
+ ip address 10.0.12.1 255.255.255.252
+ no shutdown
+!
+ip route 10.0.2.0 255.255.255.0 10.0.12.2
+end
+--- r2
+r2>enable
+r2#conf t
+r2(config)#interface gi0/0
+r2(config-if)#ip address 10.0.12.2 255.255.255.252
+r2(config-if)#no shut
+r2(config-if)#exit
+r2(config)#interface gigabitethernet0/1
+r2(config-if)#ip address 10.0.2.1 255.255.255.0
+r2(config-if)#no shut
+r2(config-if)#exit
+r2(config)#ip route 10.0.1.0 255.255.255.0 10.0.12.1
+r2(config)#end
+r2#show ip route
+Codes: C connected, S static
+
+S  10.0.1.0/24  via 10.0.12.1, GigabitEthernet0/0
+C  10.0.2.0/24  directly connected, GigabitEthernet0/1
+C  10.0.12.0/30  directly connected, GigabitEthernet0/0
+--- pc1
+pc1>ipconfig set 10.0.1.2 255.255.255.0
+pc1>ipconfig gateway 10.0.1.1
+pc1>ipconfig
+Address : 10.0.1.2
+Mask    : 255.255.255.0
+Gateway : 10.0.1.1
+--- pc2
+pc2>ipconfig set 10.0.2.2 255.255.255.0
+pc2>ipconfig gateway 10.0.2.1
+--- pc1
+pc1>ping 10.0.2.2
+Reply from 10.0.2.2: time=76us
+Reply from 10.0.2.2: time=41us
+Reply from 10.0.2.2: time=41us
+Reply from 10.0.2.2: time=41us
+Sent 4, received 4
+pc1>ping 10.0.1.1
+Reply from 10.0.1.1: time=13us
+Reply from 10.0.1.1: time=13us
+Reply from 10.0.1.1: time=13us
+Reply from 10.0.1.1: time=13us
+Sent 4, received 4
+pc1>ping 10.9.9.9
+Destination unreachable.
+Destination unreachable.
+Destination unreachable.
+Destination unreachable.
+Sent 4, received 0
+--- r1
+r1#show ip ro?
+  route  Routing table
+r1#configure terminal
+r1(config)#no ip route 10.0.2.0 255.255.255.0 10.0.12.2
+r1(config)#no ip route 10.0.2.0 255.255.255.0 10.0.12.2
+% That static route is not configured.
+r1(config)#end
+r1#show ip route
+Codes: C connected, S static
+
+C  10.0.1.0/24  directly connected, GigabitEthernet0/0
+C  10.0.12.0/30  directly connected, GigabitEthernet0/1
+--- pc1
+pc1>ping 10.0.2.2
+Destination unreachable.
+Destination unreachable.
+Destination unreachable.
+Destination unreachable.
+Sent 4, received 0
+--- trace f4533c233efaeda0

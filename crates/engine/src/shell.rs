@@ -54,49 +54,140 @@ fn router_grammar() -> (Grammar, Modes) {
     let user = g.mode("user", "{host}>", None, None);
     let privileged = g.mode("privileged", "{host}#", None, None);
     let config = g.mode("config", "{host}(config)#", Some(privileged), None);
-    let config_if = g.mode("config-if", "{host}(config-if)#", Some(config), Some(config));
+    let config_if = g.mode(
+        "config-if",
+        "{host}(config-if)#",
+        Some(config),
+        Some(config),
+    );
     g.do_mode = Some(privileged);
     let h = Action::Handler;
     g.cmd(&[user], "enable", &["Become privileged"], h(ENABLE));
-    g.cmd(&[user, privileged], "exit", &["Leave the session"], Action::Exit);
+    g.cmd(
+        &[user, privileged],
+        "exit",
+        &["Leave the session"],
+        Action::Exit,
+    );
     g.cmd(&[privileged], "disable", &["Drop privileges"], h(DISABLE));
-    g.cmd(&[privileged], "configure terminal", &["Configure", "From this terminal"], h(CONF_T));
-    g.cmd(&[privileged], "show running-config", &["Show", "Current configuration"], h(SHOW_RUN));
-    g.cmd(&[privileged], "show ip route", &["Show", "IP information", "Routing table"], h(SHOW_ROUTE));
+    g.cmd(
+        &[privileged],
+        "configure terminal",
+        &["Configure", "From this terminal"],
+        h(CONF_T),
+    );
+    g.cmd(
+        &[privileged],
+        "show running-config",
+        &["Show", "Current configuration"],
+        h(SHOW_RUN),
+    );
+    g.cmd(
+        &[privileged],
+        "show ip route",
+        &["Show", "IP information", "Routing table"],
+        h(SHOW_ROUTE),
+    );
     g.cmd(
         &[privileged],
         "show ip interface brief",
-        &["Show", "IP information", "Interface information", "One line per interface"],
+        &[
+            "Show",
+            "IP information",
+            "Interface information",
+            "One line per interface",
+        ],
         h(SHOW_BRIEF),
     );
     g.cmd(
         &[privileged],
         "copy running-config startup-config",
-        &["Copy", "Current configuration", "To", "Saved configuration"],
+        &["Copy", "Current configuration", "Saved configuration"],
         h(COPY_RUN_START),
     );
-    g.cmd(&[config], "hostname <name:word>", &["Set the device name", "New name"], h(HOSTNAME));
-    g.cmd(&[config], "interface <name:word>", &["Configure an interface", "Interface, e.g. g0/0"], h(INTERFACE));
-    let route_help = ["IP", "Static route", "Destination network", "Network mask", "Next hop"];
-    g.cmd(&[config], "ip route <net:ipv4> <mask:mask> <via:ipv4>", &route_help, h(IP_ROUTE));
+    g.cmd(
+        &[config],
+        "hostname <name:word>",
+        &["Set the device name", "New name"],
+        h(HOSTNAME),
+    );
+    g.cmd(
+        &[config],
+        "interface <name:word>",
+        &["Configure an interface", "Interface, e.g. g0/0"],
+        h(INTERFACE),
+    );
+    let route_help = [
+        "IP",
+        "Static route",
+        "Destination network",
+        "Network mask",
+        "Next hop",
+    ];
+    g.cmd(
+        &[config],
+        "ip route <net:ipv4> <mask:mask> <via:ipv4>",
+        &route_help,
+        h(IP_ROUTE),
+    );
     g.cmd(
         &[config],
         "no ip route <net:ipv4> <mask:mask> <via:ipv4>",
-        &["Negate", "IP", "Static route", "Destination network", "Network mask", "Next hop"],
+        &[
+            "Negate",
+            "IP",
+            "Static route",
+            "Destination network",
+            "Network mask",
+            "Next hop",
+        ],
         h(NO_IP_ROUTE),
     );
-    g.cmd(&[config, config_if], "end", &["Back to privileged"], Action::End(privileged));
-    g.cmd(&[config, config_if], "exit", &["Up one level"], Action::Exit);
+    g.cmd(
+        &[config, config_if],
+        "end",
+        &["Back to privileged"],
+        Action::End(privileged),
+    );
+    g.cmd(
+        &[config, config_if],
+        "exit",
+        &["Up one level"],
+        Action::Exit,
+    );
     g.cmd(
         &[config_if],
         "ip address <addr:ipv4> <mask:mask>",
         &["IP", "Set address", "Address", "Network mask"],
         h(IP_ADDRESS),
     );
-    g.cmd(&[config_if], "no ip address", &["Negate", "IP", "Remove the address"], h(NO_IP_ADDRESS));
-    g.cmd(&[config_if], "shutdown", &["Disable the interface"], h(SHUTDOWN));
-    g.cmd(&[config_if], "no shutdown", &["Negate", "Enable the interface"], h(NO_SHUTDOWN));
-    (g, Modes { user, privileged, config, config_if })
+    g.cmd(
+        &[config_if],
+        "no ip address",
+        &["Negate", "IP", "Remove the address"],
+        h(NO_IP_ADDRESS),
+    );
+    g.cmd(
+        &[config_if],
+        "shutdown",
+        &["Disable the interface"],
+        h(SHUTDOWN),
+    );
+    g.cmd(
+        &[config_if],
+        "no shutdown",
+        &["Negate", "Enable the interface"],
+        h(NO_SHUTDOWN),
+    );
+    (
+        g,
+        Modes {
+            user,
+            privileged,
+            config,
+            config_if,
+        },
+    )
 }
 
 fn host_grammar() -> (Grammar, Modes) {
@@ -117,8 +208,21 @@ fn host_grammar() -> (Grammar, Modes) {
         &["Addressing", "Default gateway", "Gateway address"],
         h(IPCONFIG_GW),
     );
-    g.cmd(&[m], "ping <dst:ipv4>", &["Send echo requests", "Destination"], h(PING));
-    (g, Modes { user: m, privileged: m, config: m, config_if: m })
+    g.cmd(
+        &[m],
+        "ping <dst:ipv4>",
+        &["Send echo requests", "Destination"],
+        h(PING),
+    );
+    (
+        g,
+        Modes {
+            user: m,
+            privileged: m,
+            config: m,
+            config_if: m,
+        },
+    )
 }
 
 fn dotted(len: u8) -> Ipv4Addr {
@@ -154,19 +258,36 @@ pub struct Shell {
 
 impl std::fmt::Debug for Shell {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Shell").field("device", &self.device).field("kind", &self.kind).finish()
+        f.debug_struct("Shell")
+            .field("device", &self.device)
+            .field("kind", &self.kind)
+            .finish()
     }
 }
 
 impl Shell {
     pub fn router(device: DeviceId) -> Self {
         let (g, modes) = router_grammar();
-        Shell { grammar: Arc::new(g), modes, kind: Kind::Router, session: Session::new(modes.user), device, startup: None }
+        Shell {
+            grammar: Arc::new(g),
+            modes,
+            kind: Kind::Router,
+            session: Session::new(modes.user),
+            device,
+            startup: None,
+        }
     }
 
     pub fn host(device: DeviceId) -> Self {
         let (g, modes) = host_grammar();
-        Shell { grammar: Arc::new(g), modes, kind: Kind::Host, session: Session::new(modes.user), device, startup: None }
+        Shell {
+            grammar: Arc::new(g),
+            modes,
+            kind: Kind::Host,
+            session: Session::new(modes.user),
+            device,
+            startup: None,
+        }
     }
 
     pub fn prompt(&self, w: &World) -> String {
@@ -221,9 +342,17 @@ impl Shell {
                 }
             }
             IP_ADDRESS | NO_IP_ADDRESS | SHUTDOWN | NO_SHUTDOWN => {
-                let port = PortId(self.session.context().and_then(|c| c.parse().ok()).unwrap_or(0));
+                let port = PortId(
+                    self.session
+                        .context()
+                        .and_then(|c| c.parse().ok())
+                        .unwrap_or(0),
+                );
                 w.with_device::<Router, _>(id, |r, _| match handler {
-                    IP_ADDRESS => r.set_address(port, Some((Ipv4Addr(a.ipv4("addr").unwrap()), a.mask("mask").unwrap()))),
+                    IP_ADDRESS => r.set_address(
+                        port,
+                        Some((Ipv4Addr(a.ipv4("addr").unwrap()), a.mask("mask").unwrap())),
+                    ),
                     NO_IP_ADDRESS => r.set_address(port, None),
                     SHUTDOWN => r.set_shutdown(port, true),
                     _ => r.set_shutdown(port, false),
@@ -278,7 +407,11 @@ pub fn running_config(r: &Router) -> String {
             Some((ip, len)) => o += &format!(" ip address {ip} {}\n", dotted(len)),
             None => o += " no ip address\n",
         }
-        o += if ifc.shutdown { " shutdown\n" } else { " no shutdown\n" };
+        o += if ifc.shutdown {
+            " shutdown\n"
+        } else {
+            " no shutdown\n"
+        };
         o += "!\n";
     }
     for s in r.statics() {
@@ -295,8 +428,15 @@ fn show_routes(r: &Router) -> String {
         o += "\n";
         let net = format!("{}/{}", rt.net, rt.len);
         match (rt.kind, rt.via) {
-            (RouteKind::Connected, _) => o += &format!("C  {net}  directly connected, {}", if_name(rt.port.0 as usize)),
-            (RouteKind::Static, Some(v)) => o += &format!("S  {net}  via {v}, {}", if_name(rt.port.0 as usize)),
+            (RouteKind::Connected, _) => {
+                o += &format!(
+                    "C  {net}  directly connected, {}",
+                    if_name(rt.port.0 as usize)
+                )
+            }
+            (RouteKind::Static, Some(v)) => {
+                o += &format!("S  {net}  via {v}, {}", if_name(rt.port.0 as usize))
+            }
             (RouteKind::Static, None) => o += &format!("S  {net}"),
         }
     }
@@ -309,7 +449,9 @@ fn show_routes(r: &Router) -> String {
 fn show_brief(r: &Router) -> String {
     let mut o = format!("{:<22}{:<18}{}", "Interface", "Address", "Status");
     for (i, ifc) in r.interfaces().iter().enumerate() {
-        let addr = ifc.addr.map_or("unassigned".to_string(), |(ip, _)| ip.to_string());
+        let addr = ifc
+            .addr
+            .map_or("unassigned".to_string(), |(ip, _)| ip.to_string());
         let st = if ifc.shutdown { "admin down" } else { "up" };
         o += &format!("\n{:<22}{:<18}{}", if_name(i), addr, st);
     }

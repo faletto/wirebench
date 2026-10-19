@@ -46,9 +46,7 @@ fn run(g: &Grammar, m: &Modes, inputs: &[String]) -> String {
                     writeln!(out, "[logout]").unwrap();
                     return out;
                 }
-                Exec::Error(e) => {
-                    writeln!(out, "{}", render_error(&format!("{prompt}"), &e)).unwrap()
-                }
+                Exec::Error(e) => writeln!(out, "{}", render_error(&prompt, &e)).unwrap(),
                 Exec::Run { handler, args } => {
                     match handler {
                         H_ENABLE | H_CONF_T => {

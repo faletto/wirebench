@@ -69,6 +69,28 @@ pub fn static_chain() -> Chain {
     }
 }
 
+/// The same cabling and MACs as `static_chain`, but nothing configured: hosts have no
+/// address and router interfaces are shut down with no IP. Scripts configure it via the CLI.
+pub fn blank_chain() -> Chain {
+    let mut w = World::new(Trace::keeping());
+    let pc1 = Host::new("pc1", MacAddr([2, 0, 0, 0, 1, 1]), Ipv4Addr::UNSPECIFIED, 0);
+    let pc2 = Host::new("pc2", MacAddr([2, 0, 0, 0, 2, 1]), Ipv4Addr::UNSPECIFIED, 0);
+    let pc1 = w.add_device(pc1);
+    let r1 = w.add_device(Router::new("r1", 1, 2));
+    let r2 = w.add_device(Router::new("r2", 2, 2));
+    let pc2 = w.add_device(pc2);
+    w.connect((pc1, 0), (r1, 0), LinkConfig::FAST_ETHERNET);
+    w.connect((r1, 1), (r2, 0), LinkConfig::FAST_ETHERNET);
+    w.connect((r2, 1), (pc2, 0), LinkConfig::FAST_ETHERNET);
+    Chain {
+        world: w,
+        pc1,
+        r1,
+        r2,
+        pc2,
+    }
+}
+
 /// `static_chain` with one ping pc1 -> pc2, run to idle.
 pub fn static_chain_ping() -> Chain {
     let mut c = static_chain();
