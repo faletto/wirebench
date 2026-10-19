@@ -17,7 +17,12 @@ pub struct Chain {
 /// pc1 10.0.1.2/24 gw .1 | r1 10.0.1.1/24, 10.0.12.1/30 | r2 10.0.12.2/30, 10.0.2.1/24 |
 /// pc2 10.0.2.2/24 gw .1. Not yet run: callers start pings.
 pub fn static_chain() -> Chain {
-    let mut w = World::new(Trace::keeping());
+    static_chain_with(Trace::keeping())
+}
+
+/// Like [`static_chain`] with a caller-chosen trace (benchmarks use a hash-only one).
+pub fn static_chain_with(trace: Trace) -> Chain {
+    let mut w = World::new(trace);
     let mut pc1 = Host::new(
         "pc1",
         MacAddr([2, 0, 0, 0, 1, 1]),

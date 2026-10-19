@@ -1,0 +1,23 @@
+[package]
+name = "app"
+description = "egui/eframe front end: native and web from one codebase"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "ptclone-app"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+engine = { path = "../engine" }
+egui = { version = "0.37", default-features = false }
+eframe = { version = "0.37", default-features = false, features = ["accesskit", "clipboard", "default_fonts", "glow", "wayland", "x11"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["Window", "Document", "HtmlCanvasElement", "Element"] }

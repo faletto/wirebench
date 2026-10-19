@@ -100,6 +100,7 @@ pub struct Kernel {
     heap: BinaryHeap<Reverse<Scheduled>>,
     cancelled: BTreeSet<TimerId>,
     links: Vec<Link>,
+    delivered: u64,
     pub trace: Trace,
 }
 
@@ -112,8 +113,14 @@ impl Kernel {
             heap: BinaryHeap::new(),
             cancelled: BTreeSet::new(),
             links: Vec::new(),
+            delivered: 0,
             trace,
         }
+    }
+
+    /// Events handed to devices so far (dropped frames and cancelled timers excluded).
+    pub fn delivered(&self) -> u64 {
+        self.delivered
     }
 
     pub fn now(&self) -> SimTime {
@@ -236,6 +243,7 @@ impl Kernel {
                         0,
                         &token.to_be_bytes(),
                     );
+                    self.delivered += 1;
                     return Some(Event::Timer { device, id, token });
                 }
                 Payload::Frame {
@@ -252,6 +260,7 @@ impl Kernel {
                     }
                     self.trace
                         .record(self.now, TraceKind::FrameRx, to.0 .0, to.1 .0, &frame);
+                    self.delivered += 1;
                     return Some(Event::FrameRx {
                         device: to.0,
                         port: to.1,

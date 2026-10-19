@@ -15,3 +15,6 @@ workspace = true
 
 [dependencies]
 engine = { path = "../engine" }
+kernel = { path = "../kernel" }
+netdev = { path = "../netdev" }
+wire = { path = "../wire" }

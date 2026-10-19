@@ -45,12 +45,38 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        ["bench"] => bench(),
         ["shell", dev] => shell(dev),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
         }
     }
+}
+
+/// Kernel throughput: pc1 pings pc2 across two routers, many times, hash-only trace.
+fn bench() -> ExitCode {
+    use netdev::Host;
+    use std::time::Instant;
+    const PINGS: u32 = 20_000;
+    let mut c = engine::chain::static_chain_with(kernel::Trace::new());
+    let dst = wire::Ipv4Addr::new(10, 0, 2, 2);
+    let start = Instant::now();
+    for _ in 0..PINGS {
+        c.world
+            .with_device::<Host, _>(c.pc1, |h, ctx| h.ping(ctx, dst));
+        c.world.run_to_idle();
+    }
+    let secs = start.elapsed().as_secs_f64();
+    let events = c.world.kernel.delivered();
+    let ok = c.world.device::<Host>(c.pc1).ping_results.len();
+    println!("pings        {PINGS} ({ok} answered)");
+    println!("events       {events}");
+    println!("wall         {secs:.3} s");
+    println!("events/s     {:.0}", events as f64 / secs);
+    println!("pings/s      {:.0}", PINGS as f64 / secs);
+    println!("virtual time {:.1} s", c.world.kernel.now().0 as f64 / 1e9);
+    ExitCode::SUCCESS
 }
 
 /// Line-mode shell: a trailing `?` shows help; Tab completion needs a raw terminal and

@@ -50,6 +50,25 @@ jobs:
           targets: wasm32-unknown-unknown
       - run: cargo build -p wire -p kernel -p netdev -p engine --target wasm32-unknown-unknown
 
+  # The browser bundle. Uploaded so it can be downloaded and opened (or served) for manual checks.
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: trunk
+      - run: trunk build --release
+        working-directory: crates/app
+      - run: ls -l crates/app/dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: crates/app/dist
+
   deny:
     runs-on: ubuntu-latest
     steps:
