@@ -1,0 +1,17 @@
+[package]
+name = "cli"
+description = "Headless runner: scenarios, determinism checks, interactive shell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "ptclone"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+engine = { path = "../engine" }

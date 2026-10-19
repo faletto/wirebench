@@ -1,5 +1,7 @@
 name: ci
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
 jobs:
   test:
     strategy:
@@ -14,11 +16,42 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
-  wasm:
+
+  # Same scenario, same bytes: x86_64 Linux, aarch64 macOS and wasm32 must print the
+  # exact line pinned in testkit/determinism.txt.
+  determinism:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo run -q -p cli --release -- det | diff - testkit/determinism.txt
+
+  determinism-wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+      - uses: bytecodealliance/actions/wasmtime/setup@v1
+      - run: cargo build -q -p cli --release --target wasm32-wasip1
+      - run: wasmtime target/wasm32-wasip1/release/ptclone.wasm det | diff - testkit/determinism.txt
+
+  wasm-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-      - run: cargo build -p wire -p kernel --target wasm32-unknown-unknown
+      - run: cargo build -p wire -p kernel -p netdev -p engine --target wasm32-unknown-unknown
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2

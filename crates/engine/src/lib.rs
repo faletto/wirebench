@@ -1,5 +1,7 @@
 //! The world: kernel plus devices, and the dispatch loop between them.
 
+pub mod scenarios;
+
 use kernel::{DeviceId, Event, Kernel, LinkConfig, LinkId, PortId, SimTime, Trace};
 use netdev::{Ctx, Device, DeviceEvent};
 
