@@ -1,0 +1,17 @@
+[package]
+name = "kernel"
+description = "Deterministic discrete-event kernel: virtual clock, event queue, links, trace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+rand_chacha.workspace = true
+rand_core.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

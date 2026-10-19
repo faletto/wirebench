@@ -1,0 +1,18 @@
+[package]
+name = "engine"
+description = "World: owns the kernel and devices and dispatches events"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+wire = { path = "../wire" }
+kernel = { path = "../kernel" }
+netdev = { path = "../netdev" }
+
+[dev-dependencies]
+proptest.workspace = true
