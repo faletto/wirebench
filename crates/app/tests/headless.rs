@@ -96,6 +96,23 @@ fn alt_number_switches_device_and_keeps_the_other_session() {
 }
 
 #[test]
+fn ready_time_is_recorded_on_the_first_frame_and_then_frozen() {
+    let ctx = Context::default();
+    let mut app = App::new();
+    assert_eq!(
+        app.ready_ms(),
+        None,
+        "nothing is measured before a frame is drawn"
+    );
+    frame(&ctx, &mut app, vec![]);
+    let first = app.ready_ms().expect("set on the first frame");
+    assert!(first.is_finite() && first >= 0.0);
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    frame(&ctx, &mut app, vec![]);
+    assert_eq!(app.ready_ms(), Some(first), "later frames do not move it");
+}
+
+#[test]
 fn terminal_takes_keyboard_focus_on_the_first_frame() {
     // No warm-up: the app asks for focus on startup, so typing works immediately.
     let ctx = Context::default();
