@@ -69,6 +69,30 @@ jobs:
           name: web-dist
           path: crates/app/dist
 
+  # Short fuzz smoke run of every target (a longer run belongs in a scheduled job).
+  # Each target also asserts parse -> emit -> parse round-trips, so this is a property test too.
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - name: Run every target for 20 seconds
+        run: |
+          for t in wire_ethernet wire_arp wire_ipv4 wire_icmp shell_exec lab_load device_frames; do
+            echo "::group::$t"
+            cargo fuzz run "$t" -- -max_total_time=20
+            echo "::endgroup::"
+          done
+      - name: Keep crash inputs if anything failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts
+
   deny:
     runs-on: ubuntu-latest
     steps:
