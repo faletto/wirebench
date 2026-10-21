@@ -8,7 +8,7 @@ where you think I'm wrong.
 ## Project summary
 
 I'm building a clean-room, open-source replacement for Cisco Packet Tracer, aimed
-at CCNA-level students, self-learners, and instructors. Working name: `ptclone`.
+at CCNA-level students, self-learners, and instructors. Working name: `wirebench`.
 
 Motivation: Packet Tracer is slow (startup, UI responsiveness, and simulation
 under load), closed source, gated behind Netacad login, and installs poorly on

@@ -2,9 +2,9 @@ use std::io::{BufRead, Write};
 use std::process::ExitCode;
 
 const USAGE: &str = "usage:
-  ptclone det                  print golden trace hashes (CI diffs this per target)
-  ptclone run <script>         run a scenario script and print its transcript
-  ptclone shell <device>       interactive shell on pc1|pc2|r1|r2 of the blank chain";
+  wirebench det                  print golden trace hashes (CI diffs this per target)
+  wirebench run <script>         run a scenario script and print its transcript
+  wirebench shell <device>       interactive shell on pc1|pc2|r1|r2 of the blank chain";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();

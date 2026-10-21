@@ -7,7 +7,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [[bin]]
-name = "ptclone-app"
+name = "wirebench-app"
 path = "src/main.rs"
 
 [lints]

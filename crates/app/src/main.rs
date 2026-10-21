@@ -2,12 +2,12 @@
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
-            .with_title("ptclone")
+            .with_title("wirebench")
             .with_inner_size([960.0, 600.0]),
         ..Default::default()
     };
     eframe::run_native(
-        "ptclone",
+        "wirebench",
         options,
         Box::new(|_cc| Ok(Box::new(app::App::new()))),
     )

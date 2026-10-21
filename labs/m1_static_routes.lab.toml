@@ -3,7 +3,7 @@ version = 1
 
 [meta]
 title  = "Two routers, static routes"
-author = "ptclone"
+author = "wirebench"
 seed   = 1
 
 [[device]]

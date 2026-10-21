@@ -39,7 +39,7 @@ jobs:
           targets: wasm32-wasip1
       - uses: bytecodealliance/actions/wasmtime/setup@v1
       - run: cargo build -q -p cli --release --target wasm32-wasip1
-      - run: wasmtime target/wasm32-wasip1/release/ptclone.wasm det | diff - testkit/determinism.txt
+      - run: wasmtime target/wasm32-wasip1/release/wirebench.wasm det | diff - testkit/determinism.txt
 
   wasm-build:
     runs-on: ubuntu-latest

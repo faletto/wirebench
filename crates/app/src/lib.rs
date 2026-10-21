@@ -1,4 +1,4 @@
-//! egui front end. The same `App` runs natively (`ptclone-app`) and in the browser
+//! egui front end. The same `App` runs natively (`wirebench-app`) and in the browser
 //! (built with `trunk`, see `index.html`).
 
 mod app;
