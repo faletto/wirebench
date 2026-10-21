@@ -161,6 +161,7 @@ dependencies = [
  "eframe",
  "egui",
  "engine",
+ "kernel",
  "wasm-bindgen-futures",
  "web-sys",
 ]

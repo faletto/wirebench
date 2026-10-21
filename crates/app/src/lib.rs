@@ -2,6 +2,7 @@
 //! (built with `trunk`, see `index.html`).
 
 mod app;
+mod canvas;
 mod term;
 pub mod widget;
 

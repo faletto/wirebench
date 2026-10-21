@@ -24,12 +24,17 @@ pub enum TermAction {
 pub fn handle_events(model: &mut TermModel, events: &[Event]) -> Vec<TermAction> {
     let mut actions = Vec::new();
     // On macOS, Option+digit also sends a text event (`¡`, `™`, ...) next to the key event. The
-    // app uses Alt+1..4 to switch devices, so that text must not reach the input line.
+    // app uses Alt+1..9 to switch devices, so that text must not reach the input line.
     let device_switch = events.iter().any(|e| {
         matches!(
             e,
-            Event::Key { key: Key::Num1 | Key::Num2 | Key::Num3 | Key::Num4, pressed: true, modifiers, .. }
-                if modifiers.alt
+            Event::Key {
+                key: Key::Num1 | Key::Num2 | Key::Num3 | Key::Num4 | Key::Num5
+                    | Key::Num6 | Key::Num7 | Key::Num8 | Key::Num9,
+                pressed: true,
+                modifiers,
+                ..
+            } if modifiers.alt
         )
     });
     for ev in events {
