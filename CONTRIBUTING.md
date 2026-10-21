@@ -14,7 +14,21 @@ Any behavior that is not pure RFC needs an entry in `provenance/`.
 
 ## Sign-off
 
-Every commit needs a DCO sign-off (`git commit -s`).
+Every commit needs a DCO sign-off (`git commit -s`). A CI check fails pull requests that
+contain commits without a `Signed-off-by:` line.
+
+## Before you open a pull request
+
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo run -p cli -- det | diff - testkit/determinism.txt   # trace hashes must not change
+```
+
+If a change legitimately alters simulation behavior, the hashes in `testkit/determinism.txt`
+change too: say why in the pull request. Golden transcripts are rewritten with `BLESS=1` and
+the diff reviewed by eye. Fuzzing is described in `fuzz/README.md`.
 
 ## Licence
 
