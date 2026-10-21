@@ -27,6 +27,15 @@ fn main() -> ExitCode {
                 .and_then(|l| l.strip_prefix("--- trace "))
                 .unwrap_or("?");
             println!("m1_static_routes {hash}");
+            let lab = include_str!("../../../labs/m1_static_routes.lab.toml");
+            let mut b =
+                engine::lab::load_and_build(lab, kernel::Trace::keeping()).expect("builtin lab");
+            let pc1 = b.devices[2].id;
+            b.world.with_device::<netdev::Host, _>(pc1, |h, c| {
+                h.ping(c, wire::Ipv4Addr::new(10, 0, 2, 2))
+            });
+            b.world.run_to_idle();
+            println!("lab_static_routes {:016x}", b.world.trace_hash());
             ExitCode::SUCCESS
         }
         ["run", path] => match std::fs::read_to_string(path) {

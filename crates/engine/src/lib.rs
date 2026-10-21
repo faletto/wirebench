@@ -1,6 +1,7 @@
 //! The world: kernel plus devices, and the dispatch loop between them.
 
 pub mod chain;
+pub mod lab;
 pub mod protocol;
 pub mod scenarios;
 pub mod script;

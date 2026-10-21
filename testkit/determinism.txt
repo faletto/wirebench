@@ -1,3 +1,4 @@
 two_hosts_ping 14d38b17e0a99285
 static_chain_ping a13d8f5dde6a9f86
 m1_static_routes f4533c233efaeda0
+lab_static_routes 1d6249df4da4e048
