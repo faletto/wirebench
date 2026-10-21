@@ -23,9 +23,7 @@ fn two_hosts() -> (World, kernel::DeviceId, kernel::DeviceId) {
 
 #[test]
 fn two_hosts_ping_golden() {
-    let (mut w, a, _b) = two_hosts();
-    w.with_device::<Host, _>(a, |h, c| h.ping(c, Ipv4Addr::new(10, 0, 0, 2)));
-    w.run_to_idle();
+    let (w, a, _b) = engine::scenarios::two_hosts_ping();
     let r = w.device::<Host>(a).ping_results.clone();
     assert_eq!(r.len(), 1);
     // ARP req + reply are 60 B (4.8us ser + 1us prop); echo req + reply are 74 B (5.92us + 1us).

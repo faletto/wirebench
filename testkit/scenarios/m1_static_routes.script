@@ -1,0 +1,61 @@
+# Two PCs and two routers, configured entirely from the CLI, then pinged end to end.
+topology blank_chain
+
+@r1
+enable
+configure terminal
+hostname r1
+interface g0/0
+ip address 10.0.1.1 255.255.255.0
+no shutdown
+exit
+interface g0/1
+ip address 10.0.12.1 255.255.255.252
+no shutdown
+exit
+ip route 10.0.2.0 255.255.255.0 10.0.12.2
+end
+show ip route
+show ip interface brief
+copy running-config startup-config
+show running-config
+
+@r2
+enable
+conf t
+interface gi0/0
+ip address 10.0.12.2 255.255.255.252
+no shut
+exit
+interface gigabitethernet0/1
+ip address 10.0.2.1 255.255.255.0
+no shut
+exit
+ip route 10.0.1.0 255.255.255.0 10.0.12.1
+end
+show ip route
+
+@pc1
+ipconfig set 10.0.1.2 255.255.255.0
+ipconfig gateway 10.0.1.1
+ipconfig
+
+@pc2
+ipconfig set 10.0.2.2 255.255.255.0
+ipconfig gateway 10.0.2.1
+
+@pc1
+ping 10.0.2.2
+ping 10.0.1.1
+ping 10.9.9.9
+
+@r1
+show ip ro?
+configure terminal
+no ip route 10.0.2.0 255.255.255.0 10.0.12.2
+no ip route 10.0.2.0 255.255.255.0 10.0.12.2
+end
+show ip route
+
+@pc1
+ping 10.0.2.2

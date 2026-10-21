@@ -1,5 +1,25 @@
 [licenses]
-allow = ["Apache-2.0", "MIT", "BSD-3-Clause", "BSD-2-Clause", "ISC", "Unicode-3.0", "Unicode-DFS-2016", "Zlib", "CC0-1.0"]
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-3-Clause",
+    "BSD-2-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "CC0-1.0",
+    # Permissive, pulled in by the clipboard crates behind eframe.
+    "BSL-1.0",
+    # Fonts bundled by egui's default_fonts feature (redistributable font licences).
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+]
+
+[advisories]
+# "Unmaintained" notices (not vulnerabilities) for the D-Bus stack that accesskit pulls in
+# on Linux. Revisit when accesskit or zbus moves off these crates.
+ignore = ["RUSTSEC-2026-0370", "RUSTSEC-2026-0371", "RUSTSEC-2026-0372"]
 
 [bans]
 multiple-versions = "warn"

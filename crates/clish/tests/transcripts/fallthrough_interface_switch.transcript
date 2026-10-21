@@ -1,0 +1,50 @@
+r1>
+>> enable
+(handler 1: )
+r1#
+>> configure terminal
+(handler 2: )
+r1(config)#
+>> interface g0/0
+(handler 21: name=g0/0 [g0/0])
+r1(config-if)#
+>> ip address 10.0.1.1 255.255.255.0
+(handler 30: addr=10.0.1.1 mask=/24 [g0/0])
+r1(config-if)#
+>> interface g0/1
+(handler 21: name=g0/1 [g0/1])
+r1(config-if)#
+>> ip address 10.0.2.1 255.255.255.0
+(handler 30: addr=10.0.2.1 mask=/24 [g0/1])
+r1(config-if)#
+>> hostname edge
+(handler 20: name=edge [g0/1])
+edge(config-if)#
+>> do show ip route
+(handler 11:  [g0/1])
+edge(config-if)#
+>> ip route 10.9.0.0 255.255.0.0 10.0.1.2
+(handler 22: net=10.9.0.0 mask=/16 via=10.0.1.2 [g0/1])
+edge(config-if)#
+>> ?
+  end        Back to privileged
+  exit       Up one level
+  hostname   Set the device name
+  interface  Configure an interface
+  ip         IP
+  no         Negate
+  shutdown   Disable the interface
+edge(config-if)#
+>> exit
+edge(config)#
+>> ?
+  end        Back to privileged
+  exit       Up one level
+  hostname   Set the device name
+  interface  Configure an interface
+  ip         IP
+edge(config)#
+>> exit
+edge#
+>> exit
+[logout]

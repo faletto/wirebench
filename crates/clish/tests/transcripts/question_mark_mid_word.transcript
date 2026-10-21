@@ -1,0 +1,62 @@
+r1>
+>> en?
+  enable  Become privileged
+r1>
+>> ?
+  enable  Become privileged
+  exit    Leave the session
+r1>
+>> enable
+(handler 1: )
+r1#
+>> sh?
+  show  Show
+r1#
+>> show ?
+  interfaces      Interface details
+  ip              IP information
+  running-config  Current configuration
+r1#
+>> show ip ?
+  interface  Interface information
+  route      Routing table
+r1#
+>> show ip interface ?
+  brief  One line per interface
+r1#
+>> conf?
+  configure  Configure
+r1#
+>> configure ?
+  terminal  From this terminal
+r1#
+>> show i?
+  interfaces  Interface details
+  ip          IP information
+r1#
+>> show i
+        ^
+% Ambiguous abbreviation: "i"
+r1#
+>> show ip rotue
+           ^
+% Unrecognized input; error at the '^' marker.
+r1#
+>> configure
+% Command is incomplete.
+r1#
+>> sh<TAB>
+show 
+r1#
+>> show ip int<TAB>
+show ip interface 
+r1#
+>> show i<TAB>
+show i
+r1#
+>> show ip route ?
+  <cr>
+r1#
+>> show ip route
+(handler 11: )
+r1#

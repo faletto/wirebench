@@ -1,0 +1,20 @@
+[package]
+name = "cli"
+description = "Headless runner: scenarios, determinism checks, interactive shell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "wirebench"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+engine = { path = "../engine" }
+kernel = { path = "../kernel" }
+netdev = { path = "../netdev" }
+wire = { path = "../wire" }

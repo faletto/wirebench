@@ -1,0 +1,14 @@
+[package]
+name = "labfile"
+description = "Versioned, git-friendly lab file format (TOML)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = { version = "0.9", default-features = false, features = ["parse", "display", "serde"] }

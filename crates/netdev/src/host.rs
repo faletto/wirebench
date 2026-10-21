@@ -1,9 +1,10 @@
-use crate::{Ctx, Device, DeviceEvent};
+use crate::{Ctx, Device, DeviceEvent, Resolver};
 use kernel::{PortId, SimTime};
 use std::any::Any;
 use std::collections::BTreeMap;
 use wire::{
-    ArpOp, ArpPacket, EtherType, EthernetFrame, IcmpEcho, IpProto, Ipv4Addr, Ipv4Packet, MacAddr,
+    ArpOp, ArpPacket, EtherType, EthernetFrame, IcmpEcho, IcmpError, IcmpErrorKind, IpProto,
+    Ipv4Addr, Ipv4Packet, MacAddr,
 };
 
 const PORT: PortId = PortId(0);
@@ -15,12 +16,6 @@ pub struct PingResult {
     pub rtt: SimTime,
 }
 
-#[derive(Debug)]
-struct ArpEntry {
-    mac: MacAddr,
-    expires: SimTime,
-}
-
 /// An end host: one NIC, ARP cache, ICMP echo responder and a programmatic ping.
 #[derive(Debug)]
 pub struct Host {
@@ -30,13 +25,15 @@ pub struct Host {
     pub prefix_len: u8,
     pub gateway: Option<Ipv4Addr>,
     pub arp_ttl: SimTime,
-    arp: BTreeMap<Ipv4Addr, ArpEntry>,
-    /// Packets waiting on ARP, keyed by next hop.
-    pending: BTreeMap<Ipv4Addr, Vec<Ipv4Packet>>,
+    arp: Resolver,
     sent: BTreeMap<u16, SimTime>,
     next_seq: u16,
     ip_ident: u16,
     pub ping_results: Vec<PingResult>,
+    /// ICMP errors received (time exceeded, unreachable), oldest first.
+    pub icmp_errors: Vec<IcmpErrorKind>,
+    /// TTL for locally originated packets.
+    pub ttl: u8,
 }
 
 impl Host {
@@ -48,12 +45,13 @@ impl Host {
             prefix_len,
             gateway: None,
             arp_ttl: SimTime::from_secs(4 * 3600),
-            arp: BTreeMap::new(),
-            pending: BTreeMap::new(),
+            arp: Resolver::default(),
             sent: BTreeMap::new(),
             next_seq: 1,
             ip_ident: 1,
             ping_results: Vec::new(),
+            icmp_errors: Vec::new(),
+            ttl: 64,
         }
     }
 
@@ -74,7 +72,7 @@ impl Host {
     }
 
     pub fn arp_lookup(&self, ip: Ipv4Addr, now: SimTime) -> Option<MacAddr> {
-        self.arp.get(&ip).filter(|e| e.expires > now).map(|e| e.mac)
+        self.arp.lookup(ip, now)
     }
 
     /// Send one echo request. The result shows up in `ping_results` if a reply arrives.
@@ -97,7 +95,7 @@ impl Host {
             dscp_ecn: 0,
             ident: self.ip_ident,
             flags_frag: 0,
-            ttl: 64,
+            ttl: self.ttl,
             proto,
             src: self.ip,
             dst,
@@ -112,9 +110,7 @@ impl Host {
             self.emit_ip(ctx, mac, &pkt);
             return;
         }
-        let first = !self.pending.contains_key(&hop);
-        self.pending.entry(hop).or_default().push(pkt);
-        if first {
+        if self.arp.queue(hop, pkt) {
             let req = ArpPacket {
                 op: ArpOp::Request,
                 sender_mac: self.mac,
@@ -150,13 +146,7 @@ impl Host {
             return;
         }
         let expires = ctx.now() + self.arp_ttl;
-        self.arp.insert(
-            p.sender_ip,
-            ArpEntry {
-                mac: p.sender_mac,
-                expires,
-            },
-        );
+        self.arp.learn(p.sender_ip, p.sender_mac, expires);
         if p.op == ArpOp::Request {
             let reply = ArpPacket {
                 op: ArpOp::Reply,
@@ -167,10 +157,8 @@ impl Host {
             };
             self.emit(ctx, p.sender_mac, EtherType::ARP, reply.emit());
         }
-        if let Some(q) = self.pending.remove(&p.sender_ip) {
-            for pkt in q {
-                self.emit_ip(ctx, p.sender_mac, &pkt);
-            }
+        for pkt in self.arp.take_pending(p.sender_ip) {
+            self.emit_ip(ctx, p.sender_mac, &pkt);
         }
     }
 
@@ -179,6 +167,10 @@ impl Host {
             return;
         }
         if p.proto != IpProto::ICMP {
+            return;
+        }
+        if let Ok(e) = IcmpError::parse(&p.payload) {
+            self.icmp_errors.push(e.kind);
             return;
         }
         let Ok(echo) = IcmpEcho::parse(&p.payload) else {
@@ -225,11 +217,7 @@ impl Device for Host {
             }
             DeviceEvent::Timer { token, .. } => {
                 // ARP resolution timeout for next hop `token`.
-                if self
-                    .pending
-                    .remove(&Ipv4Addr::from_u32(token as u32))
-                    .is_some()
-                {
+                if self.arp.timeout(Ipv4Addr::from_u32(token as u32)) {
                     ctx.note("arp timeout");
                 }
             }

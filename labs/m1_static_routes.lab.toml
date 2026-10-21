@@ -1,0 +1,75 @@
+format  = "labsim-lab"
+version = 1
+
+[meta]
+title  = "Two routers, static routes"
+author = "wirebench"
+seed   = 1
+
+[[device]]
+name     = "r1"
+template = "router-2g"
+pos      = [250, 130]
+startup_config = """
+hostname r1
+!
+interface GigabitEthernet0/0
+ ip address 10.0.1.1 255.255.255.0
+ no shutdown
+!
+interface GigabitEthernet0/1
+ ip address 10.0.12.1 255.255.255.252
+ no shutdown
+!
+ip route 10.0.2.0 255.255.255.0 10.0.12.2
+"""
+
+[[device]]
+name     = "r2"
+template = "router-2g"
+pos      = [450, 130]
+startup_config = """
+hostname r2
+!
+interface GigabitEthernet0/0
+ ip address 10.0.12.2 255.255.255.252
+ no shutdown
+!
+interface GigabitEthernet0/1
+ ip address 10.0.2.1 255.255.255.0
+ no shutdown
+!
+ip route 10.0.1.0 255.255.255.0 10.0.12.1
+"""
+
+[[device]]
+name     = "pc1"
+template = "host-pc"
+pos      = [60, 130]
+[device.host]
+ipv4    = "10.0.1.2/24"
+gateway = "10.0.1.1"
+
+[[device]]
+name     = "pc2"
+template = "host-pc"
+pos      = [640, 130]
+[device.host]
+ipv4    = "10.0.2.2/24"
+gateway = "10.0.2.1"
+
+[[link]]
+a = "pc1:eth0"
+b = "r1:Gi0/0"
+
+[[link]]
+a = "r1:Gi0/1"
+b = "r2:Gi0/0"
+
+[[link]]
+a = "r2:Gi0/1"
+b = "pc2:eth0"
+
+[[annotation]]
+text = "Try: ping 10.0.2.2 from pc1"
+pos  = [240, 40]
