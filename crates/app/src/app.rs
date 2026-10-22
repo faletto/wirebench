@@ -4,6 +4,7 @@
 
 use crate::anim::{caption, Anim, SPEEDS};
 use crate::canvas::{Canvas, CanvasEvent, FlightDraw, Node, Scene, Tool};
+use crate::files::{self, Inbox, Incoming};
 use crate::sim::{parse_ipv4, HopRow, Sim};
 use crate::term::TermModel;
 use crate::widget::{self, TermAction};
@@ -56,6 +57,9 @@ pub struct App {
     focus_pending: bool,
     sim: Sim,
     anim: Anim,
+    inbox: Inbox,
+    /// Native: the path the Save and Open buttons use.
+    file_path: String,
     /// Wall-clock seconds as of the latest frame (egui's clock; works on web too).
     wall: f64,
     frame_ms: f32,
@@ -120,6 +124,8 @@ impl App {
                 ..Sim::default()
             },
             anim: Anim::default(),
+            inbox: Inbox::default(),
+            file_path: String::new(),
             wall: 0.0,
             frame_ms: 0.0,
             ready_ms: None,
@@ -242,17 +248,142 @@ impl App {
             }
         };
         let mut fresh = App::from_built(built);
-        // Keep what is about the user's session rather than the lab.
+        fresh.take_session(self);
         fresh.canvas = std::mem::take(&mut self.canvas);
-        fresh.tool = self.tool;
-        fresh.sim.dst = std::mem::take(&mut self.sim.dst);
-        fresh.frame_ms = self.frame_ms;
-        fresh.ready_ms = self.ready_ms;
         fresh.notice = Some(note);
         if let Some(i) = active.and_then(|n| fresh.tabs.iter().position(|t| t.name == n)) {
             fresh.active = i;
         }
         *self = fresh;
+    }
+
+    /// Carry over what belongs to the person using the app rather than to the lab.
+    fn take_session(&mut self, old: &mut App) {
+        self.tool = old.tool;
+        self.sim.dst = std::mem::take(&mut old.sim.dst);
+        self.anim.enabled = old.anim.enabled;
+        self.anim.speed = old.anim.speed;
+        self.inbox = old.inbox.clone();
+        self.file_path = std::mem::take(&mut old.file_path);
+        self.frame_ms = old.frame_ms;
+        self.ready_ms = old.ready_ms;
+        self.wall = old.wall;
+    }
+
+    // ---- files ----
+
+    /// Where asynchronous file arrivals (the browser's file picker) are queued.
+    pub fn inbox(&self) -> Inbox {
+        self.inbox.clone()
+    }
+
+    /// Replace the lab with the one in `text`. If it cannot be loaded, the current lab stays
+    /// and the notice says why. Returns whether the new lab was adopted.
+    pub fn load_lab_text(&mut self, text: &str, source: &str) -> bool {
+        match engine::lab::load_and_build(text, kernel::Trace::new()) {
+            Ok(built) => {
+                let mut fresh = App::from_built(built);
+                fresh.take_session(self);
+                let problems = fresh.notice.take();
+                fresh.notice = Some(match problems {
+                    Some(p) => format!("opened {source} ({p})"),
+                    None => format!("opened {source}"),
+                });
+                *self = fresh;
+                true
+            }
+            Err(e) => {
+                self.notice = Some(format!("could not open {source}: {e}"));
+                false
+            }
+        }
+    }
+
+    /// Native: write the lab as it is now to `path`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn save_to_path(&mut self, path: &str) -> bool {
+        match files::write_file(path, &self.export_lab()) {
+            Ok(()) => {
+                self.file_path = path.to_string();
+                self.notice = Some(format!("saved {path}"));
+                true
+            }
+            Err(e) => {
+                self.notice = Some(format!("could not save {path}: {e}"));
+                false
+            }
+        }
+    }
+
+    /// Native: replace the lab with the file at `path`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn open_path(&mut self, path: &str) -> bool {
+        match files::read_file(path) {
+            Ok(text) => {
+                let ok = self.load_lab_text(&text, path);
+                if ok {
+                    self.file_path = path.to_string();
+                }
+                ok
+            }
+            Err(e) => {
+                self.notice = Some(format!("could not open {path}: {e}"));
+                false
+            }
+        }
+    }
+
+    /// Web: hand the lab to the browser as a download.
+    #[cfg(target_arch = "wasm32")]
+    fn download_lab(&mut self) {
+        let name = files::file_name_for(&self.title);
+        self.notice = Some(match files::download(&name, &self.export_lab()) {
+            Ok(()) => format!("downloaded {name}"),
+            Err(e) => format!("could not download: {e}"),
+        });
+    }
+
+    fn file_controls(&mut self, ui: &mut Ui) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.file_path)
+                    .desired_width(150.0)
+                    .hint_text("lab.toml"),
+            )
+            .on_hover_text("File used by Save and Open");
+            if ui.button("Save").clicked() {
+                let path = self.file_path.clone();
+                self.save_to_path(&path);
+            }
+            if ui.button("Open").clicked() {
+                let path = self.file_path.clone();
+                self.open_path(&path);
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            if ui.button("Save").clicked() {
+                self.download_lab();
+            }
+            if ui.button("Open…").clicked() {
+                if let Err(e) = files::pick(self.inbox.clone(), ui.ctx().clone()) {
+                    self.notice = Some(format!("could not open the file picker: {e}"));
+                }
+            }
+        }
+    }
+
+    /// Apply files that arrived asynchronously (the browser's file picker).
+    fn drain_inbox(&mut self) {
+        for item in self.inbox.take() {
+            match item {
+                Incoming::Lab { name, text } => {
+                    self.load_lab_text(&text, &name);
+                }
+                Incoming::Failed(why) => self.notice = Some(why),
+            }
+        }
     }
 
     /// The lab as it is now (positions, cabling, live configs) as lab-file text.
@@ -587,6 +718,7 @@ impl App {
         }
         self.frame_ms = 0.9 * self.frame_ms + 0.1 * ui.input(|i| i.unstable_dt) * 1000.0;
         self.wall = ui.input(|i| i.time);
+        self.drain_inbox();
         // Playing: one hop per `hop_secs`, then stop when the simulation goes idle.
         if self.anim.playing && self.wall >= self.anim.next_step {
             if self.sim_step_hop() {
@@ -628,6 +760,8 @@ impl App {
         egui::Panel::top("tabs").show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.strong(&self.title);
+                ui.separator();
+                self.file_controls(ui);
                 ui.separator();
                 for i in 0..self.tabs.len() {
                     let label = format!("{} ({})", self.tabs[i].name, i + 1);

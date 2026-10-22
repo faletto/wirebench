@@ -5,12 +5,14 @@ mod anim;
 mod app;
 mod canvas;
 pub mod clock;
+mod files;
 mod sim;
 mod term;
 pub mod widget;
 
 pub use app::App;
 pub use canvas::Tool;
+pub use files::{Inbox, Incoming};
 pub use sim::HopRow;
 pub use term::TermModel;
 

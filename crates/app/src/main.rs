@@ -7,10 +7,18 @@ fn main() -> eframe::Result {
             .with_inner_size([960.0, 600.0]),
         ..Default::default()
     };
+    // `wirebench-app [lab.toml]` opens that file instead of the bundled lab.
+    let path = std::env::args().nth(1);
     eframe::run_native(
         "wirebench",
         options,
-        Box::new(|_cc| Ok(Box::new(app::App::new()))),
+        Box::new(move |_cc| {
+            let mut app = app::App::new();
+            if let Some(p) = path {
+                app.open_path(&p);
+            }
+            Ok(Box::new(app))
+        }),
     )
 }
 
