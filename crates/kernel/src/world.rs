@@ -18,6 +18,10 @@ pub enum Event {
         device: DeviceId,
         port: PortId,
         frame: Vec<u8>,
+        /// The device that sent it, and when its first bit left (for animating the hop).
+        /// Not part of the trace, so adding these changed no golden hash.
+        from: DeviceId,
+        sent: SimTime,
     },
     Timer {
         device: DeviceId,
@@ -56,6 +60,8 @@ enum Payload {
     Frame {
         link: LinkId,
         epoch: u32,
+        from: DeviceId,
+        sent: SimTime,
         to: (DeviceId, PortId),
         frame: Vec<u8>,
     },
@@ -193,6 +199,8 @@ impl Kernel {
             Payload::Frame {
                 link: LinkId(idx as u32),
                 epoch,
+                from: device,
+                sent: start,
                 to,
                 frame,
             },
@@ -249,6 +257,8 @@ impl Kernel {
                 Payload::Frame {
                     link,
                     epoch,
+                    from,
+                    sent,
                     to,
                     frame,
                 } => {
@@ -265,6 +275,8 @@ impl Kernel {
                         device: to.0,
                         port: to.1,
                         frame,
+                        from,
+                        sent,
                     });
                 }
             }

@@ -78,6 +78,9 @@ pub enum EngineEvent {
         port: u16,
         summary: String,
         bytes: u32,
+        /// Sending device and the virtual time its first bit left, for animation.
+        from: u32,
+        sent_ns: u64,
     },
     /// A timer fired (nothing to draw).
     Tick {
@@ -207,12 +210,16 @@ impl Engine {
                     device,
                     port,
                     frame,
+                    from,
+                    sent,
                 }) => EngineEvent::Hop {
                     ns: at.0,
                     device: device.0,
                     port: port.0,
                     summary: wire::summarize(&frame),
                     bytes: frame.len() as u32,
+                    from: from.0,
+                    sent_ns: sent.0,
                 },
                 Some(crate::Delivered::Timer { at, device }) => EngineEvent::Tick {
                     ns: at.0,

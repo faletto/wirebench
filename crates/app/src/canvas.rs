@@ -32,6 +32,28 @@ impl Tool {
     }
 }
 
+/// Everything the canvas draws and how it reacts, for one frame.
+#[derive(Debug, Clone, Copy)]
+pub struct Scene<'a> {
+    pub nodes: &'a [Node],
+    pub links: &'a [(usize, usize)],
+    pub notes: &'a [(String, [i32; 2])],
+    pub tool: Tool,
+    /// First device of a cable being drawn.
+    pub link_from: Option<usize>,
+    pub flights: &'a [FlightDraw<'a>],
+}
+
+/// A frame in flight, to draw as a dot between two nodes.
+#[derive(Debug, Clone, Copy)]
+pub struct FlightDraw<'a> {
+    pub from: usize,
+    pub to: usize,
+    /// 0..=1 along the cable.
+    pub t: f32,
+    pub label: &'a str,
+}
+
 /// Something the user did on the canvas, for the app to act on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CanvasEvent {
@@ -141,15 +163,15 @@ pub struct Canvas {
 
 impl Canvas {
     /// Draw and handle input. Returns what the user did, in order.
-    pub fn show(
-        &mut self,
-        ui: &mut Ui,
-        nodes: &[Node],
-        links: &[(usize, usize)],
-        notes: &[(String, [i32; 2])],
-        tool: Tool,
-        link_from: Option<usize>,
-    ) -> Vec<CanvasEvent> {
+    pub fn show(&mut self, ui: &mut Ui, scene: &Scene) -> Vec<CanvasEvent> {
+        let Scene {
+            nodes,
+            links,
+            notes,
+            tool,
+            link_from,
+            flights,
+        } = *scene;
         let mut events = Vec::new();
         let (rect, bg) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
         let origin = rect.min;
@@ -283,6 +305,24 @@ impl Canvas {
                 n,
                 resp.hovered() || resp.has_focus(),
                 self.view.zoom,
+            );
+        }
+        // Frames in flight: a dot with a caption, so meaning never rests on colour alone.
+        for f in flights {
+            let (Some(&a), Some(&b)) = (self.last_centres.get(f.from), self.last_centres.get(f.to))
+            else {
+                continue;
+            };
+            let at = a + (b - a) * f.t;
+            let radius = (6.0 * self.view.zoom).clamp(4.0, 10.0);
+            painter.circle_filled(at, radius, v.selection.bg_fill);
+            painter.circle_stroke(at, radius, Stroke::new(1.5, v.selection.stroke.color));
+            painter.text(
+                at + Vec2::new(0.0, -radius - 3.0),
+                Align2::CENTER_BOTTOM,
+                f.label,
+                FontId::proportional((11.0 * self.view.zoom).clamp(9.0, 18.0)),
+                v.text_color(),
             );
         }
         events

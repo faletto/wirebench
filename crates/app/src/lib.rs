@@ -1,6 +1,7 @@
 //! egui front end. The same `App` runs natively (`wirebench-app`) and in the browser
 //! (built with `trunk`, see `index.html`).
 
+mod anim;
 mod app;
 mod canvas;
 pub mod clock;
