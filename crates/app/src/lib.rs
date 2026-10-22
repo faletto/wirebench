@@ -3,6 +3,7 @@
 
 mod app;
 mod canvas;
+pub mod clock;
 mod term;
 pub mod widget;
 

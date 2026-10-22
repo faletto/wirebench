@@ -253,6 +253,19 @@ pos  = [400, 60]
     }
 
     #[test]
+    fn plain_unknown_keys_next_to_devices_still_save() {
+        // A scalar key at the top level, in a file that also has [[device]] tables. TOML wants
+        // plain values before tables, so the saver must not emit it after them.
+        let text = format!("future_flag = true\nfuture_name = \"x\"\n{EXAMPLE}");
+        let l = load(&text).unwrap();
+        assert_eq!(l.warnings.len(), 2);
+        let saved = save(&l.lab);
+        let again = load(&saved).unwrap();
+        assert_eq!(again.lab, l.lab);
+        assert!(saved.contains("future_flag = true"));
+    }
+
+    #[test]
     fn newer_versions_and_foreign_files_are_rejected() {
         let newer = EXAMPLE.replace("version = 1", "version = 99");
         assert_eq!(

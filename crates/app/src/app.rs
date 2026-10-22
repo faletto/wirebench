@@ -47,6 +47,8 @@ pub struct App {
     /// Set when a tab becomes active so its terminal grabs keyboard focus.
     focus_pending: bool,
     frame_ms: f32,
+    /// Milliseconds from the start of loading to the first drawn frame (see `clock`).
+    ready_ms: Option<f64>,
 }
 
 impl Default for App {
@@ -123,6 +125,7 @@ impl App {
             notice,
             focus_pending: true,
             frame_ms: 0.0,
+            ready_ms: None,
         }
     }
 
@@ -134,6 +137,11 @@ impl App {
     /// Name of the device whose terminal is showing.
     pub fn active_device(&self) -> &str {
         &self.tabs[self.active].name
+    }
+
+    /// Time from the start of loading to the first frame, once one has been drawn.
+    pub fn ready_ms(&self) -> Option<f64> {
+        self.ready_ms
     }
 
     /// Lines shown in the active terminal, oldest first (for tests).
@@ -200,6 +208,12 @@ impl App {
 
     /// Draw the whole UI. Takes only a `Ui` so headless tests can drive it.
     pub fn ui(&mut self, ui: &mut Ui) {
+        if self.ready_ms.is_none() {
+            self.ready_ms = crate::clock::since_start_ms();
+            if let Some(ms) = self.ready_ms {
+                crate::clock::log(&format!("wirebench: first frame after {ms:.0} ms"));
+            }
+        }
         self.frame_ms = 0.9 * self.frame_ms + 0.1 * ui.input(|i| i.unstable_dt) * 1000.0;
         let keys = [
             Key::Num1,
@@ -266,6 +280,10 @@ impl App {
             ui.horizontal_wrapped(|ui| {
                 ui.label(format!("virtual time {:.3} ms", now as f64 / 1e6));
                 ui.separator();
+                if let Some(ms) = self.ready_ms {
+                    ui.label(format!("ready in {ms:.0} ms"));
+                    ui.separator();
+                }
                 ui.label(format!("frame {:.1} ms", self.frame_ms));
                 ui.separator();
                 match &self.notice {

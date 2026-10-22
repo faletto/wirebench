@@ -1,0 +1,61 @@
+[package]
+name = "wirebench-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Not part of the main workspace: fuzzing needs nightly and sanitizer flags.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+wire = { path = "../crates/wire" }
+kernel = { path = "../crates/kernel" }
+netdev = { path = "../crates/netdev" }
+engine = { path = "../crates/engine" }
+labfile = { path = "../crates/labfile" }
+
+[[bin]]
+name = "wire_ethernet"
+path = "fuzz_targets/wire_ethernet.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "wire_arp"
+path = "fuzz_targets/wire_arp.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "wire_ipv4"
+path = "fuzz_targets/wire_ipv4.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "wire_icmp"
+path = "fuzz_targets/wire_icmp.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "shell_exec"
+path = "fuzz_targets/shell_exec.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "lab_load"
+path = "fuzz_targets/lab_load.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "device_frames"
+path = "fuzz_targets/device_frames.rs"
+test = false
+doc = false

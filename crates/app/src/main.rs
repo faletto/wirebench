@@ -1,5 +1,6 @@
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
+    app::clock::mark_start();
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("wirebench")

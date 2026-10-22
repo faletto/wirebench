@@ -1,3 +1,6 @@
 target/
 # trunk build output
 dist/
+# fuzzing: generated corpora and crash inputs (see fuzz/README.md)
+fuzz/corpus/
+fuzz/artifacts/

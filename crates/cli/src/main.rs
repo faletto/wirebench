@@ -55,6 +55,7 @@ fn main() -> ExitCode {
             }
         },
         ["bench"] => bench(),
+        ["bench-lab", path] => bench_lab(path),
         ["shell", dev] => shell(dev),
         _ => {
             eprintln!("{USAGE}");
@@ -85,6 +86,72 @@ fn bench() -> ExitCode {
     println!("events/s     {:.0}", events as f64 / secs);
     println!("pings/s      {:.0}", PINGS as f64 / secs);
     println!("virtual time {:.1} s", c.world.kernel.now().0 as f64 / 1e9);
+    ExitCode::SUCCESS
+}
+
+/// Cold start of a big lab: parse, build (which replays every router's config through the CLI),
+/// then one ping from the first PC to the last. Memory is measured outside, e.g.
+/// `/usr/bin/time -l wirebench bench-lab <file>` on macOS.
+fn bench_lab(path: &str) -> ExitCode {
+    use engine::lab::LabKind;
+    use netdev::Host;
+    use std::time::Instant;
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("{path}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let t = Instant::now();
+    let loaded = match labfile::load(&text) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let load = t.elapsed();
+    let t = Instant::now();
+    let mut b = match engine::lab::build(&loaded.lab, kernel::Trace::new()) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let build = t.elapsed();
+    let hosts: Vec<_> = b
+        .devices
+        .iter()
+        .filter(|d| d.kind == LabKind::Host)
+        .map(|d| d.id)
+        .collect();
+    println!(
+        "devices      {} ({} PCs), links {}",
+        b.devices.len(),
+        hosts.len(),
+        b.links.len()
+    );
+    println!("warnings     {}", b.warnings.len());
+    println!("load (parse) {:.2} ms", load.as_secs_f64() * 1e3);
+    println!(
+        "build        {:.2} ms (includes replaying every config)",
+        build.as_secs_f64() * 1e3
+    );
+    if let (Some(&first), Some(&last)) = (hosts.first(), hosts.last()) {
+        let dst = b.world.device::<Host>(last).ip;
+        let t = Instant::now();
+        b.world.with_device::<Host, _>(first, |h, c| h.ping(c, dst));
+        b.world.run_to_idle();
+        let wall = t.elapsed();
+        let ok = b.world.device::<Host>(first).ping_results.len();
+        println!(
+            "end-to-end   ping {dst}: {ok} reply, {} events, {:.2} ms wall",
+            b.world.kernel.delivered(),
+            wall.as_secs_f64() * 1e3
+        );
+    }
     ExitCode::SUCCESS
 }
 
