@@ -4,7 +4,7 @@
 use crate::World;
 use clish::{render_error, render_help, Action, Args, Exec, Grammar, ModeId, Session};
 use kernel::{DeviceId, PortId, SimTime};
-use netdev::{mask, Host, RouteKind, Router, StaticRoute};
+use netdev::{mask, Host, L2Switch, RouteKind, Router, StaticRoute};
 use std::sync::Arc;
 use wire::{IcmpErrorKind, Ipv4Addr};
 
@@ -18,6 +18,7 @@ const TIMED_OUT: &str = "No reply (timed out).";
 enum Kind {
     Router,
     Host,
+    Switch,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -48,6 +49,7 @@ const IPCONFIG: u32 = 20;
 const IPCONFIG_SET: u32 = 21;
 const IPCONFIG_GW: u32 = 22;
 const PING: u32 = 23;
+const SHOW_MACS: u32 = 30;
 
 fn router_grammar() -> (Grammar, Modes) {
     let mut g = Grammar::new();
@@ -225,6 +227,63 @@ fn host_grammar() -> (Grammar, Modes) {
     )
 }
 
+fn switch_grammar() -> (Grammar, Modes) {
+    let mut g = Grammar::new();
+    let user = g.mode("user", "{host}>", None, None);
+    let privileged = g.mode("privileged", "{host}#", None, None);
+    let config = g.mode("config", "{host}(config)#", Some(privileged), None);
+    g.do_mode = Some(privileged);
+    let h = Action::Handler;
+    g.cmd(&[user], "enable", &["Become privileged"], h(ENABLE));
+    g.cmd(
+        &[user, privileged],
+        "exit",
+        &["Leave the session"],
+        Action::Exit,
+    );
+    g.cmd(&[privileged], "disable", &["Drop privileges"], h(DISABLE));
+    g.cmd(
+        &[privileged],
+        "configure terminal",
+        &["Configure", "From this terminal"],
+        h(CONF_T),
+    );
+    g.cmd(
+        &[user, privileged],
+        "show running-config",
+        &["Show", "Current configuration"],
+        h(SHOW_RUN),
+    );
+    g.cmd(
+        &[user, privileged],
+        "show mac address-table",
+        &["Show", "Hardware addresses", "Learned addresses by port"],
+        h(SHOW_MACS),
+    );
+    g.cmd(
+        &[config],
+        "hostname <name:word>",
+        &["Set the device name", "New name"],
+        h(HOSTNAME),
+    );
+    g.cmd(
+        &[config],
+        "end",
+        &["Back to privileged"],
+        Action::End(privileged),
+    );
+    g.cmd(&[config], "exit", &["Up one level"], Action::Exit);
+    (
+        g,
+        Modes {
+            user,
+            privileged,
+            config,
+            config_if: config,
+        },
+    )
+}
+
 fn dotted(len: u8) -> Ipv4Addr {
     Ipv4Addr::from_u32(mask(len))
 }
@@ -278,6 +337,18 @@ impl Shell {
         }
     }
 
+    pub fn switch(device: DeviceId) -> Self {
+        let (g, modes) = switch_grammar();
+        Shell {
+            grammar: Arc::new(g),
+            modes,
+            kind: Kind::Switch,
+            session: Session::new(modes.user),
+            device,
+            startup: None,
+        }
+    }
+
     pub fn host(device: DeviceId) -> Self {
         let (g, modes) = host_grammar();
         Shell {
@@ -294,6 +365,7 @@ impl Shell {
         let name = match self.kind {
             Kind::Router => w.device::<Router>(self.device).name.clone(),
             Kind::Host => w.device::<Host>(self.device).name.clone(),
+            Kind::Switch => w.device::<L2Switch>(self.device).name.clone(),
         };
         self.session.prompt(&self.grammar, &name)
     }
@@ -331,7 +403,11 @@ impl Shell {
             CONF_T => self.session.enter(m.config, None),
             HOSTNAME => {
                 let n = a.word("name").unwrap().to_string();
-                w.with_device::<Router, _>(id, |r, _| r.name = n);
+                if self.kind == Kind::Switch {
+                    w.with_device::<L2Switch, _>(id, |s, _| s.name = n);
+                } else {
+                    w.with_device::<Router, _>(id, |r, _| r.name = n);
+                }
             }
             INTERFACE => {
                 let name = a.word("name").unwrap();
@@ -373,6 +449,10 @@ impl Shell {
                     return NO_ROUTE_ENTRY.to_string();
                 }
             }
+            SHOW_RUN if self.kind == Kind::Switch => {
+                return switch_config(w.device::<L2Switch>(id));
+            }
+            SHOW_MACS => return show_macs(w.device::<L2Switch>(id), w.kernel.now()),
             SHOW_RUN => return running_config(w.device::<Router>(id)),
             SHOW_ROUTE => return show_routes(w.device::<Router>(id)),
             SHOW_BRIEF => return show_brief(w.device::<Router>(id)),
@@ -418,6 +498,24 @@ pub fn running_config(r: &Router) -> String {
         o += &format!("ip route {} {} {}\n", s.net, dotted(s.len), s.via);
     }
     o + "end"
+}
+
+/// Switch config is just the hostname so far; it round-trips through the same shell.
+pub fn switch_config(s: &L2Switch) -> String {
+    format!("hostname {}\n!\nend", s.name)
+}
+
+/// Switch ports are numbered from 1 in names (Fa0/1 is port 0).
+fn show_macs(s: &L2Switch, now: SimTime) -> String {
+    let mut o = format!("{:<16}{}", "Mac Address", "Port");
+    let table = s.mac_table(now);
+    for (mac, port) in &table {
+        o += &format!("\n{:<16}Fa0/{}", mac.to_string(), port.0 + 1);
+    }
+    if table.is_empty() {
+        o += "\n(no addresses learned)";
+    }
+    o
 }
 
 fn show_routes(r: &Router) -> String {

@@ -83,7 +83,7 @@ impl App {
             let shell = match d.kind {
                 LabKind::Router => Some(ShellKind::Router),
                 LabKind::Host => Some(ShellKind::Host),
-                LabKind::Switch => None,
+                LabKind::Switch => Some(ShellKind::Switch),
             };
             let mut tab = None;
             if let Some(kind) = shell {

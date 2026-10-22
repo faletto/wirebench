@@ -158,7 +158,11 @@ pub fn build(lab: &LabFile, trace: Trace) -> Result<BuiltLab, BuildError> {
                 LabKind::Router,
                 n,
             ),
-            Template::Switch(n) => (world.add_device(L2Switch::new(n)), LabKind::Switch, n),
+            Template::Switch(n) => {
+                let mut sw = L2Switch::new(n);
+                sw.name = d.name.clone();
+                (world.add_device(sw), LabKind::Switch, n)
+            }
             Template::Host => {
                 let mut h = Host::new(
                     &d.name,
@@ -228,7 +232,7 @@ pub fn build(lab: &LabFile, trace: Trace) -> Result<BuiltLab, BuildError> {
 
     let mut warnings = Vec::new();
     for (d, dev) in lab.devices.iter().zip(&devices) {
-        if dev.kind != LabKind::Router {
+        if dev.kind == LabKind::Host {
             continue;
         }
         if let Some(cfg) = d.running_config.as_ref().or(d.startup_config.as_ref()) {
@@ -249,7 +253,10 @@ pub fn build(lab: &LabFile, trace: Trace) -> Result<BuiltLab, BuildError> {
 /// Replay IOS-style config text through the router's CLI. Lines the CLI rejects become
 /// warnings, not errors, so an old lab still opens after the grammar changes.
 fn apply_config(world: &mut World, dev: &LabDevice, cfg: &str, warnings: &mut Vec<String>) {
-    let mut sh = Shell::router(dev.id);
+    let mut sh = match dev.kind {
+        LabKind::Switch => Shell::switch(dev.id),
+        _ => Shell::router(dev.id),
+    };
     for line in ["enable", "configure terminal"] {
         sh.exec(world, line);
     }

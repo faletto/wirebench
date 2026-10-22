@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 pub enum ShellKind {
     Router,
     Host,
+    Switch,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -111,6 +112,7 @@ impl Engine {
                 let shell = match self.kinds.get(&device) {
                     Some(ShellKind::Router) => Shell::router(id),
                     Some(ShellKind::Host) => Shell::host(id),
+                    Some(ShellKind::Switch) => Shell::switch(id),
                     None => return err("device has no shell"),
                 };
                 let prompt = shell.prompt(&self.world);
