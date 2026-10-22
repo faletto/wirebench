@@ -8,6 +8,59 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
+/// Whether the lab has unsaved changes, for the browser's leave-page warning, which runs
+/// outside the app and can only read a flag.
+static UNSAVED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_unsaved(dirty: bool) {
+    UNSAVED.store(dirty, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Native: the window title is set through the viewport; nothing to do here.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn set_page_title(_title: &str) {}
+
+#[cfg(target_arch = "wasm32")]
+pub fn set_page_title(title: &str) {
+    if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+        doc.set_title(title);
+    }
+}
+
+/// Web: stop the browser handling Ctrl/Cmd+S and Ctrl/Cmd+O itself (Save Page, Open File),
+/// and warn before leaving the page while there are unsaved changes. The app still receives
+/// the key events and does the real work.
+#[cfg(target_arch = "wasm32")]
+pub fn install_page_guards() {
+    use eframe::wasm_bindgen::closure::Closure;
+    use eframe::wasm_bindgen::JsCast as _;
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let keydown = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(|e: web_sys::KeyboardEvent| {
+        let key = e.key().to_ascii_lowercase();
+        if (e.ctrl_key() || e.meta_key()) && (key == "s" || key == "o") {
+            e.prevent_default();
+        }
+    });
+    // Capture phase, so this runs before anything can decide to leave it alone.
+    let _ = window.add_event_listener_with_callback_and_bool(
+        "keydown",
+        keydown.as_ref().unchecked_ref(),
+        true,
+    );
+    keydown.forget();
+    let unload =
+        Closure::<dyn FnMut(web_sys::BeforeUnloadEvent)>::new(|e: web_sys::BeforeUnloadEvent| {
+            if UNSAVED.load(std::sync::atomic::Ordering::Relaxed) {
+                e.prevent_default();
+                e.set_return_value("");
+            }
+        });
+    window.set_onbeforeunload(Some(unload.as_ref().unchecked_ref()));
+    unload.forget();
+}
+
 /// Largest lab file we will read. Real labs are tens of kilobytes; this stops a wrong file
 /// (a video, a core dump) from stalling the UI.
 pub const MAX_LAB_BYTES: usize = 5_000_000;
