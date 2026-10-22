@@ -18,6 +18,9 @@ pub enum Delivered {
         device: DeviceId,
         port: PortId,
         frame: Vec<u8>,
+        /// Sender and departure time, so a UI can animate the hop.
+        from: DeviceId,
+        sent: SimTime,
     },
     Timer {
         at: SimTime,
@@ -83,6 +86,7 @@ impl World {
                 device,
                 port,
                 frame,
+                ..
             } => (device, DeviceEvent::FrameRx { port, frame }),
             Event::Timer { device, id, token } => (device, DeviceEvent::Timer { id, token }),
         };
@@ -103,11 +107,15 @@ impl World {
                 device,
                 port,
                 frame,
+                from,
+                sent,
             } => Delivered::Frame {
                 at,
                 device: *device,
                 port: *port,
                 frame: frame.clone(),
+                from: *from,
+                sent: *sent,
             },
             Event::Timer { device, .. } => Delivered::Timer {
                 at,

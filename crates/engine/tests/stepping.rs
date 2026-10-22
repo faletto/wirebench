@@ -142,6 +142,41 @@ fn only_pcs_can_ping_and_new_messages_survive_the_byte_protocol() {
         port: 2,
         summary: "x".into(),
         bytes: 60,
+        from: 3,
+        sent_ns: 2,
     };
     assert_eq!(decode::<EngineEvent>(&encode(&hop)).unwrap(), hop);
+}
+
+/// Each hop says who sent the frame and when it left: what the UI needs to animate it.
+#[test]
+fn hops_carry_sender_and_departure_time() {
+    let (mut e, id) = engine();
+    let (pc1, r1) = (id("pc1"), id("r1"));
+    e.handle(EngineCmd::PingOnce {
+        device: pc1,
+        dst: [10, 0, 1, 1],
+    });
+    let evs = step_all(&mut e);
+    let hops: Vec<(u32, u32, u64, u64)> = evs
+        .iter()
+        .filter_map(|e| match e {
+            EngineEvent::Hop {
+                device,
+                from,
+                ns,
+                sent_ns,
+                ..
+            } => Some((*from, *device, *sent_ns, *ns)),
+            _ => None,
+        })
+        .collect();
+    // ARP request pc1 -> r1, ARP reply r1 -> pc1, echo request pc1 -> r1, echo reply r1 -> pc1.
+    let ends: Vec<(u32, u32)> = hops.iter().map(|h| (h.0, h.1)).collect();
+    assert_eq!(ends, [(pc1, r1), (r1, pc1), (pc1, r1), (r1, pc1)]);
+    for (_, _, sent, arrived) in &hops {
+        assert!(sent < arrived, "a frame takes time on the wire: {hops:?}");
+    }
+    // The first frame leaves at t=0 (serialization starts at once).
+    assert_eq!(hops[0].2, 0);
 }

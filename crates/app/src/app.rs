@@ -2,7 +2,9 @@
 //! driven through the same `EngineCmd`/`EngineEvent` protocol the web build will use across
 //! a Worker.
 
-use crate::canvas::{Canvas, CanvasEvent, Node, Tool};
+use crate::anim::{caption, Anim, SPEEDS};
+use crate::canvas::{Canvas, CanvasEvent, FlightDraw, Node, Scene, Tool};
+use crate::files::{self, Inbox, Incoming};
 use crate::sim::{parse_ipv4, HopRow, Sim};
 use crate::term::TermModel;
 use crate::widget::{self, TermAction};
@@ -54,6 +56,12 @@ pub struct App {
     /// Set when a tab becomes active so its terminal grabs keyboard focus.
     focus_pending: bool,
     sim: Sim,
+    anim: Anim,
+    inbox: Inbox,
+    /// Native: the path the Save and Open buttons use.
+    file_path: String,
+    /// Wall-clock seconds as of the latest frame (egui's clock; works on web too).
+    wall: f64,
     frame_ms: f32,
     /// Milliseconds from the start of loading to the first drawn frame (see `clock`).
     ready_ms: Option<f64>,
@@ -115,6 +123,10 @@ impl App {
                 dst: "10.0.2.2".into(),
                 ..Sim::default()
             },
+            anim: Anim::default(),
+            inbox: Inbox::default(),
+            file_path: String::new(),
+            wall: 0.0,
             frame_ms: 0.0,
             ready_ms: None,
         }
@@ -236,17 +248,142 @@ impl App {
             }
         };
         let mut fresh = App::from_built(built);
-        // Keep what is about the user's session rather than the lab.
+        fresh.take_session(self);
         fresh.canvas = std::mem::take(&mut self.canvas);
-        fresh.tool = self.tool;
-        fresh.sim.dst = std::mem::take(&mut self.sim.dst);
-        fresh.frame_ms = self.frame_ms;
-        fresh.ready_ms = self.ready_ms;
         fresh.notice = Some(note);
         if let Some(i) = active.and_then(|n| fresh.tabs.iter().position(|t| t.name == n)) {
             fresh.active = i;
         }
         *self = fresh;
+    }
+
+    /// Carry over what belongs to the person using the app rather than to the lab.
+    fn take_session(&mut self, old: &mut App) {
+        self.tool = old.tool;
+        self.sim.dst = std::mem::take(&mut old.sim.dst);
+        self.anim.enabled = old.anim.enabled;
+        self.anim.speed = old.anim.speed;
+        self.inbox = old.inbox.clone();
+        self.file_path = std::mem::take(&mut old.file_path);
+        self.frame_ms = old.frame_ms;
+        self.ready_ms = old.ready_ms;
+        self.wall = old.wall;
+    }
+
+    // ---- files ----
+
+    /// Where asynchronous file arrivals (the browser's file picker) are queued.
+    pub fn inbox(&self) -> Inbox {
+        self.inbox.clone()
+    }
+
+    /// Replace the lab with the one in `text`. If it cannot be loaded, the current lab stays
+    /// and the notice says why. Returns whether the new lab was adopted.
+    pub fn load_lab_text(&mut self, text: &str, source: &str) -> bool {
+        match engine::lab::load_and_build(text, kernel::Trace::new()) {
+            Ok(built) => {
+                let mut fresh = App::from_built(built);
+                fresh.take_session(self);
+                let problems = fresh.notice.take();
+                fresh.notice = Some(match problems {
+                    Some(p) => format!("opened {source} ({p})"),
+                    None => format!("opened {source}"),
+                });
+                *self = fresh;
+                true
+            }
+            Err(e) => {
+                self.notice = Some(format!("could not open {source}: {e}"));
+                false
+            }
+        }
+    }
+
+    /// Native: write the lab as it is now to `path`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn save_to_path(&mut self, path: &str) -> bool {
+        match files::write_file(path, &self.export_lab()) {
+            Ok(()) => {
+                self.file_path = path.to_string();
+                self.notice = Some(format!("saved {path}"));
+                true
+            }
+            Err(e) => {
+                self.notice = Some(format!("could not save {path}: {e}"));
+                false
+            }
+        }
+    }
+
+    /// Native: replace the lab with the file at `path`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn open_path(&mut self, path: &str) -> bool {
+        match files::read_file(path) {
+            Ok(text) => {
+                let ok = self.load_lab_text(&text, path);
+                if ok {
+                    self.file_path = path.to_string();
+                }
+                ok
+            }
+            Err(e) => {
+                self.notice = Some(format!("could not open {path}: {e}"));
+                false
+            }
+        }
+    }
+
+    /// Web: hand the lab to the browser as a download.
+    #[cfg(target_arch = "wasm32")]
+    fn download_lab(&mut self) {
+        let name = files::file_name_for(&self.title);
+        self.notice = Some(match files::download(&name, &self.export_lab()) {
+            Ok(()) => format!("downloaded {name}"),
+            Err(e) => format!("could not download: {e}"),
+        });
+    }
+
+    fn file_controls(&mut self, ui: &mut Ui) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.file_path)
+                    .desired_width(150.0)
+                    .hint_text("lab.toml"),
+            )
+            .on_hover_text("File used by Save and Open");
+            if ui.button("Save").clicked() {
+                let path = self.file_path.clone();
+                self.save_to_path(&path);
+            }
+            if ui.button("Open").clicked() {
+                let path = self.file_path.clone();
+                self.open_path(&path);
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            if ui.button("Save").clicked() {
+                self.download_lab();
+            }
+            if ui.button("Open…").clicked() {
+                if let Err(e) = files::pick(self.inbox.clone(), ui.ctx().clone()) {
+                    self.notice = Some(format!("could not open the file picker: {e}"));
+                }
+            }
+        }
+    }
+
+    /// Apply files that arrived asynchronously (the browser's file picker).
+    fn drain_inbox(&mut self) {
+        for item in self.inbox.take() {
+            match item {
+                Incoming::Lab { name, text } => {
+                    self.load_lab_text(&text, &name);
+                }
+                Incoming::Failed(why) => self.notice = Some(why),
+            }
+        }
     }
 
     /// The lab as it is now (positions, cabling, live configs) as lab-file text.
@@ -331,19 +468,41 @@ impl App {
         };
         let device = n.device;
         let ev = self.engine.handle(EngineCmd::PingOnce { device, dst });
-        self.apply_sim(ev);
+        self.apply_sim(ev, false);
     }
 
     /// Dispatch one event. Returns false once nothing is left to do.
     pub fn sim_step(&mut self) -> bool {
+        self.step_inner(false)
+    }
+
+    fn step_inner(&mut self, animate: bool) -> bool {
         let ev = self.engine.handle(EngineCmd::Step);
         let more = !matches!(ev.first(), Some(EngineEvent::Idle { .. }));
-        self.apply_sim(ev);
+        self.apply_sim(ev, animate);
         more
     }
 
-    /// Step to idle, logging every hop. Capped so a runaway lab cannot hang the UI.
+    /// Step to the next frame delivery (skipping bare timer events) and animate it.
+    /// Returns false when the simulation is idle.
+    pub fn sim_step_hop(&mut self) -> bool {
+        for _ in 0..10_000 {
+            let before = self.sim.hops.len();
+            let more = self.step_inner(true);
+            if self.sim.hops.len() > before {
+                return true;
+            }
+            if !more {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Step to idle, logging every hop but not animating: this is fast-forward. Capped so a
+    /// runaway lab cannot hang the UI.
     pub fn sim_run(&mut self) {
+        self.anim.playing = false;
         for _ in 0..100_000 {
             if !self.sim_step() {
                 return;
@@ -352,7 +511,46 @@ impl App {
         self.notice = Some("stopped after 100000 events; Run again to continue".into());
     }
 
-    fn apply_sim(&mut self, events: Vec<EngineEvent>) {
+    // ---- animation ----
+
+    pub fn set_playing(&mut self, playing: bool) {
+        self.anim.playing = playing;
+        // The first auto-step happens on the next frame.
+        self.anim.next_step = self.wall;
+    }
+
+    pub fn is_playing(&self) -> bool {
+        self.anim.playing
+    }
+
+    pub fn set_animation_enabled(&mut self, on: bool) {
+        self.anim.enabled = on;
+        if !on {
+            self.anim.flights.clear();
+        }
+    }
+
+    /// Index into the speed list (0.5x, 1x, 2x, 4x).
+    pub fn set_speed(&mut self, index: usize) {
+        self.anim.speed = index.min(SPEEDS.len() - 1);
+    }
+
+    /// Frames currently in flight as `(from, to, label)` by device name, for tests.
+    pub fn flights(&self) -> Vec<(&str, &str, &str)> {
+        self.anim
+            .flights
+            .iter()
+            .map(|f| {
+                (
+                    self.nodes[f.from].name.as_str(),
+                    self.nodes[f.to].name.as_str(),
+                    f.label.as_str(),
+                )
+            })
+            .collect()
+    }
+
+    fn apply_sim(&mut self, events: Vec<EngineEvent>, animate: bool) {
         for e in events {
             match e {
                 EngineEvent::Hop {
@@ -360,8 +558,15 @@ impl App {
                     device,
                     port,
                     summary,
+                    from,
                     ..
                 } => {
+                    if animate && self.anim.enabled {
+                        let idx = |d: u32| self.nodes.iter().position(|n| n.device == d);
+                        if let (Some(a), Some(b)) = (idx(from), idx(device)) {
+                            self.anim.start(a, b, self.wall, caption(&summary));
+                        }
+                    }
                     let name = self
                         .nodes
                         .iter()
@@ -414,13 +619,33 @@ impl App {
                 }
             }
             if ui.button("Step").clicked() {
-                self.sim_step();
+                self.anim.playing = false;
+                self.sim_step_hop();
+            }
+            let play = if self.anim.playing { "Pause" } else { "Play" };
+            if ui.button(play).clicked() {
+                self.set_playing(!self.anim.playing);
             }
             if ui.button("Run").clicked() {
                 self.sim_run();
             }
             if ui.button("Clear").clicked() {
                 self.sim.hops.clear();
+                self.anim.flights.clear();
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Speed");
+            egui::ComboBox::from_id_salt("sim_speed")
+                .selected_text(format!("{}x", SPEEDS[self.anim.speed]))
+                .show_ui(ui, |ui| {
+                    for (i, s) in SPEEDS.iter().enumerate() {
+                        ui.selectable_value(&mut self.anim.speed, i, format!("{s}x"));
+                    }
+                });
+            let mut on = self.anim.enabled;
+            if ui.checkbox(&mut on, "Animate").changed() {
+                self.set_animation_enabled(on);
             }
         });
         ui.separator();
@@ -492,6 +717,26 @@ impl App {
             }
         }
         self.frame_ms = 0.9 * self.frame_ms + 0.1 * ui.input(|i| i.unstable_dt) * 1000.0;
+        self.wall = ui.input(|i| i.time);
+        self.drain_inbox();
+        // Playing: one hop per `hop_secs`, then stop when the simulation goes idle.
+        if self.anim.playing && self.wall >= self.anim.next_step {
+            if self.sim_step_hop() {
+                self.anim.next_step = self.wall + self.anim.hop_secs();
+            } else {
+                self.anim.playing = false;
+                self.notice = Some("simulation is idle".into());
+            }
+        }
+        // Ask for frames only while something moves or a step is due: an idle app repaints
+        // nothing, which keeps idle CPU near zero.
+        if self.anim.retire(self.wall) {
+            ui.ctx().request_repaint();
+        } else if self.anim.playing {
+            let wait = (self.anim.next_step - self.wall).max(0.0);
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs_f64(wait));
+        }
         let keys = [
             Key::Num1,
             Key::Num2,
@@ -515,6 +760,8 @@ impl App {
         egui::Panel::top("tabs").show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.strong(&self.title);
+                ui.separator();
+                self.file_controls(ui);
                 ui.separator();
                 for i in 0..self.tabs.len() {
                     let label = format!("{} ({})", self.tabs[i].name, i + 1);
@@ -542,13 +789,29 @@ impl App {
                         has_console: n.tab.is_some(),
                     })
                     .collect();
+                let flights: Vec<FlightDraw> = self
+                    .anim
+                    .flights
+                    .iter()
+                    .filter_map(|f| {
+                        Some(FlightDraw {
+                            from: f.from,
+                            to: f.to,
+                            t: f.progress(self.wall)?,
+                            label: &f.label,
+                        })
+                    })
+                    .collect();
                 let events = self.canvas.show(
                     ui,
-                    &nodes,
-                    &self.links,
-                    &self.notes,
-                    self.tool,
-                    self.link_from,
+                    &Scene {
+                        nodes: &nodes,
+                        links: &self.links,
+                        notes: &self.notes,
+                        tool: self.tool,
+                        link_from: self.link_from,
+                        flights: &flights,
+                    },
                 );
                 self.handle_canvas(events);
             });
