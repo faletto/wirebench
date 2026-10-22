@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 pub enum ShellKind {
     Router,
     Host,
+    Switch,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -35,6 +36,15 @@ pub enum EngineCmd {
     Advance {
         ns: u64,
     },
+    /// Queue one echo request from a PC without advancing time (simulation mode).
+    PingOnce {
+        device: u32,
+        dst: [u8; 4],
+    },
+    /// Dispatch exactly one simulation event.
+    Step,
+    /// Run until no events remain.
+    RunToIdle,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -60,6 +70,23 @@ pub enum EngineEvent {
     },
     Error {
         message: String,
+    },
+    /// A frame arrived at `device`/`port`; `summary` is the inspector's one-line view.
+    Hop {
+        ns: u64,
+        device: u32,
+        port: u16,
+        summary: String,
+        bytes: u32,
+    },
+    /// A timer fired (nothing to draw).
+    Tick {
+        ns: u64,
+        device: u32,
+    },
+    /// `Step` found nothing left to do.
+    Idle {
+        ns: u64,
     },
 }
 
@@ -95,8 +122,13 @@ impl Engine {
     }
 
     pub fn with_kind(mut self, device: DeviceId, kind: ShellKind) -> Self {
-        self.kinds.insert(device.0, kind);
+        self.set_kind(device, kind);
         self
+    }
+
+    /// Declare what console a device gets (needed for devices added after construction).
+    pub fn set_kind(&mut self, device: DeviceId, kind: ShellKind) {
+        self.kinds.insert(device.0, kind);
     }
 
     pub fn handle(&mut self, cmd: EngineCmd) -> Vec<EngineEvent> {
@@ -111,6 +143,7 @@ impl Engine {
                 let shell = match self.kinds.get(&device) {
                     Some(ShellKind::Router) => Shell::router(id),
                     Some(ShellKind::Host) => Shell::host(id),
+                    Some(ShellKind::Switch) => Shell::switch(id),
                     None => return err("device has no shell"),
                 };
                 let prompt = shell.prompt(&self.world);
@@ -156,6 +189,45 @@ impl Engine {
                 }],
                 _ => err("no such terminal"),
             },
+            EngineCmd::PingOnce { device, dst } => {
+                if self.kinds.get(&device) != Some(&ShellKind::Host) {
+                    return err("only a PC can send a ping");
+                }
+                self.world
+                    .with_device::<netdev::Host, _>(DeviceId(device), |h, c| {
+                        h.ping(c, wire::Ipv4Addr(dst))
+                    });
+                vec![EngineEvent::Time {
+                    ns: self.world.kernel.now().0,
+                }]
+            }
+            EngineCmd::Step => vec![match self.world.step() {
+                Some(crate::Delivered::Frame {
+                    at,
+                    device,
+                    port,
+                    frame,
+                }) => EngineEvent::Hop {
+                    ns: at.0,
+                    device: device.0,
+                    port: port.0,
+                    summary: wire::summarize(&frame),
+                    bytes: frame.len() as u32,
+                },
+                Some(crate::Delivered::Timer { at, device }) => EngineEvent::Tick {
+                    ns: at.0,
+                    device: device.0,
+                },
+                None => EngineEvent::Idle {
+                    ns: self.world.kernel.now().0,
+                },
+            }],
+            EngineCmd::RunToIdle => {
+                self.world.run_to_idle();
+                vec![EngineEvent::Time {
+                    ns: self.world.kernel.now().0,
+                }]
+            }
             EngineCmd::Advance { ns } => {
                 let to = SimTime(self.world.kernel.now().0.saturating_add(ns));
                 self.world.run_until(to);

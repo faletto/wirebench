@@ -1,0 +1,147 @@
+use engine::lab::{load_and_build, LabKind};
+use engine::protocol::{decode, encode, Engine, EngineCmd, EngineEvent, ShellKind};
+use kernel::Trace;
+
+const LAB: &str = include_str!("../../../labs/m1_static_routes.lab.toml");
+
+/// Engine for the bundled lab plus the device ids by name.
+fn engine() -> (Engine, impl Fn(&str) -> u32) {
+    let built = load_and_build(LAB, Trace::new()).unwrap();
+    let ids: Vec<(String, u32)> = built
+        .devices
+        .iter()
+        .map(|d| (d.name.clone(), d.id.0))
+        .collect();
+    let mut e = Engine::new(built.world);
+    for d in &built.devices {
+        let kind = match d.kind {
+            LabKind::Router => ShellKind::Router,
+            LabKind::Host => ShellKind::Host,
+            LabKind::Switch => ShellKind::Switch,
+        };
+        e = e.with_kind(d.id, kind);
+    }
+    let id = move |n: &str| ids.iter().find(|(m, _)| m == n).unwrap().1;
+    (e, id)
+}
+
+fn step_all(e: &mut Engine) -> Vec<EngineEvent> {
+    let mut out = Vec::new();
+    loop {
+        let ev = e.handle(EngineCmd::Step).remove(0);
+        let done = matches!(ev, EngineEvent::Idle { .. });
+        out.push(ev);
+        if done {
+            return out;
+        }
+    }
+}
+
+fn hops(evs: &[EngineEvent]) -> Vec<(u32, String)> {
+    evs.iter()
+        .filter_map(|e| match e {
+            EngineEvent::Hop {
+                device, summary, ..
+            } => Some((*device, summary.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn stepping_a_ping_shows_each_hop() {
+    let (mut e, id) = engine();
+    let (pc1, r1) = (id("pc1"), id("r1"));
+    e.handle(EngineCmd::PingOnce {
+        device: pc1,
+        dst: [10, 0, 1, 1],
+    });
+    let evs = step_all(&mut e);
+    assert_eq!(
+        hops(&evs),
+        vec![
+            (
+                r1,
+                "ARP request: who has 10.0.1.1? tell 10.0.1.2".to_string()
+            ),
+            (pc1, "ARP reply: 10.0.1.1 is at 02aa.0000.0000".to_string()),
+            (
+                r1,
+                "ICMP echo request seq=1: 10.0.1.2 > 10.0.1.1 ttl=64".to_string()
+            ),
+            (
+                pc1,
+                "ICMP echo reply seq=1: 10.0.1.1 > 10.0.1.2 ttl=255".to_string()
+            ),
+        ]
+    );
+    // The ARP timeout timer is not a hop but is still stepped, and time never goes backwards.
+    assert!(evs
+        .iter()
+        .any(|e| matches!(e, EngineEvent::Tick { device, .. } if *device == pc1)));
+    let times: Vec<u64> = evs
+        .iter()
+        .map(|e| match e {
+            EngineEvent::Hop { ns, .. }
+            | EngineEvent::Tick { ns, .. }
+            | EngineEvent::Idle { ns } => *ns,
+            _ => unreachable!(),
+        })
+        .collect();
+    assert!(times.windows(2).all(|w| w[0] <= w[1]), "{times:?}");
+    // Idle stays idle.
+    assert!(matches!(
+        e.handle(EngineCmd::Step)[0],
+        EngineEvent::Idle { .. }
+    ));
+}
+
+#[test]
+fn stepping_is_deterministic_and_matches_running_straight_through() {
+    let run = |stepped: bool| {
+        let (mut e, id) = engine();
+        e.handle(EngineCmd::PingOnce {
+            device: id("pc1"),
+            dst: [10, 0, 2, 2],
+        });
+        if stepped {
+            step_all(&mut e);
+        } else {
+            e.handle(EngineCmd::RunToIdle);
+        }
+        e.world.trace_hash()
+    };
+    assert_eq!(run(true), run(true));
+    assert_eq!(
+        run(true),
+        run(false),
+        "Step and RunToIdle must dispatch the same events"
+    );
+}
+
+#[test]
+fn only_pcs_can_ping_and_new_messages_survive_the_byte_protocol() {
+    let (mut e, id) = engine();
+    assert!(matches!(
+        e.handle(EngineCmd::PingOnce {
+            device: id("r1"),
+            dst: [10, 0, 1, 2]
+        })[0],
+        EngineEvent::Error { .. }
+    ));
+    let cmd = EngineCmd::PingOnce {
+        device: id("pc1"),
+        dst: [10, 0, 1, 1],
+    };
+    assert_eq!(decode::<EngineCmd>(&encode(&cmd)).unwrap(), cmd);
+    let out: Vec<EngineEvent> = decode(&e.handle_bytes(&encode(&EngineCmd::Step))).unwrap();
+    assert!(matches!(out[0], EngineEvent::Idle { .. }));
+    let hop = EngineEvent::Hop {
+        ns: 5,
+        device: 1,
+        port: 2,
+        summary: "x".into(),
+        bytes: 60,
+    };
+    assert_eq!(decode::<EngineEvent>(&encode(&hop)).unwrap(), hop);
+}

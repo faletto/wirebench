@@ -7,6 +7,8 @@ use wire::MacAddr;
 /// Transparent learning bridge (no VLANs or STP yet).
 #[derive(Debug)]
 pub struct L2Switch {
+    /// Hostname shown in prompts.
+    pub name: String,
     n_ports: u16,
     table: BTreeMap<MacAddr, (PortId, SimTime)>,
     /// Entries unseen for this long are ignored (and replaced on next sight).
@@ -16,10 +18,15 @@ pub struct L2Switch {
 impl L2Switch {
     pub fn new(n_ports: u16) -> Self {
         L2Switch {
+            name: "switch".to_string(),
             n_ports,
             table: BTreeMap::new(),
             aging: SimTime::from_secs(300),
         }
+    }
+
+    pub fn n_ports(&self) -> u16 {
+        self.n_ports
     }
 
     /// Live MAC table entries at `now`, in address order.

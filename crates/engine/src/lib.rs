@@ -10,6 +10,21 @@ pub mod shell;
 use kernel::{DeviceId, Event, Kernel, LinkConfig, LinkId, PortId, SimTime, Trace};
 use netdev::{Ctx, Device, DeviceEvent};
 
+/// One event as seen by the stepper, for simulation mode.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Delivered {
+    Frame {
+        at: SimTime,
+        device: DeviceId,
+        port: PortId,
+        frame: Vec<u8>,
+    },
+    Timer {
+        at: SimTime,
+        device: DeviceId,
+    },
+}
+
 pub struct World {
     pub kernel: Kernel,
     devices: Vec<Box<dyn Device>>,
@@ -73,6 +88,34 @@ impl World {
         };
         let mut ctx = Ctx::new(&mut self.kernel, id);
         self.devices[id.0 as usize].handle(&mut ctx, dev_ev);
+    }
+
+    pub fn is_device<T: Device>(&self, id: DeviceId) -> bool {
+        self.devices[id.0 as usize].as_any().is::<T>()
+    }
+
+    /// Dispatch exactly one event and report what was delivered, or `None` when idle.
+    pub fn step(&mut self) -> Option<Delivered> {
+        let ev = self.kernel.next_event()?;
+        let at = self.kernel.now();
+        let d = match &ev {
+            Event::FrameRx {
+                device,
+                port,
+                frame,
+            } => Delivered::Frame {
+                at,
+                device: *device,
+                port: *port,
+                frame: frame.clone(),
+            },
+            Event::Timer { device, .. } => Delivered::Timer {
+                at,
+                device: *device,
+            },
+        };
+        self.dispatch(ev);
+        Some(d)
     }
 
     /// Run all events up to and including `t`, leaving the clock at `t`.

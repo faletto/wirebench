@@ -109,7 +109,7 @@ fn clicking_empty_canvas_does_not_change_the_selection() {
 }
 
 #[test]
-fn a_device_without_a_console_explains_itself() {
+fn clicking_a_switch_opens_its_console() {
     let lab = r#"format = "labsim-lab"
 version = 1
 [[device]]
@@ -128,11 +128,16 @@ b = "sw:Fa0/1"
 "#;
     let mut app = App::from_lab_text(lab).unwrap();
     let ctx = ready(&mut app);
+    let at = app.node_centre("pc").unwrap();
+    click(&ctx, &mut app, at);
     assert_eq!(app.active_device(), "pc");
     let at = app.node_centre("sw").unwrap();
     click(&ctx, &mut app, at);
-    assert_eq!(app.active_device(), "pc", "selection unchanged");
-    assert_eq!(app.status_notice(), Some("sw has no console yet"));
+    assert_eq!(app.active_device(), "sw");
+    assert_eq!(app.active_prompt(), "sw>");
+    type_line(&ctx, &mut app, "show mac address-table");
+    let out = app.active_scrollback().join("\n");
+    assert!(out.contains("(no addresses learned)"), "{out}");
 }
 
 #[test]

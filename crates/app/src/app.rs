@@ -2,11 +2,12 @@
 //! driven through the same `EngineCmd`/`EngineEvent` protocol the web build will use across
 //! a Worker.
 
-use crate::canvas::{Canvas, Node};
+use crate::canvas::{Canvas, CanvasEvent, Node, Tool};
+use crate::sim::{parse_ipv4, HopRow, Sim};
 use crate::term::TermModel;
 use crate::widget::{self, TermAction};
 use egui::{Key, Pos2, Ui};
-use engine::lab::{BuiltLab, LabKind};
+use engine::lab::{BuiltLab, LabDevice, LabKind, Topology};
 use engine::protocol::{Engine, EngineCmd, EngineEvent, ShellKind};
 
 /// The lab the app opens with until file loading exists.
@@ -30,6 +31,8 @@ struct NodeInfo {
     pos: [i32; 2],
     /// Index into `App::tabs`, if this device has a console.
     tab: Option<usize>,
+    /// Engine device id.
+    device: u32,
 }
 
 #[derive(Debug)]
@@ -42,10 +45,15 @@ pub struct App {
     tabs: Vec<Tab>,
     active: usize,
     canvas: Canvas,
+    topo: Topology,
+    tool: Tool,
+    /// First device of a cable being drawn with the Link tool.
+    link_from: Option<usize>,
     /// One-line message in the status bar (lab warnings, "no console" hints).
     notice: Option<String>,
     /// Set when a tab becomes active so its terminal grabs keyboard focus.
     focus_pending: bool,
+    sim: Sim,
     frame_ms: f32,
     /// Milliseconds from the start of loading to the first drawn frame (see `clock`).
     ready_ms: Option<f64>,
@@ -68,62 +76,45 @@ impl App {
     }
 
     pub fn from_built(built: BuiltLab) -> Self {
-        let BuiltLab {
-            world,
-            title,
-            devices,
-            links,
-            annotations,
-            warnings,
-        } = built;
+        let (world, topo, warnings) = built.into_parts();
         let mut engine = Engine::new(world);
         let mut nodes = Vec::new();
         let mut tabs: Vec<Tab> = Vec::new();
-        for d in &devices {
-            let shell = match d.kind {
-                LabKind::Router => Some(ShellKind::Router),
-                LabKind::Host => Some(ShellKind::Host),
-                LabKind::Switch => None,
-            };
-            let mut tab = None;
-            if let Some(kind) = shell {
-                engine = engine.with_kind(d.id, kind);
-                let (terminal, prompt) = open_terminal(&mut engine, d.id.0);
-                let mut model = TermModel::default();
-                model.push_output(&format!(
-                    "{}: type ? for help, Tab to complete. Try `enable`, `configure terminal`.",
-                    d.name
-                ));
-                tab = Some(tabs.len());
-                tabs.push(Tab {
-                    name: d.name.clone(),
-                    node: nodes.len(),
-                    device: d.id.0,
-                    terminal,
-                    prompt,
-                    model,
-                });
-            }
+        for d in &topo.devices {
+            let tab = Some(tabs.len());
+            tabs.push(new_tab(&mut engine, d, nodes.len()));
             nodes.push(NodeInfo {
                 name: d.name.clone(),
                 kind: d.kind,
                 pos: d.pos,
                 tab,
+                device: d.id.0,
             });
         }
         let notice = (!warnings.is_empty())
             .then(|| format!("lab: {} (+{} more)", warnings[0], warnings.len() - 1));
         App {
             engine,
-            title,
+            title: topo.title.clone(),
             nodes,
-            links: links.iter().map(|l| (l.a, l.b)).collect(),
-            notes: annotations.into_iter().map(|a| (a.text, a.pos)).collect(),
+            links: topo.links.iter().map(|l| (l.a, l.b)).collect(),
+            notes: topo
+                .annotations
+                .iter()
+                .map(|a| (a.text.clone(), a.pos))
+                .collect(),
+            topo,
+            tool: Tool::Select,
+            link_from: None,
             tabs,
             active: 0,
             canvas: Canvas::default(),
             notice,
             focus_pending: true,
+            sim: Sim {
+                dst: "10.0.2.2".into(),
+                ..Sim::default()
+            },
             frame_ms: 0.0,
             ready_ms: None,
         }
@@ -164,6 +155,292 @@ impl App {
             self.active = tab;
             self.focus_pending = true;
         }
+    }
+
+    // ---- editing ----
+
+    pub fn tool(&self) -> Tool {
+        self.tool
+    }
+
+    pub fn set_tool(&mut self, tool: Tool) {
+        self.tool = tool;
+        self.link_from = None;
+    }
+
+    /// Add a device at a canvas position and open its console.
+    pub fn add_device(&mut self, kind: LabKind, pos: [i32; 2]) {
+        match self.topo.add_device(&mut self.engine.world, kind, pos) {
+            Ok(i) => {
+                let d = self.topo.devices[i].clone();
+                self.tabs.push(new_tab(&mut self.engine, &d, i));
+                self.nodes.push(NodeInfo {
+                    name: d.name.clone(),
+                    kind: d.kind,
+                    pos,
+                    tab: Some(self.tabs.len() - 1),
+                    device: d.id.0,
+                });
+                self.notice = Some(format!("added {}", d.name));
+                self.select(self.tabs.len() - 1);
+            }
+            Err(e) => self.notice = Some(e.to_string()),
+        }
+    }
+
+    pub fn move_node(&mut self, node: usize, pos: [i32; 2]) {
+        if let Some(n) = self.nodes.get_mut(node) {
+            n.pos = pos;
+            self.topo.move_device(node, pos);
+        }
+    }
+
+    /// Cable two devices on their first free ports.
+    pub fn connect(&mut self, a: usize, b: usize) {
+        match self.topo.add_link(&mut self.engine.world, a, b) {
+            Ok(_) => {
+                self.links.push((a, b));
+                self.notice = None;
+            }
+            Err(e) => self.notice = Some(e.to_string()),
+        }
+    }
+
+    /// Remove a device and its cables. The world is rebuilt from the live configs, so
+    /// terminals, ARP caches, MAC tables and virtual time restart.
+    pub fn delete_device(&mut self, node: usize) {
+        let Some(name) = self.nodes.get(node).map(|n| n.name.clone()) else {
+            return;
+        };
+        match self.topo.without_device(&self.engine.world, node) {
+            Ok(lab) => self.rebuild(&lab, format!("removed {name}; consoles restarted")),
+            Err(e) => self.notice = Some(e.to_string()),
+        }
+    }
+
+    /// Remove a cable (index into the cable list); rebuilds like [`App::delete_device`].
+    pub fn delete_link(&mut self, link: usize) {
+        match self.topo.without_link(&self.engine.world, link) {
+            Ok(lab) => self.rebuild(&lab, "removed a cable; consoles restarted".into()),
+            Err(e) => self.notice = Some(e.to_string()),
+        }
+    }
+
+    fn rebuild(&mut self, lab: &labfile::LabFile, note: String) {
+        let active = self.tabs.get(self.active).map(|t| t.name.clone());
+        let built = match engine::lab::build(lab, kernel::Trace::new()) {
+            Ok(b) => b,
+            Err(e) => {
+                self.notice = Some(format!("could not rebuild the lab: {e}"));
+                return;
+            }
+        };
+        let mut fresh = App::from_built(built);
+        // Keep what is about the user's session rather than the lab.
+        fresh.canvas = std::mem::take(&mut self.canvas);
+        fresh.tool = self.tool;
+        fresh.sim.dst = std::mem::take(&mut self.sim.dst);
+        fresh.frame_ms = self.frame_ms;
+        fresh.ready_ms = self.ready_ms;
+        fresh.notice = Some(note);
+        if let Some(i) = active.and_then(|n| fresh.tabs.iter().position(|t| t.name == n)) {
+            fresh.active = i;
+        }
+        *self = fresh;
+    }
+
+    /// The lab as it is now (positions, cabling, live configs) as lab-file text.
+    pub fn export_lab(&self) -> String {
+        labfile::save(&self.topo.snapshot(&self.engine.world))
+    }
+
+    /// Names of devices in lab order (for tests and keyboard shortcuts).
+    pub fn device_names(&self) -> Vec<&str> {
+        self.nodes.iter().map(|n| n.name.as_str()).collect()
+    }
+
+    /// Cables as pairs of device names, in lab order.
+    pub fn cables(&self) -> Vec<(&str, &str)> {
+        self.links
+            .iter()
+            .map(|&(a, b)| (self.nodes[a].name.as_str(), self.nodes[b].name.as_str()))
+            .collect()
+    }
+
+    fn handle_canvas(&mut self, events: Vec<CanvasEvent>) {
+        for ev in events {
+            match ev {
+                CanvasEvent::Open(i) => match self.nodes[i].tab {
+                    Some(t) => {
+                        self.notice = None;
+                        self.select(t);
+                        // Clicking the already-active device still returns focus to its terminal.
+                        self.focus_pending = true;
+                    }
+                    None => {
+                        self.notice = Some(format!("{} has no console yet", self.nodes[i].name))
+                    }
+                },
+                CanvasEvent::Moved(i, pos) => self.move_node(i, pos),
+                CanvasEvent::Place(pos) => {
+                    if let Tool::Place(kind) = self.tool {
+                        self.add_device(kind, pos);
+                    }
+                }
+                CanvasEvent::LinkEnd(i) => match self.link_from.take() {
+                    None => self.link_from = Some(i),
+                    Some(a) => self.connect(a, i),
+                },
+                // Rebuilds invalidate every index, so nothing after these is applied.
+                CanvasEvent::DeleteNode(i) => return self.delete_device(i),
+                CanvasEvent::DeleteLink(k) => return self.delete_link(k),
+            }
+        }
+    }
+
+    fn tool_bar(&mut self, ui: &mut Ui) {
+        ui.horizontal_wrapped(|ui| {
+            for (tool, label) in [
+                (Tool::Select, "Select"),
+                (Tool::Place(LabKind::Host), "+ PC"),
+                (Tool::Place(LabKind::Switch), "+ Switch"),
+                (Tool::Place(LabKind::Router), "+ Router"),
+                (Tool::Link, "Cable"),
+                (Tool::Delete, "Delete"),
+            ] {
+                if ui.selectable_label(self.tool == tool, label).clicked() {
+                    self.set_tool(tool);
+                }
+            }
+            ui.weak(self.tool.hint());
+        });
+    }
+
+    // ---- simulation mode ----
+
+    /// Logged frame deliveries, oldest first.
+    pub fn sim_hops(&self) -> &[HopRow] {
+        &self.sim.hops
+    }
+
+    /// Queue one echo request from PC `from` without advancing time.
+    pub fn sim_queue_ping(&mut self, from: &str, dst: [u8; 4]) {
+        let Some(n) = self.nodes.iter().find(|n| n.name == from) else {
+            self.notice = Some(format!("no device named {from}"));
+            return;
+        };
+        let device = n.device;
+        let ev = self.engine.handle(EngineCmd::PingOnce { device, dst });
+        self.apply_sim(ev);
+    }
+
+    /// Dispatch one event. Returns false once nothing is left to do.
+    pub fn sim_step(&mut self) -> bool {
+        let ev = self.engine.handle(EngineCmd::Step);
+        let more = !matches!(ev.first(), Some(EngineEvent::Idle { .. }));
+        self.apply_sim(ev);
+        more
+    }
+
+    /// Step to idle, logging every hop. Capped so a runaway lab cannot hang the UI.
+    pub fn sim_run(&mut self) {
+        for _ in 0..100_000 {
+            if !self.sim_step() {
+                return;
+            }
+        }
+        self.notice = Some("stopped after 100000 events; Run again to continue".into());
+    }
+
+    fn apply_sim(&mut self, events: Vec<EngineEvent>) {
+        for e in events {
+            match e {
+                EngineEvent::Hop {
+                    ns,
+                    device,
+                    port,
+                    summary,
+                    ..
+                } => {
+                    let name = self
+                        .nodes
+                        .iter()
+                        .find(|n| n.device == device)
+                        .map_or_else(|| format!("#{device}"), |n| n.name.clone());
+                    self.sim.hops.push(HopRow {
+                        ns,
+                        device: name,
+                        port,
+                        summary,
+                    });
+                }
+                EngineEvent::Error { message } => self.notice = Some(message),
+                _ => {}
+            }
+        }
+    }
+
+    fn sim_panel(&mut self, ui: &mut Ui) {
+        ui.heading("Simulation");
+        let pcs: Vec<usize> = (0..self.nodes.len())
+            .filter(|&i| self.nodes[i].kind == LabKind::Host)
+            .collect();
+        if self.sim.src.is_none_or(|s| !pcs.contains(&s)) {
+            self.sim.src = pcs.first().copied();
+        }
+        let src_name = |s: Option<usize>, nodes: &[NodeInfo]| {
+            s.map_or_else(|| "(no PC)".to_string(), |i| nodes[i].name.clone())
+        };
+        ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt("sim_src")
+                .selected_text(src_name(self.sim.src, &self.nodes))
+                .show_ui(ui, |ui| {
+                    for &i in &pcs {
+                        ui.selectable_value(&mut self.sim.src, Some(i), &self.nodes[i].name);
+                    }
+                });
+            ui.add(egui::TextEdit::singleline(&mut self.sim.dst).desired_width(96.0));
+        });
+        let dst = parse_ipv4(&self.sim.dst);
+        ui.horizontal_wrapped(|ui| {
+            let can_ping = dst.is_some() && self.sim.src.is_some();
+            if ui
+                .add_enabled(can_ping, egui::Button::new("Queue ping"))
+                .clicked()
+            {
+                if let (Some(d), Some(s)) = (dst, self.sim.src) {
+                    let name = self.nodes[s].name.clone();
+                    self.sim_queue_ping(&name, d);
+                }
+            }
+            if ui.button("Step").clicked() {
+                self.sim_step();
+            }
+            if ui.button("Run").clicked() {
+                self.sim_run();
+            }
+            if ui.button("Clear").clicked() {
+                self.sim.hops.clear();
+            }
+        });
+        ui.separator();
+        egui::ScrollArea::vertical()
+            .stick_to_bottom(true)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                if self.sim.hops.is_empty() {
+                    ui.weak("Queue a ping, then Step to follow each frame.");
+                }
+                for h in &self.sim.hops {
+                    ui.label(format!(
+                        "{:>9.3} ms  {}:{}  {}",
+                        h.ns as f64 / 1e6,
+                        h.device,
+                        h.port,
+                        h.summary
+                    ));
+                }
+            });
     }
 
     /// Run one terminal action against the engine and print the result.
@@ -232,6 +509,9 @@ impl App {
             }
         }
 
+        if ui.input(|i| i.key_pressed(Key::Escape)) {
+            self.set_tool(Tool::Select);
+        }
         egui::Panel::top("tabs").show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.strong(&self.title);
@@ -248,6 +528,7 @@ impl App {
             .resizable(true)
             .default_size(230.0)
             .show(ui, |ui| {
+                self.tool_bar(ui);
                 let active_node = self.tabs[self.active].node;
                 let nodes: Vec<Node> = self
                     .nodes
@@ -257,24 +538,24 @@ impl App {
                         name: n.name.clone(),
                         kind: n.kind,
                         pos: n.pos,
-                        selected: i == active_node,
+                        selected: i == active_node || self.link_from == Some(i),
                         has_console: n.tab.is_some(),
                     })
                     .collect();
-                if let Some(i) = self.canvas.show(ui, &nodes, &self.links, &self.notes) {
-                    match self.nodes[i].tab {
-                        Some(t) => {
-                            self.notice = None;
-                            self.select(t);
-                            // Clicking the already-active device still returns focus to its terminal.
-                            self.focus_pending = true;
-                        }
-                        None => {
-                            self.notice = Some(format!("{} has no console yet", self.nodes[i].name))
-                        }
-                    }
-                }
+                let events = self.canvas.show(
+                    ui,
+                    &nodes,
+                    &self.links,
+                    &self.notes,
+                    self.tool,
+                    self.link_from,
+                );
+                self.handle_canvas(events);
             });
+        egui::Panel::right("sim")
+            .resizable(true)
+            .default_size(300.0)
+            .show(ui, |ui| self.sim_panel(ui));
         egui::Panel::bottom("status").show(ui, |ui| {
             let now = self.engine.world.kernel.now().0;
             ui.horizontal_wrapped(|ui| {
@@ -303,6 +584,30 @@ impl App {
                 self.apply(active, a);
             }
         });
+    }
+}
+
+/// Register the device's console kind with the engine and open its first terminal.
+fn new_tab(engine: &mut Engine, d: &LabDevice, node: usize) -> Tab {
+    let kind = match d.kind {
+        LabKind::Router => ShellKind::Router,
+        LabKind::Host => ShellKind::Host,
+        LabKind::Switch => ShellKind::Switch,
+    };
+    engine.set_kind(d.id, kind);
+    let (terminal, prompt) = open_terminal(engine, d.id.0);
+    let mut model = TermModel::default();
+    model.push_output(&format!(
+        "{}: type ? for help, Tab to complete. Try `enable`, `configure terminal`.",
+        d.name
+    ));
+    Tab {
+        name: d.name.clone(),
+        node,
+        device: d.id.0,
+        terminal,
+        prompt,
+        model,
     }
 }
 

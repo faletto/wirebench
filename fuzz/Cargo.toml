@@ -59,3 +59,15 @@ name = "device_frames"
 path = "fuzz_targets/device_frames.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "wire_summary"
+path = "fuzz_targets/wire_summary.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "lab_edit"
+path = "fuzz_targets/lab_edit.rs"
+test = false
+doc = false
