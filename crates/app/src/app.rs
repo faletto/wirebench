@@ -2,12 +2,12 @@
 //! driven through the same `EngineCmd`/`EngineEvent` protocol the web build will use across
 //! a Worker.
 
-use crate::canvas::{Canvas, Node};
+use crate::canvas::{Canvas, CanvasEvent, Node, Tool};
 use crate::sim::{parse_ipv4, HopRow, Sim};
 use crate::term::TermModel;
 use crate::widget::{self, TermAction};
 use egui::{Key, Pos2, Ui};
-use engine::lab::{BuiltLab, LabKind};
+use engine::lab::{BuiltLab, LabDevice, LabKind, Topology};
 use engine::protocol::{Engine, EngineCmd, EngineEvent, ShellKind};
 
 /// The lab the app opens with until file loading exists.
@@ -45,6 +45,10 @@ pub struct App {
     tabs: Vec<Tab>,
     active: usize,
     canvas: Canvas,
+    topo: Topology,
+    tool: Tool,
+    /// First device of a cable being drawn with the Link tool.
+    link_from: Option<usize>,
     /// One-line message in the status bar (lab warnings, "no console" hints).
     notice: Option<String>,
     /// Set when a tab becomes active so its terminal grabs keyboard focus.
@@ -72,42 +76,13 @@ impl App {
     }
 
     pub fn from_built(built: BuiltLab) -> Self {
-        let BuiltLab {
-            world,
-            title,
-            devices,
-            links,
-            annotations,
-            warnings,
-        } = built;
+        let (world, topo, warnings) = built.into_parts();
         let mut engine = Engine::new(world);
         let mut nodes = Vec::new();
         let mut tabs: Vec<Tab> = Vec::new();
-        for d in &devices {
-            let shell = match d.kind {
-                LabKind::Router => Some(ShellKind::Router),
-                LabKind::Host => Some(ShellKind::Host),
-                LabKind::Switch => Some(ShellKind::Switch),
-            };
-            let mut tab = None;
-            if let Some(kind) = shell {
-                engine = engine.with_kind(d.id, kind);
-                let (terminal, prompt) = open_terminal(&mut engine, d.id.0);
-                let mut model = TermModel::default();
-                model.push_output(&format!(
-                    "{}: type ? for help, Tab to complete. Try `enable`, `configure terminal`.",
-                    d.name
-                ));
-                tab = Some(tabs.len());
-                tabs.push(Tab {
-                    name: d.name.clone(),
-                    node: nodes.len(),
-                    device: d.id.0,
-                    terminal,
-                    prompt,
-                    model,
-                });
-            }
+        for d in &topo.devices {
+            let tab = Some(tabs.len());
+            tabs.push(new_tab(&mut engine, d, nodes.len()));
             nodes.push(NodeInfo {
                 name: d.name.clone(),
                 kind: d.kind,
@@ -120,10 +95,17 @@ impl App {
             .then(|| format!("lab: {} (+{} more)", warnings[0], warnings.len() - 1));
         App {
             engine,
-            title,
+            title: topo.title.clone(),
             nodes,
-            links: links.iter().map(|l| (l.a, l.b)).collect(),
-            notes: annotations.into_iter().map(|a| (a.text, a.pos)).collect(),
+            links: topo.links.iter().map(|l| (l.a, l.b)).collect(),
+            notes: topo
+                .annotations
+                .iter()
+                .map(|a| (a.text.clone(), a.pos))
+                .collect(),
+            topo,
+            tool: Tool::Select,
+            link_from: None,
             tabs,
             active: 0,
             canvas: Canvas::default(),
@@ -173,6 +155,165 @@ impl App {
             self.active = tab;
             self.focus_pending = true;
         }
+    }
+
+    // ---- editing ----
+
+    pub fn tool(&self) -> Tool {
+        self.tool
+    }
+
+    pub fn set_tool(&mut self, tool: Tool) {
+        self.tool = tool;
+        self.link_from = None;
+    }
+
+    /// Add a device at a canvas position and open its console.
+    pub fn add_device(&mut self, kind: LabKind, pos: [i32; 2]) {
+        match self.topo.add_device(&mut self.engine.world, kind, pos) {
+            Ok(i) => {
+                let d = self.topo.devices[i].clone();
+                self.tabs.push(new_tab(&mut self.engine, &d, i));
+                self.nodes.push(NodeInfo {
+                    name: d.name.clone(),
+                    kind: d.kind,
+                    pos,
+                    tab: Some(self.tabs.len() - 1),
+                    device: d.id.0,
+                });
+                self.notice = Some(format!("added {}", d.name));
+                self.select(self.tabs.len() - 1);
+            }
+            Err(e) => self.notice = Some(e.to_string()),
+        }
+    }
+
+    pub fn move_node(&mut self, node: usize, pos: [i32; 2]) {
+        if let Some(n) = self.nodes.get_mut(node) {
+            n.pos = pos;
+            self.topo.move_device(node, pos);
+        }
+    }
+
+    /// Cable two devices on their first free ports.
+    pub fn connect(&mut self, a: usize, b: usize) {
+        match self.topo.add_link(&mut self.engine.world, a, b) {
+            Ok(_) => {
+                self.links.push((a, b));
+                self.notice = None;
+            }
+            Err(e) => self.notice = Some(e.to_string()),
+        }
+    }
+
+    /// Remove a device and its cables. The world is rebuilt from the live configs, so
+    /// terminals, ARP caches, MAC tables and virtual time restart.
+    pub fn delete_device(&mut self, node: usize) {
+        let Some(name) = self.nodes.get(node).map(|n| n.name.clone()) else {
+            return;
+        };
+        match self.topo.without_device(&self.engine.world, node) {
+            Ok(lab) => self.rebuild(&lab, format!("removed {name}; consoles restarted")),
+            Err(e) => self.notice = Some(e.to_string()),
+        }
+    }
+
+    /// Remove a cable (index into the cable list); rebuilds like [`App::delete_device`].
+    pub fn delete_link(&mut self, link: usize) {
+        match self.topo.without_link(&self.engine.world, link) {
+            Ok(lab) => self.rebuild(&lab, "removed a cable; consoles restarted".into()),
+            Err(e) => self.notice = Some(e.to_string()),
+        }
+    }
+
+    fn rebuild(&mut self, lab: &labfile::LabFile, note: String) {
+        let active = self.tabs.get(self.active).map(|t| t.name.clone());
+        let built = match engine::lab::build(lab, kernel::Trace::new()) {
+            Ok(b) => b,
+            Err(e) => {
+                self.notice = Some(format!("could not rebuild the lab: {e}"));
+                return;
+            }
+        };
+        let mut fresh = App::from_built(built);
+        // Keep what is about the user's session rather than the lab.
+        fresh.canvas = std::mem::take(&mut self.canvas);
+        fresh.tool = self.tool;
+        fresh.sim.dst = std::mem::take(&mut self.sim.dst);
+        fresh.frame_ms = self.frame_ms;
+        fresh.ready_ms = self.ready_ms;
+        fresh.notice = Some(note);
+        if let Some(i) = active.and_then(|n| fresh.tabs.iter().position(|t| t.name == n)) {
+            fresh.active = i;
+        }
+        *self = fresh;
+    }
+
+    /// The lab as it is now (positions, cabling, live configs) as lab-file text.
+    pub fn export_lab(&self) -> String {
+        labfile::save(&self.topo.snapshot(&self.engine.world))
+    }
+
+    /// Names of devices in lab order (for tests and keyboard shortcuts).
+    pub fn device_names(&self) -> Vec<&str> {
+        self.nodes.iter().map(|n| n.name.as_str()).collect()
+    }
+
+    /// Cables as pairs of device names, in lab order.
+    pub fn cables(&self) -> Vec<(&str, &str)> {
+        self.links
+            .iter()
+            .map(|&(a, b)| (self.nodes[a].name.as_str(), self.nodes[b].name.as_str()))
+            .collect()
+    }
+
+    fn handle_canvas(&mut self, events: Vec<CanvasEvent>) {
+        for ev in events {
+            match ev {
+                CanvasEvent::Open(i) => match self.nodes[i].tab {
+                    Some(t) => {
+                        self.notice = None;
+                        self.select(t);
+                        // Clicking the already-active device still returns focus to its terminal.
+                        self.focus_pending = true;
+                    }
+                    None => {
+                        self.notice = Some(format!("{} has no console yet", self.nodes[i].name))
+                    }
+                },
+                CanvasEvent::Moved(i, pos) => self.move_node(i, pos),
+                CanvasEvent::Place(pos) => {
+                    if let Tool::Place(kind) = self.tool {
+                        self.add_device(kind, pos);
+                    }
+                }
+                CanvasEvent::LinkEnd(i) => match self.link_from.take() {
+                    None => self.link_from = Some(i),
+                    Some(a) => self.connect(a, i),
+                },
+                // Rebuilds invalidate every index, so nothing after these is applied.
+                CanvasEvent::DeleteNode(i) => return self.delete_device(i),
+                CanvasEvent::DeleteLink(k) => return self.delete_link(k),
+            }
+        }
+    }
+
+    fn tool_bar(&mut self, ui: &mut Ui) {
+        ui.horizontal_wrapped(|ui| {
+            for (tool, label) in [
+                (Tool::Select, "Select"),
+                (Tool::Place(LabKind::Host), "+ PC"),
+                (Tool::Place(LabKind::Switch), "+ Switch"),
+                (Tool::Place(LabKind::Router), "+ Router"),
+                (Tool::Link, "Cable"),
+                (Tool::Delete, "Delete"),
+            ] {
+                if ui.selectable_label(self.tool == tool, label).clicked() {
+                    self.set_tool(tool);
+                }
+            }
+            ui.weak(self.tool.hint());
+        });
     }
 
     // ---- simulation mode ----
@@ -368,6 +509,9 @@ impl App {
             }
         }
 
+        if ui.input(|i| i.key_pressed(Key::Escape)) {
+            self.set_tool(Tool::Select);
+        }
         egui::Panel::top("tabs").show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.strong(&self.title);
@@ -384,6 +528,7 @@ impl App {
             .resizable(true)
             .default_size(230.0)
             .show(ui, |ui| {
+                self.tool_bar(ui);
                 let active_node = self.tabs[self.active].node;
                 let nodes: Vec<Node> = self
                     .nodes
@@ -393,23 +538,19 @@ impl App {
                         name: n.name.clone(),
                         kind: n.kind,
                         pos: n.pos,
-                        selected: i == active_node,
+                        selected: i == active_node || self.link_from == Some(i),
                         has_console: n.tab.is_some(),
                     })
                     .collect();
-                if let Some(i) = self.canvas.show(ui, &nodes, &self.links, &self.notes) {
-                    match self.nodes[i].tab {
-                        Some(t) => {
-                            self.notice = None;
-                            self.select(t);
-                            // Clicking the already-active device still returns focus to its terminal.
-                            self.focus_pending = true;
-                        }
-                        None => {
-                            self.notice = Some(format!("{} has no console yet", self.nodes[i].name))
-                        }
-                    }
-                }
+                let events = self.canvas.show(
+                    ui,
+                    &nodes,
+                    &self.links,
+                    &self.notes,
+                    self.tool,
+                    self.link_from,
+                );
+                self.handle_canvas(events);
             });
         egui::Panel::right("sim")
             .resizable(true)
@@ -443,6 +584,30 @@ impl App {
                 self.apply(active, a);
             }
         });
+    }
+}
+
+/// Register the device's console kind with the engine and open its first terminal.
+fn new_tab(engine: &mut Engine, d: &LabDevice, node: usize) -> Tab {
+    let kind = match d.kind {
+        LabKind::Router => ShellKind::Router,
+        LabKind::Host => ShellKind::Host,
+        LabKind::Switch => ShellKind::Switch,
+    };
+    engine.set_kind(d.id, kind);
+    let (terminal, prompt) = open_terminal(engine, d.id.0);
+    let mut model = TermModel::default();
+    model.push_output(&format!(
+        "{}: type ? for help, Tab to complete. Try `enable`, `configure terminal`.",
+        d.name
+    ));
+    Tab {
+        name: d.name.clone(),
+        node,
+        device: d.id.0,
+        terminal,
+        prompt,
+        model,
     }
 }
 

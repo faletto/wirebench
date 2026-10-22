@@ -9,6 +9,7 @@ mod term;
 pub mod widget;
 
 pub use app::App;
+pub use canvas::Tool;
 pub use sim::HopRow;
 pub use term::TermModel;
 

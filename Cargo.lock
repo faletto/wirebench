@@ -162,6 +162,7 @@ dependencies = [
  "egui",
  "engine",
  "kernel",
+ "labfile",
  "wasm-bindgen-futures",
  "web-sys",
 ]

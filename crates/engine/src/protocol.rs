@@ -122,8 +122,13 @@ impl Engine {
     }
 
     pub fn with_kind(mut self, device: DeviceId, kind: ShellKind) -> Self {
-        self.kinds.insert(device.0, kind);
+        self.set_kind(device, kind);
         self
+    }
+
+    /// Declare what console a device gets (needed for devices added after construction).
+    pub fn set_kind(&mut self, device: DeviceId, kind: ShellKind) {
+        self.kinds.insert(device.0, kind);
     }
 
     pub fn handle(&mut self, cmd: EngineCmd) -> Vec<EngineEvent> {

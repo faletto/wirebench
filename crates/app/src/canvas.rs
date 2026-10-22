@@ -8,6 +8,41 @@ use egui::{
 };
 use engine::lab::LabKind;
 
+/// What a click on the canvas does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tool {
+    /// Click opens a console, drag moves a device, drag the background pans.
+    Select,
+    /// Click empty space to add a device of this kind.
+    Place(LabKind),
+    /// Click two devices to cable them.
+    Link,
+    /// Click a device or a cable to remove it.
+    Delete,
+}
+
+impl Tool {
+    pub fn hint(self) -> &'static str {
+        match self {
+            Tool::Select => "click a device to open it · drag to move · drag background to pan",
+            Tool::Place(_) => "click empty space to place a device · Esc to stop",
+            Tool::Link => "click two devices to cable them · Esc to cancel",
+            Tool::Delete => "click a device or a cable to remove it · Esc to stop",
+        }
+    }
+}
+
+/// Something the user did on the canvas, for the app to act on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CanvasEvent {
+    Open(usize),
+    Moved(usize, [i32; 2]),
+    Place([i32; 2]),
+    LinkEnd(usize),
+    DeleteNode(usize),
+    DeleteLink(usize),
+}
+
 /// Node size in logical units, before zoom.
 const NODE: Vec2 = Vec2::new(64.0, 44.0);
 const MIN_ZOOM: f32 = 0.25;
@@ -35,6 +70,11 @@ impl Default for View {
 impl View {
     pub fn to_screen(self, origin: Pos2, p: [i32; 2]) -> Pos2 {
         origin + self.pan + Vec2::new(p[0] as f32, p[1] as f32) * self.zoom
+    }
+
+    /// Inverse of [`View::to_screen`], in fractional world units.
+    pub fn to_world(self, origin: Pos2, screen: Pos2) -> Vec2 {
+        (screen - origin - self.pan) / self.zoom
     }
 
     /// Scale by `factor` keeping the world point under `anchor` (a screen position) fixed.
@@ -93,19 +133,24 @@ pub struct Node {
 #[derive(Debug, Default, Clone)]
 pub struct Canvas {
     pub view: View,
+    /// While dragging a node: pointer offset from the node's centre, in world units.
+    grab: Option<Vec2>,
     /// Screen-space centres from the last frame, for tests and keyboard hints.
     pub last_centres: Vec<Pos2>,
 }
 
 impl Canvas {
-    /// Draw and handle input. Returns the index of a node the user clicked, if any.
+    /// Draw and handle input. Returns what the user did, in order.
     pub fn show(
         &mut self,
         ui: &mut Ui,
         nodes: &[Node],
         links: &[(usize, usize)],
         notes: &[(String, [i32; 2])],
-    ) -> Option<usize> {
+        tool: Tool,
+        link_from: Option<usize>,
+    ) -> Vec<CanvasEvent> {
+        let mut events = Vec::new();
         let (rect, bg) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
         let origin = rect.min;
         if !self.view.fitted {
@@ -146,6 +191,32 @@ impl Canvas {
         for &(a, b) in links {
             painter.line_segment([self.last_centres[a], self.last_centres[b]], link_stroke);
         }
+        // Rubber band from the first device of a cable being drawn.
+        if let (Some(a), Some(ptr)) = (link_from, ui.input(|i| i.pointer.hover_pos())) {
+            if let Some(&from) = self.last_centres.get(a) {
+                painter.line_segment([from, ptr], Stroke::new(2.0, v.selection.stroke.color));
+            }
+        }
+        // Background clicks: place a device, or remove the cable under the pointer.
+        if bg.clicked() {
+            if let Some(p) = bg.interact_pointer_pos() {
+                match tool {
+                    Tool::Place(_) => {
+                        let w = self.view.to_world(origin, p);
+                        events.push(CanvasEvent::Place([w.x.round() as i32, w.y.round() as i32]));
+                    }
+                    Tool::Delete => {
+                        let hit = links.iter().position(|&(a, b)| {
+                            dist_to_segment(p, self.last_centres[a], self.last_centres[b]) < 7.0
+                        });
+                        if let Some(k) = hit {
+                            events.push(CanvasEvent::DeleteLink(k));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
         for (text, pos) in notes {
             painter.text(
                 self.view.to_screen(origin, *pos),
@@ -156,11 +227,10 @@ impl Canvas {
             );
         }
 
-        let mut clicked = None;
         for (i, n) in nodes.iter().enumerate() {
             let r = node_rect(&self.view, origin, n.pos);
             let id = ui.make_persistent_id(("node", i));
-            let resp = ui.interact(r, id, Sense::click());
+            let resp = ui.interact(r, id, Sense::click_and_drag());
             let role = if n.has_console {
                 "Open terminal"
             } else {
@@ -174,8 +244,37 @@ impl Canvas {
                 )
             });
             let resp = resp.on_hover_text(format!("{} ({})", n.name, kind_name(n.kind)));
-            if resp.clicked() {
-                clicked = Some(i);
+            match tool {
+                Tool::Select => {
+                    if resp.clicked() {
+                        events.push(CanvasEvent::Open(i));
+                    }
+                    let ptr = resp.interact_pointer_pos();
+                    if resp.drag_started() {
+                        // Measure from where the button went down, not from where egui
+                        // noticed a drag, or the node would lag the cursor by the drag threshold.
+                        let press = ui.input(|i| i.pointer.press_origin()).or(ptr);
+                        self.grab = press.map(|p| {
+                            self.view.to_world(origin, p)
+                                - Vec2::new(n.pos[0] as f32, n.pos[1] as f32)
+                        });
+                    }
+                    if resp.dragged() {
+                        if let (Some(p), Some(g)) = (ptr, self.grab) {
+                            let w = self.view.to_world(origin, p) - g;
+                            let pos = [w.x.round() as i32, w.y.round() as i32];
+                            if pos != n.pos {
+                                events.push(CanvasEvent::Moved(i, pos));
+                            }
+                        }
+                    }
+                    if resp.drag_stopped() {
+                        self.grab = None;
+                    }
+                }
+                Tool::Link if resp.clicked() => events.push(CanvasEvent::LinkEnd(i)),
+                Tool::Delete if resp.clicked() => events.push(CanvasEvent::DeleteNode(i)),
+                _ => {}
             }
             draw_node(
                 &painter,
@@ -186,8 +285,20 @@ impl Canvas {
                 self.view.zoom,
             );
         }
-        clicked
+        events
     }
+}
+
+/// Distance from `p` to the segment `a`-`b`, in screen pixels.
+fn dist_to_segment(p: Pos2, a: Pos2, b: Pos2) -> f32 {
+    let ab = b - a;
+    let len2 = ab.length_sq();
+    let t = if len2 == 0.0 {
+        0.0
+    } else {
+        ((p - a).dot(ab) / len2).clamp(0.0, 1.0)
+    };
+    (p - (a + ab * t)).length()
 }
 
 fn kind_name(k: LabKind) -> &'static str {
@@ -321,6 +432,26 @@ mod tests {
         assert_eq!(v.zoom, 2.0);
         let after = v.to_screen(origin, world);
         assert!((after - anchor).length() < 1e-3, "{after:?} vs {anchor:?}");
+    }
+
+    #[test]
+    fn to_world_inverts_to_screen() {
+        let v = View {
+            pan: Vec2::new(17.0, -9.0),
+            zoom: 1.75,
+            fitted: true,
+        };
+        let origin = Pos2::new(40.0, 25.0);
+        let w = v.to_world(origin, v.to_screen(origin, [123, -45]));
+        assert!((w - Vec2::new(123.0, -45.0)).length() < 1e-3, "{w:?}");
+    }
+
+    #[test]
+    fn segment_distance_clamps_to_the_ends() {
+        let (a, b) = (Pos2::new(0.0, 0.0), Pos2::new(10.0, 0.0));
+        assert_eq!(dist_to_segment(Pos2::new(5.0, 3.0), a, b), 3.0);
+        assert_eq!(dist_to_segment(Pos2::new(-4.0, 3.0), a, b), 5.0);
+        assert_eq!(dist_to_segment(Pos2::new(1.0, 1.0), a, a), 2f32.sqrt());
     }
 
     #[test]

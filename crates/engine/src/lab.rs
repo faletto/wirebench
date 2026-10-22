@@ -22,6 +22,7 @@ pub struct LabDevice {
     pub id: DeviceId,
     pub kind: LabKind,
     pub pos: [i32; 2],
+    pub ports: u16,
 }
 
 /// A cable between two entries of [`BuiltLab::devices`].
@@ -29,6 +30,9 @@ pub struct LabDevice {
 pub struct LabLink {
     pub a: usize,
     pub b: usize,
+    /// Port index on each end (0-based, as in the engine; names differ per device kind).
+    pub pa: u16,
+    pub pb: u16,
 }
 
 #[derive(Debug)]
@@ -40,6 +44,8 @@ pub struct BuiltLab {
     pub annotations: Vec<Annotation>,
     /// Non-fatal problems, e.g. a config line the CLI rejected.
     pub warnings: Vec<String>,
+    /// The file this was built from; the static half of [`Topology`].
+    pub lab: LabFile,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -133,6 +139,51 @@ fn parse_cidr(s: &str) -> Option<(Ipv4Addr, u8)> {
     Some((Ipv4Addr(o), len))
 }
 
+/// Create the device a lab entry describes inside `world`.
+fn instantiate(
+    world: &mut World,
+    d: &labfile::Device,
+    unit: u8,
+) -> Result<(DeviceId, LabKind, u16), BuildError> {
+    let t = template(&d.template).ok_or_else(|| BuildError::UnknownTemplate {
+        device: d.name.clone(),
+        template: d.template.clone(),
+    })?;
+    Ok(match t {
+        Template::Router(n) => (
+            world.add_device(Router::new(&d.name, unit, n)),
+            LabKind::Router,
+            n,
+        ),
+        Template::Switch(n) => {
+            let mut sw = L2Switch::new(n);
+            sw.name = d.name.clone();
+            (world.add_device(sw), LabKind::Switch, n)
+        }
+        Template::Host => {
+            let mut h = Host::new(
+                &d.name,
+                MacAddr([2, 0, 0, 0, unit, 1]),
+                Ipv4Addr::UNSPECIFIED,
+                0,
+            );
+            if let Some(cfg) = &d.host {
+                let bad = |v: &str| BuildError::BadHostAddress {
+                    device: d.name.clone(),
+                    value: v.to_string(),
+                };
+                let (ip, len) = parse_cidr(&cfg.ipv4).ok_or_else(|| bad(&cfg.ipv4))?;
+                h.ip = ip;
+                h.prefix_len = len;
+                if let Some(g) = &cfg.gateway {
+                    h.gateway = Some(parse_cidr(&format!("{g}/32")).ok_or_else(|| bad(g))?.0);
+                }
+            }
+            (world.add_device(h), LabKind::Host, 1)
+        }
+    })
+}
+
 pub fn build(lab: &LabFile, trace: Trace) -> Result<BuiltLab, BuildError> {
     if lab.devices.len() > 255 {
         return Err(BuildError::TooManyDevices);
@@ -147,49 +198,13 @@ pub fn build(lab: &LabFile, trace: Trace) -> Result<BuiltLab, BuildError> {
             return Err(BuildError::DuplicateDevice(d.name.clone()));
         }
         // The index doubles as the MAC "unit", so addresses are unique and deterministic.
-        let unit = i as u8;
-        let t = template(&d.template).ok_or_else(|| BuildError::UnknownTemplate {
-            device: d.name.clone(),
-            template: d.template.clone(),
-        })?;
-        let (id, kind, ports) = match t {
-            Template::Router(n) => (
-                world.add_device(Router::new(&d.name, unit, n)),
-                LabKind::Router,
-                n,
-            ),
-            Template::Switch(n) => {
-                let mut sw = L2Switch::new(n);
-                sw.name = d.name.clone();
-                (world.add_device(sw), LabKind::Switch, n)
-            }
-            Template::Host => {
-                let mut h = Host::new(
-                    &d.name,
-                    MacAddr([2, 0, 0, 0, unit, 1]),
-                    Ipv4Addr::UNSPECIFIED,
-                    0,
-                );
-                if let Some(cfg) = &d.host {
-                    let bad = |v: &str| BuildError::BadHostAddress {
-                        device: d.name.clone(),
-                        value: v.to_string(),
-                    };
-                    let (ip, len) = parse_cidr(&cfg.ipv4).ok_or_else(|| bad(&cfg.ipv4))?;
-                    h.ip = ip;
-                    h.prefix_len = len;
-                    if let Some(g) = &cfg.gateway {
-                        h.gateway = Some(parse_cidr(&format!("{g}/32")).ok_or_else(|| bad(g))?.0);
-                    }
-                }
-                (world.add_device(h), LabKind::Host, 1)
-            }
-        };
+        let (id, kind, ports) = instantiate(&mut world, d, i as u8)?;
         devices.push(LabDevice {
             name: d.name.clone(),
             id,
             kind,
             pos: d.pos,
+            ports,
         });
         port_counts.push(ports);
     }
@@ -227,6 +242,8 @@ pub fn build(lab: &LabFile, trace: Trace) -> Result<BuiltLab, BuildError> {
         links.push(LabLink {
             a: ends[0].0,
             b: ends[1].0,
+            pa: ends[0].1,
+            pb: ends[1].1,
         });
     }
 
@@ -247,6 +264,7 @@ pub fn build(lab: &LabFile, trace: Trace) -> Result<BuiltLab, BuildError> {
         links,
         annotations: lab.annotations.clone(),
         warnings,
+        lab: lab.clone(),
     })
 }
 
@@ -286,4 +304,220 @@ pub fn load_and_build(text: &str, trace: Trace) -> Result<BuiltLab, String> {
     w.append(&mut built.warnings);
     built.warnings = w;
     Ok(built)
+}
+
+// ---- editing ----
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EditError {
+    TooManyDevices,
+    SameDevice,
+    NoFreePort { device: String },
+    NoSuchDevice,
+    NoSuchLink,
+}
+
+impl std::fmt::Display for EditError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EditError::TooManyDevices => write!(f, "a lab holds at most 255 devices"),
+            EditError::SameDevice => write!(f, "cannot connect a device to itself"),
+            EditError::NoFreePort { device } => write!(f, "{device} has no free port"),
+            EditError::NoSuchDevice => write!(f, "no such device"),
+            EditError::NoSuchLink => write!(f, "no such cable"),
+        }
+    }
+}
+
+impl std::error::Error for EditError {}
+
+/// Everything about a lab except the running world: names, kinds, positions, cabling, and the
+/// file it came from. Editing keeps the three in step: this struct, the `LabFile` it carries,
+/// and the `World` passed to each call. Adds and moves happen in place; removals go through
+/// [`Topology::without_device`] / [`Topology::without_link`] and a rebuild, because the kernel
+/// cannot delete a device or link.
+#[derive(Debug)]
+pub struct Topology {
+    pub title: String,
+    pub devices: Vec<LabDevice>,
+    pub links: Vec<LabLink>,
+    pub annotations: Vec<Annotation>,
+    lab: LabFile,
+}
+
+impl BuiltLab {
+    /// Split into the running world, its topology, and load warnings.
+    pub fn into_parts(self) -> (World, Topology, Vec<String>) {
+        (
+            self.world,
+            Topology {
+                title: self.title,
+                devices: self.devices,
+                links: self.links,
+                annotations: self.annotations,
+                lab: self.lab,
+            },
+            self.warnings,
+        )
+    }
+}
+
+/// Lab-file endpoint text for a port, e.g. `r1:GigabitEthernet0/1` or `sw:Fa0/2`.
+fn endpoint(name: &str, kind: LabKind, port: u16) -> String {
+    match kind {
+        LabKind::Host => format!("{name}:eth0"),
+        LabKind::Router => format!("{name}:GigabitEthernet0/{port}"),
+        LabKind::Switch => format!("{name}:Fa0/{}", port + 1),
+    }
+}
+
+impl Topology {
+    fn free_port(&self, dev: usize) -> Option<u16> {
+        (0..self.devices[dev].ports).find(|p| {
+            !self
+                .links
+                .iter()
+                .any(|l| (l.a == dev && l.pa == *p) || (l.b == dev && l.pb == *p))
+        })
+    }
+
+    /// Add a device with the default template for its kind and the first unused name
+    /// (`pc1`, `r1`, `sw1`, ...). Returns its index.
+    pub fn add_device(
+        &mut self,
+        world: &mut World,
+        kind: LabKind,
+        pos: [i32; 2],
+    ) -> Result<usize, EditError> {
+        if self.devices.len() >= 255 {
+            return Err(EditError::TooManyDevices);
+        }
+        let (prefix, template) = match kind {
+            LabKind::Host => ("pc", "host-pc"),
+            LabKind::Router => ("r", "router-3g"),
+            LabKind::Switch => ("sw", "switch-l2-8"),
+        };
+        let n = (1..)
+            .find(|n| {
+                let name = format!("{prefix}{n}");
+                !self.devices.iter().any(|d| d.name == name)
+            })
+            .expect("unbounded range");
+        let d = labfile::Device {
+            name: format!("{prefix}{n}"),
+            template: template.to_string(),
+            pos,
+            startup_config: None,
+            running_config: None,
+            host: None,
+        };
+        let (id, kind, ports) =
+            instantiate(world, &d, self.devices.len() as u8).expect("default templates are valid");
+        self.devices.push(LabDevice {
+            name: d.name.clone(),
+            id,
+            kind,
+            pos,
+            ports,
+        });
+        self.lab.devices.push(d);
+        Ok(self.devices.len() - 1)
+    }
+
+    pub fn move_device(&mut self, dev: usize, pos: [i32; 2]) {
+        if let Some(d) = self.devices.get_mut(dev) {
+            d.pos = pos;
+            self.lab.devices[dev].pos = pos;
+        }
+    }
+
+    /// Cable the first free port on each device. Returns the new link's index.
+    pub fn add_link(&mut self, world: &mut World, a: usize, b: usize) -> Result<usize, EditError> {
+        if a >= self.devices.len() || b >= self.devices.len() {
+            return Err(EditError::NoSuchDevice);
+        }
+        if a == b {
+            return Err(EditError::SameDevice);
+        }
+        let no_port = |i: usize| EditError::NoFreePort {
+            device: self.devices[i].name.clone(),
+        };
+        let pa = self.free_port(a).ok_or_else(|| no_port(a))?;
+        let pb = self.free_port(b).ok_or_else(|| no_port(b))?;
+        world.connect(
+            (self.devices[a].id, pa),
+            (self.devices[b].id, pb),
+            LinkConfig::FAST_ETHERNET,
+        );
+        self.lab.links.push(labfile::Link {
+            a: endpoint(&self.devices[a].name, self.devices[a].kind, pa),
+            b: endpoint(&self.devices[b].name, self.devices[b].kind, pb),
+            medium: None,
+        });
+        self.links.push(LabLink { a, b, pa, pb });
+        Ok(self.links.len() - 1)
+    }
+
+    /// The lab as it stands: structure and positions from here, live state from `world`
+    /// (router and switch configs, host addressing). Saving this and loading it again gives
+    /// the same lab.
+    pub fn snapshot(&self, world: &World) -> LabFile {
+        let mut lab = self.lab.clone();
+        for (d, entry) in self.devices.iter().zip(&mut lab.devices) {
+            entry.pos = d.pos;
+            let config = match d.kind {
+                LabKind::Router => Some(crate::shell::running_config(world.device::<Router>(d.id))),
+                LabKind::Switch => {
+                    Some(crate::shell::switch_config(world.device::<L2Switch>(d.id)))
+                }
+                LabKind::Host => None,
+            };
+            if let Some(cfg) = config {
+                // Only record a running config when it differs from the startup config.
+                let same = entry
+                    .startup_config
+                    .as_deref()
+                    .is_some_and(|s| s.trim() == cfg.trim());
+                entry.running_config = (!same).then_some(cfg);
+            }
+            if d.kind == LabKind::Host {
+                let h = world.device::<Host>(d.id);
+                if h.ip != Ipv4Addr::UNSPECIFIED {
+                    let dns = entry
+                        .host
+                        .as_ref()
+                        .map(|c| c.dns.clone())
+                        .unwrap_or_default();
+                    entry.host = Some(labfile::HostConfig {
+                        ipv4: format!("{}/{}", h.ip, h.prefix_len),
+                        gateway: h.gateway.map(|g| g.to_string()),
+                        dns,
+                    });
+                }
+            }
+        }
+        lab
+    }
+
+    /// [`Topology::snapshot`] without device `dev` and every cable attached to it.
+    pub fn without_device(&self, world: &World, dev: usize) -> Result<LabFile, EditError> {
+        let name = &self.devices.get(dev).ok_or(EditError::NoSuchDevice)?.name;
+        let mut lab = self.snapshot(world);
+        lab.devices.remove(dev);
+        lab.links.retain(|l| {
+            let on = |raw: &str| labfile::split_endpoint(raw).is_some_and(|(d, _)| d == name);
+            !on(&l.a) && !on(&l.b)
+        });
+        Ok(lab)
+    }
+
+    /// [`Topology::snapshot`] without cable `link`.
+    pub fn without_link(&self, world: &World, link: usize) -> Result<LabFile, EditError> {
+        if link >= self.links.len() {
+            return Err(EditError::NoSuchLink);
+        }
+        let mut lab = self.snapshot(world);
+        lab.links.remove(link);
+        Ok(lab)
+    }
 }
