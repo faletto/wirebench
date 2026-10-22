@@ -3,12 +3,14 @@
 //! a Worker.
 
 use crate::anim::{caption, Anim, SPEEDS};
+use crate::autosave::{age_text, now_unix_secs, Autosave, NullStore, Store};
 use crate::canvas::{Canvas, CanvasEvent, FlightDraw, Node, Scene, Tool};
+use crate::changes::{AutosaveState, Changes};
 use crate::files::{self, Inbox, Incoming};
 use crate::sim::{parse_ipv4, HopRow, Sim};
 use crate::term::TermModel;
 use crate::widget::{self, TermAction};
-use egui::{Key, Pos2, Ui};
+use egui::{Key, Modifiers, Pos2, Ui};
 use engine::lab::{BuiltLab, LabDevice, LabKind, Topology};
 use engine::protocol::{Engine, EngineCmd, EngineEvent, ShellKind};
 
@@ -37,6 +39,25 @@ struct NodeInfo {
     device: u32,
 }
 
+/// What the person was about to do when we stopped to ask about unsaved changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pending {
+    Open,
+    /// Replace the lab with recovered autosave.
+    Restore,
+    Close,
+}
+
+/// Their answer to the unsaved-changes question.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Choice {
+    /// Save first, then carry on.
+    Save,
+    /// Throw the changes away and carry on.
+    Discard,
+    Cancel,
+}
+
 #[derive(Debug)]
 pub struct App {
     engine: Engine,
@@ -57,6 +78,17 @@ pub struct App {
     focus_pending: bool,
     sim: Sim,
     anim: Anim,
+    changes: Changes,
+    store: Box<dyn Store>,
+    /// Unsaved work found in the autosave at startup, offered for recovery.
+    recovery: Option<Autosave>,
+    confirm: Option<Pending>,
+    close_confirmed: bool,
+    /// Egui context from the latest frame, so actions outside `ui` (a dialog answer, a file
+    /// picker) can reach the window.
+    ctx: Option<egui::Context>,
+    /// Last window title sent, to send only changes.
+    last_title: String,
     inbox: Inbox,
     /// Native: the path the Save and Open buttons use.
     file_path: String,
@@ -101,7 +133,7 @@ impl App {
         }
         let notice = (!warnings.is_empty())
             .then(|| format!("lab: {} (+{} more)", warnings[0], warnings.len() - 1));
-        App {
+        let mut app = App {
             engine,
             title: topo.title.clone(),
             nodes,
@@ -124,12 +156,21 @@ impl App {
                 ..Sim::default()
             },
             anim: Anim::default(),
+            changes: Changes::default(),
+            store: Box::new(NullStore),
+            recovery: None,
+            confirm: None,
+            close_confirmed: false,
+            ctx: None,
+            last_title: String::new(),
             inbox: Inbox::default(),
             file_path: String::new(),
             wall: 0.0,
             frame_ms: 0.0,
             ready_ms: None,
-        }
+        };
+        app.changes = Changes::clean(app.export_lab());
+        app
     }
 
     /// Currently selected tab's prompt, for tests.
@@ -193,6 +234,7 @@ impl App {
                     tab: Some(self.tabs.len() - 1),
                     device: d.id.0,
                 });
+                self.changes.mark_edited(self.wall);
                 self.notice = Some(format!("added {}", d.name));
                 self.select(self.tabs.len() - 1);
             }
@@ -204,6 +246,7 @@ impl App {
         if let Some(n) = self.nodes.get_mut(node) {
             n.pos = pos;
             self.topo.move_device(node, pos);
+            self.changes.mark_edited(self.wall);
         }
     }
 
@@ -212,6 +255,7 @@ impl App {
         match self.topo.add_link(&mut self.engine.world, a, b) {
             Ok(_) => {
                 self.links.push((a, b));
+                self.changes.mark_edited(self.wall);
                 self.notice = None;
             }
             Err(e) => self.notice = Some(e.to_string()),
@@ -250,6 +294,8 @@ impl App {
         let mut fresh = App::from_built(built);
         fresh.take_session(self);
         fresh.canvas = std::mem::take(&mut self.canvas);
+        fresh.changes = std::mem::take(&mut self.changes);
+        fresh.changes.mark_edited(self.wall);
         fresh.notice = Some(note);
         if let Some(i) = active.and_then(|n| fresh.tabs.iter().position(|t| t.name == n)) {
             fresh.active = i;
@@ -264,6 +310,10 @@ impl App {
         self.anim.enabled = old.anim.enabled;
         self.anim.speed = old.anim.speed;
         self.inbox = old.inbox.clone();
+        self.store = std::mem::replace(&mut old.store, Box::new(NullStore));
+        self.recovery = old.recovery.take();
+        self.ctx = old.ctx.take();
+        self.close_confirmed = old.close_confirmed;
         self.file_path = std::mem::take(&mut old.file_path);
         self.frame_ms = old.frame_ms;
         self.ready_ms = old.ready_ms;
@@ -271,6 +321,11 @@ impl App {
     }
 
     // ---- files ----
+
+    /// Set the file name Save and Open use (what the path field edits).
+    pub fn set_file_path(&mut self, path: &str) {
+        self.file_path = path.to_string();
+    }
 
     /// Where asynchronous file arrivals (the browser's file picker) are queued.
     pub fn inbox(&self) -> Inbox {
@@ -305,6 +360,7 @@ impl App {
         match files::write_file(path, &self.export_lab()) {
             Ok(()) => {
                 self.file_path = path.to_string();
+                self.mark_saved();
                 self.notice = Some(format!("saved {path}"));
                 true
             }
@@ -323,6 +379,7 @@ impl App {
                 let ok = self.load_lab_text(&text, path);
                 if ok {
                     self.file_path = path.to_string();
+                    self.after_open();
                 }
                 ok
             }
@@ -338,7 +395,10 @@ impl App {
     fn download_lab(&mut self) {
         let name = files::file_name_for(&self.title);
         self.notice = Some(match files::download(&name, &self.export_lab()) {
-            Ok(()) => format!("downloaded {name}"),
+            Ok(()) => {
+                self.mark_saved();
+                format!("downloaded {name}")
+            }
             Err(e) => format!("could not download: {e}"),
         });
     }
@@ -353,25 +413,265 @@ impl App {
             )
             .on_hover_text("File used by Save and Open");
             if ui.button("Save").clicked() {
-                let path = self.file_path.clone();
-                self.save_to_path(&path);
+                self.save_action();
             }
             if ui.button("Open").clicked() {
-                let path = self.file_path.clone();
-                self.open_path(&path);
+                self.request_open();
             }
         }
         #[cfg(target_arch = "wasm32")]
         {
             if ui.button("Save").clicked() {
-                self.download_lab();
+                self.save_action();
             }
             if ui.button("Open…").clicked() {
-                if let Err(e) = files::pick(self.inbox.clone(), ui.ctx().clone()) {
-                    self.notice = Some(format!("could not open the file picker: {e}"));
+                self.request_open();
+            }
+        }
+    }
+
+    // ---- unsaved changes, autosave, shortcuts ----
+
+    /// Whether the lab differs from what was last saved or opened.
+    pub fn is_dirty(&self) -> bool {
+        self.changes.is_dirty()
+    }
+
+    /// The question currently on screen, if any.
+    pub fn pending_confirm(&self) -> Option<Pending> {
+        self.confirm
+    }
+
+    /// Window title, with a marker while there are unsaved changes.
+    pub fn title_text(&self) -> String {
+        let dot = if self.is_dirty() { "● " } else { "" };
+        format!("{dot}{} — wirebench", self.title)
+    }
+
+    /// Use `store` for autosaves, and offer to recover any unsaved work it holds from a
+    /// previous session.
+    pub fn set_store(&mut self, store: Box<dyn Store>) {
+        let current = self.export_lab();
+        self.recovery = store
+            .load()
+            .filter(|a| a.text != current && labfile::load(&a.text).is_ok());
+        self.store = store;
+    }
+
+    /// "5 min ago" for the recoverable autosave, if there is one.
+    pub fn recovery_age(&self) -> Option<String> {
+        self.recovery
+            .as_ref()
+            .map(|r| age_text(r.unix_secs, now_unix_secs()))
+    }
+
+    /// Ask to replace the lab with the recovered work (confirms first if there are
+    /// unsaved changes).
+    pub fn restore_recovered(&mut self) {
+        if self.recovery.is_none() {
+            return;
+        }
+        if self.is_dirty() {
+            self.confirm = Some(Pending::Restore);
+        } else {
+            self.do_restore();
+        }
+    }
+
+    /// Delete the recoverable autosave.
+    pub fn discard_recovered(&mut self) {
+        if self.recovery.take().is_some() {
+            self.store.clear();
+        }
+    }
+
+    fn do_restore(&mut self) {
+        let Some(a) = self.recovery.take() else {
+            return;
+        };
+        if self.load_lab_text(&a.text, "recovered work") {
+            // Exists nowhere but the autosave, so it stays unsaved until saved for real.
+            let text = self.export_lab();
+            self.changes.mark_recovered(text, self.wall);
+            self.notice = Some("recovered unsaved work; Save to keep it".into());
+        } else {
+            self.recovery = Some(a);
+        }
+    }
+
+    fn observe_changes(&mut self) {
+        let text = self.export_lab();
+        self.changes.observe(&text, self.wall);
+    }
+
+    /// The lab was just written out: it is the new baseline and the autosave is stale.
+    fn mark_saved(&mut self) {
+        let text = self.export_lab();
+        self.changes.mark_saved(text);
+        // Unresolved recovered work is still the only copy; leave it for the banner.
+        if self.recovery.is_none() {
+            self.store.clear();
+        }
+    }
+
+    /// A different lab was opened from a file: the autosave of the old one is stale.
+    fn after_open(&mut self) {
+        if self.recovery.is_none() {
+            self.store.clear();
+        }
+    }
+
+    /// Save with the current file name (native) or as a download (web). Returns success.
+    pub fn save_action(&mut self) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if self.file_path.trim().is_empty() {
+                self.file_path = files::file_name_for(&self.title);
+            }
+            let path = self.file_path.clone();
+            self.save_to_path(&path)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.download_lab();
+            true
+        }
+    }
+
+    /// Open a lab, asking first if there are unsaved changes.
+    pub fn request_open(&mut self) {
+        if self.is_dirty() {
+            self.confirm = Some(Pending::Open);
+        } else {
+            self.do_open();
+        }
+    }
+
+    fn do_open(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let path = self.file_path.clone();
+            self.open_path(&path);
+        }
+        #[cfg(target_arch = "wasm32")]
+        if let Some(ctx) = self.ctx.clone() {
+            if let Err(e) = files::pick(self.inbox.clone(), ctx) {
+                self.notice = Some(format!("could not open the file picker: {e}"));
+            }
+        }
+    }
+
+    /// Answer the unsaved-changes question.
+    pub fn confirm(&mut self, choice: Choice) {
+        let Some(what) = self.confirm.take() else {
+            return;
+        };
+        match choice {
+            Choice::Cancel => {}
+            Choice::Save => {
+                if self.save_action() {
+                    self.proceed(what);
+                }
+            }
+            Choice::Discard => {
+                if what == Pending::Close && self.recovery.is_none() {
+                    self.store.clear();
+                }
+                self.proceed(what);
+            }
+        }
+    }
+
+    fn proceed(&mut self, what: Pending) {
+        match what {
+            Pending::Open => self.do_open(),
+            Pending::Restore => self.do_restore(),
+            Pending::Close => {
+                self.close_confirmed = true;
+                if let Some(ctx) = &self.ctx {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             }
         }
+    }
+
+    /// Write the autosave when it is due, or ask to be woken when it will be.
+    fn autosave_tick(&mut self, ctx: &egui::Context) {
+        // Never overwrite recovered work that is still waiting for a decision.
+        if self.recovery.is_some() {
+            return;
+        }
+        match self.changes.autosave_state(self.wall) {
+            AutosaveState::Idle => {}
+            AutosaveState::Waiting(secs) => {
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(secs));
+            }
+            AutosaveState::Due => {
+                let a = Autosave {
+                    text: self.export_lab(),
+                    unix_secs: now_unix_secs(),
+                };
+                if let Err(e) = self.store.save(&a) {
+                    self.notice = Some(format!("autosave failed: {e}"));
+                }
+                // Even on failure: do not retry every frame.
+                self.changes.autosaved();
+            }
+        }
+    }
+
+    fn confirm_dialog(&mut self, ctx: &egui::Context) {
+        let Some(what) = self.confirm else {
+            return;
+        };
+        let action = match what {
+            Pending::Open => "open another lab",
+            Pending::Restore => "replace it with the recovered work",
+            Pending::Close => "close wirebench",
+        };
+        let mut choice = None;
+        let resp = egui::Modal::new(egui::Id::unique("unsaved-changes")).show(ctx, |ui| {
+            ui.heading("Unsaved changes");
+            ui.label(format!(
+                "\"{}\" has changes that are not saved. Save them before you {action}?",
+                self.title
+            ));
+            ui.horizontal(|ui| {
+                if ui.button("Save").clicked() {
+                    choice = Some(Choice::Save);
+                }
+                if ui.button("Discard changes").clicked() {
+                    choice = Some(Choice::Discard);
+                }
+                if ui.button("Cancel").clicked() {
+                    choice = Some(Choice::Cancel);
+                }
+            });
+        });
+        if resp.should_close() {
+            choice = choice.or(Some(Choice::Cancel));
+        }
+        if let Some(c) = choice {
+            self.confirm(c);
+        }
+    }
+
+    fn recovery_banner(&mut self, ui: &mut Ui) {
+        let Some(age) = self.recovery_age() else {
+            return;
+        };
+        egui::Panel::top("recovery").show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.strong("Unsaved work was recovered");
+                ui.label(format!("(autosaved {age})"));
+                if ui.button("Restore").clicked() {
+                    self.restore_recovered();
+                }
+                if ui.button("Discard").clicked() {
+                    self.discard_recovered();
+                }
+            });
+        });
     }
 
     /// Apply files that arrived asynchronously (the browser's file picker).
@@ -379,7 +679,9 @@ impl App {
         for item in self.inbox.take() {
             match item {
                 Incoming::Lab { name, text } => {
-                    self.load_lab_text(&text, &name);
+                    if self.load_lab_text(&text, &name) {
+                        self.after_open();
+                    }
                 }
                 Incoming::Failed(why) => self.notice = Some(why),
             }
@@ -670,6 +972,7 @@ impl App {
 
     /// Run one terminal action against the engine and print the result.
     pub fn apply(&mut self, tab: usize, action: TermAction) {
+        let is_submit = matches!(action, TermAction::Submit(_));
         let t = &mut self.tabs[tab];
         let terminal = t.terminal;
         match action {
@@ -706,6 +1009,10 @@ impl App {
                 }
             }
         }
+        // A command may have changed a config; only a real change makes the lab dirty.
+        if is_submit {
+            self.observe_changes();
+        }
     }
 
     /// Draw the whole UI. Takes only a `Ui` so headless tests can drive it.
@@ -718,7 +1025,25 @@ impl App {
         }
         self.frame_ms = 0.9 * self.frame_ms + 0.1 * ui.input(|i| i.unstable_dt) * 1000.0;
         self.wall = ui.input(|i| i.time);
+        self.ctx = Some(ui.ctx().clone());
         self.drain_inbox();
+        // Ctrl/Cmd+S saves and Ctrl/Cmd+O opens, taken before any widget can see them (the web
+        // build also stops the browser's own Save Page / Open File dialogs).
+        if self.confirm.is_none() {
+            if ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::S)) {
+                self.save_action();
+            }
+            if ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::O)) {
+                self.request_open();
+            }
+        }
+        // Closing the window with unsaved changes asks first.
+        if ui.input(|i| i.viewport().close_requested()) && self.is_dirty() && !self.close_confirmed
+        {
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.confirm = Some(Pending::Close);
+        }
         // Playing: one hop per `hop_secs`, then stop when the simulation goes idle.
         if self.anim.playing && self.wall >= self.anim.next_step {
             if self.sim_step_hop() {
@@ -760,6 +1085,9 @@ impl App {
         egui::Panel::top("tabs").show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.strong(&self.title);
+                if self.is_dirty() {
+                    ui.label("● unsaved changes");
+                }
                 ui.separator();
                 self.file_controls(ui);
                 ui.separator();
@@ -771,6 +1099,7 @@ impl App {
                 }
             });
         });
+        self.recovery_banner(ui);
         egui::Panel::top("canvas")
             .resizable(true)
             .default_size(230.0)
@@ -843,10 +1172,24 @@ impl App {
             let id = ui.make_persistent_id(("terminal", t.device));
             let prompt = t.prompt.clone();
             let actions = widget::show(ui, id, &mut t.model, &prompt, focus);
-            for a in actions {
-                self.apply(active, a);
+            // While a question is on screen, keystrokes answer it rather than run commands.
+            if self.confirm.is_none() {
+                for a in actions {
+                    self.apply(active, a);
+                }
             }
         });
+        let ctx = ui.ctx().clone();
+        self.confirm_dialog(&ctx);
+        self.autosave_tick(&ctx);
+        // Window and page chrome: a marker in the title, and the browser's leave-page warning.
+        let title = self.title_text();
+        if title != self.last_title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            files::set_page_title(&title);
+            self.last_title = title;
+        }
+        files::set_unsaved(self.is_dirty());
     }
 }
 

@@ -17,6 +17,11 @@ fn main() -> eframe::Result {
             if let Some(p) = path {
                 app.open_path(&p);
             }
+            // Autosaves go to the user's data directory; unsaved work from a crashed or
+            // closed session is offered back in a banner.
+            app.set_store(Box::new(app::autosave::FileStore::new(
+                app::autosave::default_dir(),
+            )));
             Ok(Box::new(app))
         }),
     )
