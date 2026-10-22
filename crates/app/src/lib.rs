@@ -4,10 +4,12 @@
 mod app;
 mod canvas;
 pub mod clock;
+mod sim;
 mod term;
 pub mod widget;
 
 pub use app::App;
+pub use sim::HopRow;
 pub use term::TermModel;
 
 /// Entry point for the web build: attach to the canvas with this element id.

@@ -3,6 +3,7 @@
 //! a Worker.
 
 use crate::canvas::{Canvas, Node};
+use crate::sim::{parse_ipv4, HopRow, Sim};
 use crate::term::TermModel;
 use crate::widget::{self, TermAction};
 use egui::{Key, Pos2, Ui};
@@ -30,6 +31,8 @@ struct NodeInfo {
     pos: [i32; 2],
     /// Index into `App::tabs`, if this device has a console.
     tab: Option<usize>,
+    /// Engine device id.
+    device: u32,
 }
 
 #[derive(Debug)]
@@ -46,6 +49,7 @@ pub struct App {
     notice: Option<String>,
     /// Set when a tab becomes active so its terminal grabs keyboard focus.
     focus_pending: bool,
+    sim: Sim,
     frame_ms: f32,
     /// Milliseconds from the start of loading to the first drawn frame (see `clock`).
     ready_ms: Option<f64>,
@@ -109,6 +113,7 @@ impl App {
                 kind: d.kind,
                 pos: d.pos,
                 tab,
+                device: d.id.0,
             });
         }
         let notice = (!warnings.is_empty())
@@ -124,6 +129,10 @@ impl App {
             canvas: Canvas::default(),
             notice,
             focus_pending: true,
+            sim: Sim {
+                dst: "10.0.2.2".into(),
+                ..Sim::default()
+            },
             frame_ms: 0.0,
             ready_ms: None,
         }
@@ -164,6 +173,133 @@ impl App {
             self.active = tab;
             self.focus_pending = true;
         }
+    }
+
+    // ---- simulation mode ----
+
+    /// Logged frame deliveries, oldest first.
+    pub fn sim_hops(&self) -> &[HopRow] {
+        &self.sim.hops
+    }
+
+    /// Queue one echo request from PC `from` without advancing time.
+    pub fn sim_queue_ping(&mut self, from: &str, dst: [u8; 4]) {
+        let Some(n) = self.nodes.iter().find(|n| n.name == from) else {
+            self.notice = Some(format!("no device named {from}"));
+            return;
+        };
+        let device = n.device;
+        let ev = self.engine.handle(EngineCmd::PingOnce { device, dst });
+        self.apply_sim(ev);
+    }
+
+    /// Dispatch one event. Returns false once nothing is left to do.
+    pub fn sim_step(&mut self) -> bool {
+        let ev = self.engine.handle(EngineCmd::Step);
+        let more = !matches!(ev.first(), Some(EngineEvent::Idle { .. }));
+        self.apply_sim(ev);
+        more
+    }
+
+    /// Step to idle, logging every hop. Capped so a runaway lab cannot hang the UI.
+    pub fn sim_run(&mut self) {
+        for _ in 0..100_000 {
+            if !self.sim_step() {
+                return;
+            }
+        }
+        self.notice = Some("stopped after 100000 events; Run again to continue".into());
+    }
+
+    fn apply_sim(&mut self, events: Vec<EngineEvent>) {
+        for e in events {
+            match e {
+                EngineEvent::Hop {
+                    ns,
+                    device,
+                    port,
+                    summary,
+                    ..
+                } => {
+                    let name = self
+                        .nodes
+                        .iter()
+                        .find(|n| n.device == device)
+                        .map_or_else(|| format!("#{device}"), |n| n.name.clone());
+                    self.sim.hops.push(HopRow {
+                        ns,
+                        device: name,
+                        port,
+                        summary,
+                    });
+                }
+                EngineEvent::Error { message } => self.notice = Some(message),
+                _ => {}
+            }
+        }
+    }
+
+    fn sim_panel(&mut self, ui: &mut Ui) {
+        ui.heading("Simulation");
+        let pcs: Vec<usize> = (0..self.nodes.len())
+            .filter(|&i| self.nodes[i].kind == LabKind::Host)
+            .collect();
+        if self.sim.src.is_none_or(|s| !pcs.contains(&s)) {
+            self.sim.src = pcs.first().copied();
+        }
+        let src_name = |s: Option<usize>, nodes: &[NodeInfo]| {
+            s.map_or_else(|| "(no PC)".to_string(), |i| nodes[i].name.clone())
+        };
+        ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt("sim_src")
+                .selected_text(src_name(self.sim.src, &self.nodes))
+                .show_ui(ui, |ui| {
+                    for &i in &pcs {
+                        ui.selectable_value(&mut self.sim.src, Some(i), &self.nodes[i].name);
+                    }
+                });
+            ui.add(egui::TextEdit::singleline(&mut self.sim.dst).desired_width(96.0));
+        });
+        let dst = parse_ipv4(&self.sim.dst);
+        ui.horizontal_wrapped(|ui| {
+            let can_ping = dst.is_some() && self.sim.src.is_some();
+            if ui
+                .add_enabled(can_ping, egui::Button::new("Queue ping"))
+                .clicked()
+            {
+                if let (Some(d), Some(s)) = (dst, self.sim.src) {
+                    let name = self.nodes[s].name.clone();
+                    self.sim_queue_ping(&name, d);
+                }
+            }
+            if ui.button("Step").clicked() {
+                self.sim_step();
+            }
+            if ui.button("Run").clicked() {
+                self.sim_run();
+            }
+            if ui.button("Clear").clicked() {
+                self.sim.hops.clear();
+            }
+        });
+        ui.separator();
+        egui::ScrollArea::vertical()
+            .stick_to_bottom(true)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                if self.sim.hops.is_empty() {
+                    ui.weak("Queue a ping, then Step to follow each frame.");
+                }
+                for h in &self.sim.hops {
+                    ui.label(format!(
+                        "{:>9.3} ms  {}:{}  {}",
+                        h.ns as f64 / 1e6,
+                        h.device,
+                        h.port,
+                        h.summary
+                    ));
+                }
+            });
     }
 
     /// Run one terminal action against the engine and print the result.
@@ -275,6 +411,10 @@ impl App {
                     }
                 }
             });
+        egui::Panel::right("sim")
+            .resizable(true)
+            .default_size(300.0)
+            .show(ui, |ui| self.sim_panel(ui));
         egui::Panel::bottom("status").show(ui, |ui| {
             let now = self.engine.world.kernel.now().0;
             ui.horizontal_wrapped(|ui| {
