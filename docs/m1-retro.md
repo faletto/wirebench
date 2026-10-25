@@ -54,10 +54,14 @@ Tests: 204 pass across the workspace.
 2. **The M0 process gap is closed locally but not in CI.** M0 listed "no automated browser smoke
    test" as a gap. `testkit/throttle` is that test, but it is not wired into CI: it needs a
    Chromium download, drives the UI by pixel coordinates, and was only run by hand.
-3. **A console ping advances four seconds of virtual time inside one frame, and that frame is
-   slow.** The status bar read 287 ms at 1x and 254 ms at 8x throttle, so the cost does not scale
-   with CPU speed and is probably not compute. Not investigated. It sits against the plan's
-   4 ms per-frame budget and is the most useful thing to look at first if typing ever feels laggy.
+3. **The "slow frame" in the status bar was a measurement error, and the first version of this
+   retro misread it.** The readout showed 254 to 287 ms after a console ping at every throttle
+   level and I first took it for a slow frame. It was the smoothed gap between frames, not the work
+   in one: egui repaints only on events, so after a pause the next frame's gap is the length of the
+   pause (my script waited 2.5 s, and 10% of that is 250 ms). Nothing was slow. The readout now
+   measures time spent building a frame ("frame cost"), with a test that fails on the old
+   definition (it read 9,999 ms after a 100 s pause). The plan's 4 ms per-frame budget is still not
+   verified against real frame costs; the readout is what to use for that.
 4. **Idle still polls.** About 180 animation frames arrived in 3 s of no input (60 Hz) at every
    throttle level. This is the eframe web loop the M0 baseline described. The idle CPU target is
    still not met as written.
@@ -121,8 +125,7 @@ and a real browser at 20x agreed.
 
 ## Suggested start of M2
 
-1. Investigate the slow frame after a console ping (item 3 above) and decide whether the engine
-   should be time-sliced.
+1. Read the corrected "frame cost" on a 100-node lab against the 4 ms budget.
 2. Undo for canvas edits, and stop resetting consoles on delete.
 3. VLAN database, access and trunk ports, `show vlan brief`, `show interfaces trunk`.
 4. Management plane, with our own secret-hash label rather than Cisco's formats (see the plan's
