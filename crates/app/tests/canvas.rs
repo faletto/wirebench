@@ -157,3 +157,15 @@ fn bundled_lab_opens_cleanly() {
     let app = App::new();
     assert_eq!(app.status_notice(), None);
 }
+
+#[test]
+fn deleting_every_device_leaves_an_empty_canvas_not_a_crash() {
+    let mut app = App::new();
+    let ctx = ready(&mut app);
+    while app.device_count() > 0 {
+        app.delete_device(0);
+        frame(&ctx, &mut app, vec![]);
+    }
+    frame(&ctx, &mut app, vec![]);
+    assert_eq!(app.device_count(), 0);
+}

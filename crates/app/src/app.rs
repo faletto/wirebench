@@ -173,6 +173,11 @@ impl App {
         app
     }
 
+    /// Number of devices on the canvas.
+    pub fn device_count(&self) -> usize {
+        self.nodes.len()
+    }
+
     /// Currently selected tab's prompt, for tests.
     pub fn active_prompt(&self) -> &str {
         &self.tabs[self.active].prompt
@@ -1105,7 +1110,7 @@ impl App {
             .default_size(230.0)
             .show(ui, |ui| {
                 self.tool_bar(ui);
-                let active_node = self.tabs[self.active].node;
+                let active_node = self.tabs.get(self.active).map(|t| t.node);
                 let nodes: Vec<Node> = self
                     .nodes
                     .iter()
@@ -1114,7 +1119,7 @@ impl App {
                         name: n.name.clone(),
                         kind: n.kind,
                         pos: n.pos,
-                        selected: i == active_node || self.link_from == Some(i),
+                        selected: Some(i) == active_node || self.link_from == Some(i),
                         has_console: n.tab.is_some(),
                     })
                     .collect();
@@ -1168,7 +1173,10 @@ impl App {
         let active = self.active;
         let focus = std::mem::take(&mut self.focus_pending);
         egui::CentralPanel::default().show(ui, |ui| {
-            let t = &mut self.tabs[active];
+            let Some(t) = self.tabs.get_mut(active) else {
+                ui.weak("No devices. Use + PC, + Switch or + Router, then click the canvas.");
+                return;
+            };
             let id = ui.make_persistent_id(("terminal", t.device));
             let prompt = t.prompt.clone();
             let actions = widget::show(ui, id, &mut t.model, &prompt, focus);
