@@ -169,3 +169,30 @@ fn deleting_every_device_leaves_an_empty_canvas_not_a_crash() {
     frame(&ctx, &mut app, vec![]);
     assert_eq!(app.device_count(), 0);
 }
+
+#[test]
+fn frame_readout_is_work_per_frame_not_time_since_the_last_frame() {
+    let mut app = App::new();
+    let ctx = Context::default();
+    let at = |app: &mut App, time: f64| {
+        let raw = RawInput {
+            time: Some(time),
+            screen_rect: Some(egui::Rect::from_min_size(
+                Pos2::ZERO,
+                egui::vec2(1000.0, 700.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(raw, |ui| app.ui(ui));
+        out.textures_delta.clear();
+    };
+    at(&mut app, 0.0);
+    at(&mut app, 0.016);
+    // The user walks away for 100 s, then touches the page. Nothing about the frame is slow.
+    at(&mut app, 100.0);
+    assert!(
+        app.frame_cost_ms() < 500.0,
+        "a long pause leaked into the readout: {} ms",
+        app.frame_cost_ms()
+    );
+}

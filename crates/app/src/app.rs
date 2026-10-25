@@ -173,6 +173,11 @@ impl App {
         app
     }
 
+    /// Smoothed time spent building a frame, in milliseconds (for tests).
+    pub fn frame_cost_ms(&self) -> f32 {
+        self.frame_ms
+    }
+
     /// Number of devices on the canvas.
     pub fn device_count(&self) -> usize {
         self.nodes.len()
@@ -1022,13 +1027,13 @@ impl App {
 
     /// Draw the whole UI. Takes only a `Ui` so headless tests can drive it.
     pub fn ui(&mut self, ui: &mut Ui) {
+        let began = crate::clock::since_start_ms();
         if self.ready_ms.is_none() {
             self.ready_ms = crate::clock::since_start_ms();
             if let Some(ms) = self.ready_ms {
                 crate::clock::log(&format!("wirebench: first frame after {ms:.0} ms"));
             }
         }
-        self.frame_ms = 0.9 * self.frame_ms + 0.1 * ui.input(|i| i.unstable_dt) * 1000.0;
         self.wall = ui.input(|i| i.time);
         self.ctx = Some(ui.ctx().clone());
         self.drain_inbox();
@@ -1162,7 +1167,7 @@ impl App {
                     ui.label(format!("ready in {ms:.0} ms"));
                     ui.separator();
                 }
-                ui.label(format!("frame {:.1} ms", self.frame_ms));
+                ui.label(format!("frame cost {:.1} ms", self.frame_ms));
                 ui.separator();
                 match &self.notice {
                     Some(n) => ui.label(n),
@@ -1198,6 +1203,11 @@ impl App {
             self.last_title = title;
         }
         files::set_unsaved(self.is_dirty());
+        // Time spent building this frame. egui repaints only on events, so the gap between frames
+        // (`unstable_dt`) measures how long the user paused, not how much work a frame takes.
+        if let (Some(a), Some(b)) = (began, crate::clock::since_start_ms()) {
+            self.frame_ms = 0.9 * self.frame_ms + 0.1 * (b - a) as f32;
+        }
     }
 }
 
