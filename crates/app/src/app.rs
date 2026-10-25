@@ -7,6 +7,7 @@ use crate::autosave::{age_text, now_unix_secs, Autosave, NullStore, Store};
 use crate::canvas::{Canvas, CanvasEvent, FlightDraw, Node, Scene, Tool};
 use crate::changes::{AutosaveState, Changes};
 use crate::files::{self, Inbox, Incoming};
+use crate::history::History;
 use crate::sim::{parse_ipv4, HopRow, Sim};
 use crate::term::TermModel;
 use crate::widget::{self, TermAction};
@@ -58,6 +59,16 @@ pub enum Choice {
     Cancel,
 }
 
+/// Where a device drag is, so one drag is one undo step however many frames it takes.
+#[derive(Debug)]
+enum Drag {
+    None,
+    /// The button went down on a device; the lab as it was is held until the device moves.
+    Armed(labfile::LabFile),
+    /// Already recorded for this drag.
+    Recorded,
+}
+
 #[derive(Debug)]
 pub struct App {
     engine: Engine,
@@ -79,6 +90,8 @@ pub struct App {
     sim: Sim,
     anim: Anim,
     changes: Changes,
+    history: History,
+    drag: Drag,
     store: Box<dyn Store>,
     /// Unsaved work found in the autosave at startup, offered for recovery.
     recovery: Option<Autosave>,
@@ -157,6 +170,8 @@ impl App {
             },
             anim: Anim::default(),
             changes: Changes::default(),
+            history: History::default(),
+            drag: Drag::None,
             store: Box::new(NullStore),
             recovery: None,
             confirm: None,
@@ -233,9 +248,11 @@ impl App {
 
     /// Add a device at a canvas position and open its console.
     pub fn add_device(&mut self, kind: LabKind, pos: [i32; 2]) {
+        let before = self.topo.snapshot(&self.engine.world);
         match self.topo.add_device(&mut self.engine.world, kind, pos) {
             Ok(i) => {
                 let d = self.topo.devices[i].clone();
+                self.history.record(format!("add {}", d.name), before);
                 self.tabs.push(new_tab(&mut self.engine, &d, i));
                 self.nodes.push(NodeInfo {
                     name: d.name.clone(),
@@ -253,8 +270,21 @@ impl App {
     }
 
     pub fn move_node(&mut self, node: usize, pos: [i32; 2]) {
-        if let Some(n) = self.nodes.get_mut(node) {
-            n.pos = pos;
+        if node < self.nodes.len() {
+            match std::mem::replace(&mut self.drag, Drag::None) {
+                Drag::Armed(before) => {
+                    self.history
+                        .record(format!("move {}", self.nodes[node].name), before);
+                    self.drag = Drag::Recorded;
+                }
+                Drag::Recorded => self.drag = Drag::Recorded,
+                Drag::None => {
+                    let before = self.topo.snapshot(&self.engine.world);
+                    self.history
+                        .record(format!("move {}", self.nodes[node].name), before);
+                }
+            }
+            self.nodes[node].pos = pos;
             self.topo.move_device(node, pos);
             self.changes.mark_edited(self.wall);
         }
@@ -262,8 +292,13 @@ impl App {
 
     /// Cable two devices on their first free ports.
     pub fn connect(&mut self, a: usize, b: usize) {
+        let before = self.topo.snapshot(&self.engine.world);
         match self.topo.add_link(&mut self.engine.world, a, b) {
             Ok(_) => {
+                self.history.record(
+                    format!("cable {} to {}", self.nodes[a].name, self.nodes[b].name),
+                    before,
+                );
                 self.links.push((a, b));
                 self.changes.mark_edited(self.wall);
                 self.notice = None;
@@ -278,39 +313,84 @@ impl App {
         let Some(name) = self.nodes.get(node).map(|n| n.name.clone()) else {
             return;
         };
+        let before = self.topo.snapshot(&self.engine.world);
         match self.topo.without_device(&self.engine.world, node) {
-            Ok(lab) => self.rebuild(&lab, format!("removed {name}; consoles restarted")),
+            Ok(lab) => {
+                if self.rebuild(&lab, format!("removed {name}; consoles restarted")) {
+                    self.history.record(format!("remove {name}"), before);
+                }
+            }
             Err(e) => self.notice = Some(e.to_string()),
         }
     }
 
     /// Remove a cable (index into the cable list); rebuilds like [`App::delete_device`].
     pub fn delete_link(&mut self, link: usize) {
+        let before = self.topo.snapshot(&self.engine.world);
         match self.topo.without_link(&self.engine.world, link) {
-            Ok(lab) => self.rebuild(&lab, "removed a cable; consoles restarted".into()),
+            Ok(lab) => {
+                if self.rebuild(&lab, "removed a cable; consoles restarted".into()) {
+                    self.history.record("remove a cable", before);
+                }
+            }
             Err(e) => self.notice = Some(e.to_string()),
         }
     }
 
-    fn rebuild(&mut self, lab: &labfile::LabFile, note: String) {
+    pub fn can_undo(&self) -> bool {
+        self.history.can_undo()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        self.history.can_redo()
+    }
+
+    /// Undo the latest edit. Like delete, this rebuilds the world, so consoles, ARP caches and
+    /// virtual time restart; configuration typed since the edit is kept.
+    pub fn undo(&mut self) {
+        let current = self.topo.snapshot(&self.engine.world);
+        let Some((label, lab)) = self.history.step_back(&current) else {
+            self.notice = Some("nothing to undo".into());
+            return;
+        };
+        if !self.rebuild(&lab, format!("undid {label}; consoles restarted")) {
+            self.history.cancel_back(label, current);
+        }
+    }
+
+    pub fn redo(&mut self) {
+        let current = self.topo.snapshot(&self.engine.world);
+        let Some((label, lab)) = self.history.step_forward(&current) else {
+            self.notice = Some("nothing to redo".into());
+            return;
+        };
+        if !self.rebuild(&lab, format!("redid {label}; consoles restarted")) {
+            self.history.cancel_forward(label, current);
+        }
+    }
+
+    /// Replace the world with one built from `lab`. False (and nothing changed) if it won't build.
+    fn rebuild(&mut self, lab: &labfile::LabFile, note: String) -> bool {
         let active = self.tabs.get(self.active).map(|t| t.name.clone());
         let built = match engine::lab::build(lab, kernel::Trace::new()) {
             Ok(b) => b,
             Err(e) => {
                 self.notice = Some(format!("could not rebuild the lab: {e}"));
-                return;
+                return false;
             }
         };
         let mut fresh = App::from_built(built);
         fresh.take_session(self);
         fresh.canvas = std::mem::take(&mut self.canvas);
         fresh.changes = std::mem::take(&mut self.changes);
+        fresh.history = std::mem::take(&mut self.history);
         fresh.changes.mark_edited(self.wall);
         fresh.notice = Some(note);
         if let Some(i) = active.and_then(|n| fresh.tabs.iter().position(|t| t.name == n)) {
             fresh.active = i;
         }
         *self = fresh;
+        true
     }
 
     /// Carry over what belongs to the person using the app rather than to the lab.
@@ -730,6 +810,10 @@ impl App {
                         self.notice = Some(format!("{} has no console yet", self.nodes[i].name))
                     }
                 },
+                CanvasEvent::DragStart => {
+                    self.drag = Drag::Armed(self.topo.snapshot(&self.engine.world));
+                }
+                CanvasEvent::DragEnd => self.drag = Drag::None,
                 CanvasEvent::Moved(i, pos) => self.move_node(i, pos),
                 CanvasEvent::Place(pos) => {
                     if let Tool::Place(kind) = self.tool {
@@ -760,6 +844,21 @@ impl App {
                 if ui.selectable_label(self.tool == tool, label).clicked() {
                     self.set_tool(tool);
                 }
+            }
+            ui.separator();
+            let undo = self.history.undo_label().map(|l| format!("Undo {l}"));
+            let redo = self.history.redo_label().map(|l| format!("Redo {l}"));
+            let r = ui.add_enabled(self.can_undo(), egui::Button::new("Undo"));
+            if r.on_hover_text(undo.unwrap_or_else(|| "nothing to undo".into()))
+                .clicked()
+            {
+                self.undo();
+            }
+            let r = ui.add_enabled(self.can_redo(), egui::Button::new("Redo"));
+            if r.on_hover_text(redo.unwrap_or_else(|| "nothing to redo".into()))
+                .clicked()
+            {
+                self.redo();
             }
             ui.weak(self.tool.hint());
         });
@@ -1045,6 +1144,15 @@ impl App {
             }
             if ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::O)) {
                 self.request_open();
+            }
+            // Redo is checked first: Cmd+Shift+Z also satisfies Cmd+Z.
+            let redo_keys = Modifiers::COMMAND | Modifiers::SHIFT;
+            if ui.input_mut(|i| {
+                i.consume_key(redo_keys, Key::Z) || i.consume_key(Modifiers::COMMAND, Key::Y)
+            }) {
+                self.redo();
+            } else if ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Z)) {
+                self.undo();
             }
         }
         // Closing the window with unsaved changes asks first.

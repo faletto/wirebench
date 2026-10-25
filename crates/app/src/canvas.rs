@@ -58,6 +58,9 @@ pub struct FlightDraw<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CanvasEvent {
     Open(usize),
+    /// The pointer went down on a device and a drag began; `Moved` follows if it travels.
+    DragStart,
+    DragEnd,
     Moved(usize, [i32; 2]),
     Place([i32; 2]),
     LinkEnd(usize),
@@ -273,6 +276,7 @@ impl Canvas {
                     }
                     let ptr = resp.interact_pointer_pos();
                     if resp.drag_started() {
+                        events.push(CanvasEvent::DragStart);
                         // Measure from where the button went down, not from where egui
                         // noticed a drag, or the node would lag the cursor by the drag threshold.
                         let press = ui.input(|i| i.pointer.press_origin()).or(ptr);
@@ -292,6 +296,7 @@ impl Canvas {
                     }
                     if resp.drag_stopped() {
                         self.grab = None;
+                        events.push(CanvasEvent::DragEnd);
                     }
                 }
                 Tool::Link if resp.clicked() => events.push(CanvasEvent::LinkEnd(i)),
