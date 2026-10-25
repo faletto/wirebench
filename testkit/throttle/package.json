@@ -1,0 +1,3 @@
+{ "name": "wirebench-throttle", "private": true, "type": "module",
+  "scripts": { "demo": "node demo.mjs" },
+  "devDependencies": { "playwright": "1.49.1" } }
