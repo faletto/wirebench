@@ -1,4 +1,4 @@
-use crate::{Ctx, Device, DeviceEvent, Resolver};
+use crate::{record_probe, Ctx, Device, DeviceEvent, ProbeBody, ProbeReply, Resolver};
 use kernel::{PortId, SimTime};
 use std::any::Any;
 use std::collections::BTreeMap;
@@ -8,6 +8,8 @@ use wire::{
 };
 
 const PORT: PortId = PortId(0);
+/// ICMP identifier of the echo requests `ping` sends; replies with another one are not pings.
+const PING_IDENT: u16 = 1;
 const ARP_TIMEOUT: SimTime = SimTime::from_secs(1);
 
 /// Timer tokens with this bit set belong to the DHCP client; the low bits are the generation of
@@ -109,6 +111,8 @@ pub struct Host {
     /// DNS servers, from the lab file or DHCP. Informational: there is no resolver yet.
     pub dns: Vec<Ipv4Addr>,
     pub dhcp: DhcpClient,
+    /// Replies to probes this host sent (traceroute), oldest first.
+    pub probes: Vec<ProbeReply>,
 }
 
 impl Host {
@@ -129,6 +133,7 @@ impl Host {
             ttl: 64,
             dns: Vec::new(),
             dhcp: DhcpClient::default(),
+            probes: Vec::new(),
         }
     }
 
@@ -159,7 +164,7 @@ impl Host {
         self.sent.insert(seq, ctx.now());
         let echo = IcmpEcho {
             reply: false,
-            ident: 1,
+            ident: PING_IDENT,
             seq,
             data: vec![0x61; 32],
         };
@@ -167,12 +172,36 @@ impl Host {
         seq
     }
 
+    /// Send an echo request with the given TTL (a traceroute probe). It is not counted as a ping:
+    /// the answer shows up in [`Host::probes`].
+    pub fn send_echo_probe(&mut self, ctx: &mut Ctx, dst: Ipv4Addr, ttl: u8, ident: u16, seq: u16) {
+        let echo = IcmpEcho {
+            reply: false,
+            ident,
+            seq,
+            data: vec![0x61; 32],
+        };
+        self.send_ip_ttl(ctx, dst, IpProto::ICMP, echo.emit(), ttl);
+    }
+
     fn send_ip(&mut self, ctx: &mut Ctx, dst: Ipv4Addr, proto: IpProto, payload: Vec<u8>) {
+        let ttl = self.ttl;
+        self.send_ip_ttl(ctx, dst, proto, payload, ttl);
+    }
+
+    fn send_ip_ttl(
+        &mut self,
+        ctx: &mut Ctx,
+        dst: Ipv4Addr,
+        proto: IpProto,
+        payload: Vec<u8>,
+        ttl: u8,
+    ) {
         let pkt = Ipv4Packet {
             dscp_ecn: 0,
             ident: self.ip_ident,
             flags_frag: 0,
-            ttl: self.ttl,
+            ttl,
             proto,
             src: self.ip,
             dst,
@@ -243,11 +272,32 @@ impl Host {
         if p.dst != self.ip && p.dst != Ipv4Addr::BROADCAST {
             return;
         }
+        // A UDP packet for a port nobody listens on: say so, as every host does. This is what
+        // ends a UDP traceroute at its destination.
+        if p.proto == IpProto::UDP && p.dst == self.ip && self.ip != Ipv4Addr::UNSPECIFIED {
+            let err = IcmpError {
+                kind: IcmpErrorKind::DestUnreachable(3),
+                original: IcmpError::quote(&p.emit()),
+            };
+            self.send_ip(ctx, p.src, IpProto::ICMP, err.emit());
+            return;
+        }
         if p.proto != IpProto::ICMP {
             return;
         }
         if let Ok(e) = IcmpError::parse(&p.payload) {
             self.icmp_errors.push(e.kind);
+            record_probe(
+                &mut self.probes,
+                ProbeReply {
+                    at: ctx.now(),
+                    from: p.src,
+                    body: ProbeBody::Error {
+                        kind: e.kind,
+                        original: e.original,
+                    },
+                },
+            );
             return;
         }
         let Ok(echo) = IcmpEcho::parse(&p.payload) else {
@@ -259,11 +309,26 @@ impl Host {
                 ..echo
             };
             self.send_ip(ctx, p.src, IpProto::ICMP, reply.emit());
-        } else if let Some(t0) = self.sent.remove(&echo.seq) {
-            self.ping_results.push(PingResult {
-                seq: echo.seq,
-                rtt: SimTime(ctx.now().0 - t0.0),
-            });
+            return;
+        }
+        record_probe(
+            &mut self.probes,
+            ProbeReply {
+                at: ctx.now(),
+                from: p.src,
+                body: ProbeBody::EchoReply {
+                    ident: echo.ident,
+                    seq: echo.seq,
+                },
+            },
+        );
+        if echo.ident == PING_IDENT {
+            if let Some(t0) = self.sent.remove(&echo.seq) {
+                self.ping_results.push(PingResult {
+                    seq: echo.seq,
+                    rtt: SimTime(ctx.now().0 - t0.0),
+                });
+            }
         }
     }
 }

@@ -33,6 +33,10 @@ pub fn summarize(frame: &[u8]) -> String {
                                     "ICMP network unreachable".into()
                                 }
                                 IcmpErrorKind::DestUnreachable(1) => "ICMP host unreachable".into(),
+                                IcmpErrorKind::DestUnreachable(2) => {
+                                    "ICMP protocol unreachable".into()
+                                }
+                                IcmpErrorKind::DestUnreachable(3) => "ICMP port unreachable".into(),
                                 IcmpErrorKind::DestUnreachable(c) => {
                                     format!("ICMP unreachable (code {c})")
                                 }
@@ -129,6 +133,39 @@ mod tests {
             payload: ip.emit(),
         }
         .emit()
+    }
+
+    #[test]
+    fn names_the_common_icmp_unreachables() {
+        let frame = |kind| {
+            let e = IcmpError {
+                kind,
+                original: vec![0; 28],
+            };
+            let ip = Ipv4Packet {
+                dscp_ecn: 0,
+                ident: 1,
+                flags_frag: 0,
+                ttl: 64,
+                proto: IpProto::ICMP,
+                src: Ipv4Addr::new(10, 0, 0, 1),
+                dst: Ipv4Addr::new(10, 0, 0, 2),
+                payload: e.emit(),
+            };
+            EthernetFrame {
+                dst: MacAddr::BROADCAST,
+                src: MacAddr([2, 0, 0, 0, 0, 1]),
+                vlan: None,
+                ethertype: EtherType::IPV4,
+                payload: ip.emit(),
+            }
+            .emit()
+        };
+        assert!(summarize(&frame(IcmpErrorKind::DestUnreachable(3)))
+            .starts_with("ICMP port unreachable:"));
+        assert!(summarize(&frame(IcmpErrorKind::DestUnreachable(1)))
+            .starts_with("ICMP host unreachable:"));
+        assert!(summarize(&frame(IcmpErrorKind::TimeExceeded)).starts_with("ICMP time exceeded:"));
     }
 
     #[test]

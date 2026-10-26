@@ -118,6 +118,14 @@ impl L2Switch {
         &mut self.l3
     }
 
+    /// Run `f` on the layer 3 half with a context (to send a probe, say) and put whatever it
+    /// queued into the VLANs.
+    pub fn originate<R>(&mut self, ctx: &mut Ctx, f: impl FnOnce(&mut Router, &mut Ctx) -> R) -> R {
+        let r = f(&mut self.l3, ctx);
+        self.drain_l3(ctx);
+        r
+    }
+
     /// Find or create the SVI for `vlan` and return its interface index.
     pub fn add_svi(&mut self, vlan: u16) -> usize {
         let mac = MacAddr([2, 0xbb, 0, self.unit, (vlan >> 8) as u8, vlan as u8]);
