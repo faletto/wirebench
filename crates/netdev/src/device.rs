@@ -62,6 +62,11 @@ impl<'a> Ctx<'a> {
 
 pub trait Device: Any {
     fn handle(&mut self, ctx: &mut Ctx, ev: DeviceEvent);
+    /// A copy of this device and its state, for rewinding a simulation. Devices that cannot be
+    /// copied return `None`, and then the world cannot be snapshotted.
+    fn clone_box(&self) -> Option<Box<dyn Device>> {
+        None
+    }
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }

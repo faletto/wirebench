@@ -142,6 +142,7 @@ fn only_pcs_can_ping_and_new_messages_survive_the_byte_protocol() {
         port: 2,
         summary: "x".into(),
         bytes: 60,
+        frame: vec![1, 2, 3],
         from: 3,
         sent_ns: 2,
     };
@@ -179,4 +180,95 @@ fn hops_carry_sender_and_departure_time() {
     }
     // The first frame leaves at t=0 (serialization starts at once).
     assert_eq!(hops[0].2, 0);
+}
+
+#[test]
+fn stepping_back_restores_the_world_exactly() {
+    let (mut e, id) = engine();
+    e.handle(EngineCmd::PingOnce {
+        device: id("pc1"),
+        dst: [10, 0, 1, 1],
+    });
+    let mut seen = vec![e.world.trace_hash()];
+    for _ in 0..5 {
+        e.handle(EngineCmd::Step);
+        seen.push(e.world.trace_hash());
+    }
+    // Back through every step lands on each earlier state, and the ping itself can be undone.
+    for want in seen.iter().rev().skip(1) {
+        let ev = e.handle(EngineCmd::StepBack).remove(0);
+        assert!(matches!(ev, EngineEvent::Rewound { .. }), "{ev:?}");
+        assert_eq!(e.world.trace_hash(), *want);
+    }
+    let ev = e.handle(EngineCmd::StepBack).remove(0);
+    assert!(matches!(ev, EngineEvent::Rewound { left: 0, .. }));
+    assert!(matches!(
+        e.handle(EngineCmd::StepBack).remove(0),
+        EngineEvent::Error { .. }
+    ));
+    // And forward again gives the same history.
+    e.handle(EngineCmd::PingOnce {
+        device: id("pc1"),
+        dst: [10, 0, 1, 1],
+    });
+    for want in seen.iter().skip(1) {
+        e.handle(EngineCmd::Step);
+        assert_eq!(e.world.trace_hash(), *want);
+    }
+}
+
+#[test]
+fn a_console_command_or_a_run_forgets_what_could_be_undone() {
+    let (mut e, id) = engine();
+    e.handle(EngineCmd::PingOnce {
+        device: id("pc1"),
+        dst: [10, 0, 1, 1],
+    });
+    e.handle(EngineCmd::Step);
+    e.handle(EngineCmd::ForgetHistory);
+    assert!(matches!(
+        e.handle(EngineCmd::StepBack).remove(0),
+        EngineEvent::Error { .. }
+    ));
+    e.handle(EngineCmd::Step);
+    e.handle(EngineCmd::RunToIdle);
+    assert!(matches!(
+        e.handle(EngineCmd::StepBack).remove(0),
+        EngineEvent::Error { .. }
+    ));
+}
+
+#[test]
+fn a_step_that_finds_nothing_leaves_nothing_to_undo() {
+    let (mut e, _) = engine();
+    assert!(matches!(
+        e.handle(EngineCmd::Step).remove(0),
+        EngineEvent::Idle { .. }
+    ));
+    assert!(matches!(
+        e.handle(EngineCmd::StepBack).remove(0),
+        EngineEvent::Error { .. }
+    ));
+}
+
+#[test]
+fn hops_carry_the_frame_itself() {
+    let (mut e, id) = engine();
+    e.handle(EngineCmd::PingOnce {
+        device: id("pc1"),
+        dst: [10, 0, 1, 1],
+    });
+    let evs = step_all(&mut e);
+    let frames: Vec<&Vec<u8>> = evs
+        .iter()
+        .filter_map(|e| match e {
+            EngineEvent::Hop { frame, bytes, .. } => {
+                assert_eq!(frame.len() as u32, *bytes);
+                Some(frame)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(!frames.is_empty());
+    assert!(frames.iter().all(|f| wire::EthernetFrame::parse(f).is_ok()));
 }
