@@ -74,7 +74,7 @@ pub struct StaticRoute {
 }
 
 /// An IPv4 router: connected and static routes, ARP, TTL handling and ICMP errors.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Router {
     pub name: String,
     n_ports: u16,
@@ -1006,6 +1006,9 @@ impl Device for Router {
         self.flush(ctx);
     }
 
+    fn clone_box(&self) -> Option<Box<dyn Device>> {
+        Some(Box::new(self.clone()))
+    }
     fn as_any(&self) -> &dyn Any {
         self
     }

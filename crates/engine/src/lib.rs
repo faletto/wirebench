@@ -107,6 +107,20 @@ impl World {
         self.devices[id.0 as usize].handle(&mut ctx, dev_ev);
     }
 
+    /// A copy of the whole simulation as it is now, to come back to later. `None` if some device
+    /// cannot be copied.
+    pub fn snapshot(&self) -> Option<World> {
+        Some(World {
+            kernel: self.kernel.clone(),
+            devices: self
+                .devices
+                .iter()
+                .map(|d| d.clone_box())
+                .collect::<Option<Vec<_>>>()?,
+            storming: self.storming,
+        })
+    }
+
     pub fn is_device<T: Device>(&self, id: DeviceId) -> bool {
         self.devices[id.0 as usize].as_any().is::<T>()
     }

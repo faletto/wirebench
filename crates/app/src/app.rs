@@ -8,6 +8,7 @@ use crate::canvas::{Canvas, CanvasEvent, FlightDraw, Node, Scene, Tool};
 use crate::changes::{AutosaveState, Changes};
 use crate::files::{self, Inbox, Incoming};
 use crate::history::History;
+use crate::inspector::Filter;
 use crate::sim::{parse_ipv4, HopRow, Sim};
 use crate::term::TermModel;
 use crate::widget::{self, TermAction};
@@ -887,6 +888,7 @@ impl App {
             return;
         };
         let device = n.device;
+        self.push_mark();
         let ev = self.engine.handle(EngineCmd::PingOnce { device, dst });
         self.apply_sim(ev, false);
     }
@@ -897,10 +899,67 @@ impl App {
     }
 
     fn step_inner(&mut self, animate: bool) -> bool {
+        self.push_mark();
         let ev = self.engine.handle(EngineCmd::Step);
         let more = !matches!(ev.first(), Some(EngineEvent::Idle { .. }));
+        if !more {
+            self.sim.marks.pop();
+        }
         self.apply_sim(ev, animate);
         more
+    }
+
+    /// Note how long the log is before something the engine can undo. The engine keeps a limited
+    /// number of states; so do the marks, or they would drift out of step with it.
+    fn push_mark(&mut self) {
+        self.sim.marks.push(self.sim.hops.len());
+        if self.sim.marks.len() > engine::protocol::HISTORY_LIMIT {
+            self.sim.marks.remove(0);
+        }
+    }
+
+    /// Undo the latest step or queued ping exactly (the world is restored from a copy). Returns
+    /// false when there is nothing to go back to.
+    pub fn sim_back(&mut self) -> bool {
+        self.anim.playing = false;
+        let ev = self.engine.handle(EngineCmd::StepBack);
+        if !matches!(ev.first(), Some(EngineEvent::Rewound { .. })) {
+            return false;
+        }
+        let keep = self.sim.marks.pop().unwrap_or(0);
+        self.sim.hops.truncate(keep);
+        self.anim.flights.clear();
+        if self.sim.selected.is_some_and(|i| i >= keep) {
+            self.sim.selected = None;
+            self.sim.field = None;
+        }
+        true
+    }
+
+    pub fn sim_can_back(&self) -> bool {
+        !self.sim.marks.is_empty()
+    }
+
+    /// Open a row of the hop log in the detail view.
+    pub fn sim_select(&mut self, row: Option<usize>) {
+        self.sim.selected = row.filter(|i| *i < self.sim.hops.len());
+        self.sim.field = None;
+    }
+
+    pub fn sim_selected(&self) -> Option<usize> {
+        self.sim.selected
+    }
+
+    pub fn sim_set_filter(&mut self, text: &str) {
+        self.sim.filter = text.to_string();
+    }
+
+    /// Indices of the hop rows the filter lets through.
+    pub fn sim_visible(&self) -> Vec<usize> {
+        let f = Filter::parse(&self.sim.filter);
+        (0..self.sim.hops.len())
+            .filter(|i| f.matches(&self.sim.hops[*i]))
+            .collect()
     }
 
     /// Step to the next frame delivery (skipping bare timer events) and animate it.
@@ -979,6 +1038,7 @@ impl App {
                     port,
                     summary,
                     from,
+                    frame,
                     ..
                 } => {
                     if animate && self.anim.enabled {
@@ -992,11 +1052,16 @@ impl App {
                         .iter()
                         .find(|n| n.device == device)
                         .map_or_else(|| format!("#{device}"), |n| n.name.clone());
+                    let layers = wire::dissect(&frame);
+                    let protocols = wire::protocols(&layers);
                     self.sim.hops.push(HopRow {
                         ns,
                         device: name,
                         port,
                         summary,
+                        frame,
+                        layers,
+                        protocols,
                     });
                 }
                 EngineEvent::Error { message } => self.notice = Some(message),
@@ -1049,8 +1114,16 @@ impl App {
             if ui.button("Run").clicked() {
                 self.sim_run();
             }
+            let back = ui.add_enabled(self.sim_can_back(), egui::Button::new("Back"));
+            if back.on_hover_text("Undo the last step").clicked() {
+                self.sim_back();
+            }
             if ui.button("Clear").clicked() {
                 self.sim.hops.clear();
+                self.sim.marks.clear();
+                self.sim.selected = None;
+                self.sim.field = None;
+                self.engine.handle(EngineCmd::ForgetHistory);
                 self.anim.flights.clear();
             }
         });
@@ -1069,23 +1142,77 @@ impl App {
             }
         });
         ui.separator();
+        ui.horizontal(|ui| {
+            ui.label("Filter");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.sim.filter)
+                    .hint_text("icmp dev:r1 -arp")
+                    .desired_width(f32::INFINITY),
+            );
+        });
+        let visible = self.sim_visible();
+        let mut clicked = None;
+        let list_height = (ui.available_height() * 0.45).max(80.0);
         egui::ScrollArea::vertical()
+            .id_salt("hop_list")
+            .max_height(list_height)
             .stick_to_bottom(true)
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 if self.sim.hops.is_empty() {
                     ui.weak("Queue a ping, then Step to follow each frame.");
+                } else if visible.is_empty() {
+                    ui.weak("No frame matches the filter.");
                 }
-                for h in &self.sim.hops {
-                    ui.label(format!(
+                for &i in &visible {
+                    let h = &self.sim.hops[i];
+                    let line = format!(
                         "{:>9.3} ms  {}:{}  {}",
                         h.ns as f64 / 1e6,
                         h.device,
                         h.port,
                         h.summary
-                    ));
+                    );
+                    if ui
+                        .selectable_label(self.sim.selected == Some(i), line)
+                        .clicked()
+                    {
+                        clicked = Some(i);
+                    }
                 }
             });
+        if let Some(i) = clicked {
+            self.sim_select(Some(i));
+        }
+        ui.separator();
+        match self.sim.selected.and_then(|i| self.sim.hops.get(i)) {
+            Some(h) => {
+                let (frame, layers) = (h.frame.clone(), h.layers.clone());
+                ui.label(format!(
+                    "{} bytes, delivered to {} port {}",
+                    frame.len(),
+                    h.device,
+                    h.port
+                ));
+                let mut picked = None;
+                egui::ScrollArea::vertical()
+                    .id_salt("hop_detail")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for (n, layer) in layers.iter().enumerate() {
+                            node_tree(ui, layer, &format!("{n}"), &self.sim.field, &mut picked);
+                        }
+                        ui.add_space(6.0);
+                        hex_view(ui, &frame, self.sim.field.as_ref());
+                    });
+                if let Some(r) = picked {
+                    self.sim.field = Some(r);
+                }
+            }
+            None => {
+                ui.weak("Select a frame to see its fields and bytes.");
+            }
+        }
     }
 
     /// Run one terminal action against the engine and print the result.
@@ -1101,6 +1228,7 @@ impl App {
                 } else {
                     t.model.push_output(&format!("{}{line}", t.prompt));
                 }
+                self.sim.marks.clear();
                 match self.engine.handle(EngineCmd::Exec { terminal, line }).pop() {
                     Some(EngineEvent::Output { text, prompt, .. }) => {
                         t.model.push_output(&text);
@@ -1157,6 +1285,9 @@ impl App {
             let dt = (self.wall - last).clamp(0.0, 0.25);
             let to = world.kernel.now() + SimTime((dt * 1e9) as u64);
             world.run_until(to);
+            // Time has moved on behind the engine's back: its saved states are stale.
+            self.sim.marks.clear();
+            self.engine.handle(EngineCmd::ForgetHistory);
         }
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(100));
@@ -1398,5 +1529,77 @@ fn open_terminal(engine: &mut Engine, device: u32) -> (u32, String, String) {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         App::ui(self, ui);
+    }
+}
+
+/// One layer or field of a dissected frame. Clicking a line picks its bytes for the hex view.
+fn node_tree(
+    ui: &mut Ui,
+    node: &wire::Node,
+    path: &str,
+    picked_now: &Option<std::ops::Range<usize>>,
+    picked: &mut Option<std::ops::Range<usize>>,
+) {
+    let selected = picked_now.as_ref() == Some(&node.range);
+    if node.children.is_empty() {
+        if ui.selectable_label(selected, &node.label).clicked() {
+            *picked = Some(node.range.clone());
+        }
+        return;
+    }
+    let open = egui::CollapsingHeader::new(&node.label)
+        .id_salt(path)
+        .default_open(true)
+        .show(ui, |ui| {
+            for (i, c) in node.children.iter().enumerate() {
+                node_tree(ui, c, &format!("{path}.{i}"), picked_now, picked);
+            }
+        });
+    if open.header_response.clicked() {
+        *picked = Some(node.range.clone());
+    }
+}
+
+/// The frame in hex, sixteen bytes to a row, with the picked bytes highlighted.
+fn hex_view(ui: &mut Ui, frame: &[u8], picked: Option<&std::ops::Range<usize>>) {
+    use egui::text::{LayoutJob, TextFormat};
+    let font = egui::TextStyle::Monospace.resolve(ui.style());
+    let plain = TextFormat::simple(font.clone(), ui.visuals().text_color());
+    let mut hot = plain.clone();
+    hot.background = ui.visuals().selection.bg_fill;
+    hot.color = ui.visuals().selection.stroke.color;
+    for (row, chunk) in frame.chunks(16).enumerate() {
+        let mut job = LayoutJob::default();
+        job.append(&format!("{:04x}  ", row * 16), 0.0, plain.clone());
+        for (j, b) in chunk.iter().enumerate() {
+            let at = row * 16 + j;
+            let on = picked.is_some_and(|r| r.contains(&at));
+            let gap = if j == 7 { "  " } else { " " };
+            job.append(
+                &format!("{b:02x}"),
+                0.0,
+                if on { hot.clone() } else { plain.clone() },
+            );
+            job.append(gap, 0.0, plain.clone());
+        }
+        for j in chunk.len()..16 {
+            job.append(if j == 7 { "    " } else { "   " }, 0.0, plain.clone());
+        }
+        job.append(" ", 0.0, plain.clone());
+        for (j, b) in chunk.iter().enumerate() {
+            let at = row * 16 + j;
+            let on = picked.is_some_and(|r| r.contains(&at));
+            let ch = if (0x20..0x7f).contains(b) {
+                *b as char
+            } else {
+                '.'
+            };
+            job.append(
+                &ch.to_string(),
+                0.0,
+                if on { hot.clone() } else { plain.clone() },
+            );
+        }
+        ui.label(job);
     }
 }

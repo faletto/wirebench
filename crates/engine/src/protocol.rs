@@ -43,6 +43,10 @@ pub enum EngineCmd {
     },
     /// Dispatch exactly one simulation event.
     Step,
+    /// Undo the latest `Step` or `PingOnce`, exactly: the world goes back to how it was.
+    StepBack,
+    /// Drop the saved states `StepBack` uses (after the world was changed some other way).
+    ForgetHistory,
     /// Run until no events remain.
     RunToIdle,
 }
@@ -81,9 +85,16 @@ pub enum EngineEvent {
         port: u16,
         summary: String,
         bytes: u32,
+        /// The frame itself, for the inspector.
+        frame: Vec<u8>,
         /// Sending device and the virtual time its first bit left, for animation.
         from: u32,
         sent_ns: u64,
+    },
+    /// `StepBack` restored the previous state; `left` more steps can be undone.
+    Rewound {
+        ns: u64,
+        left: u32,
     },
     /// A timer fired (nothing to draw).
     Tick {
@@ -108,7 +119,12 @@ pub struct Engine {
     pub world: World,
     kinds: BTreeMap<u32, ShellKind>,
     terminals: Vec<Option<Shell>>,
+    /// The world as it was before each of the latest steps, oldest first.
+    history: Vec<World>,
 }
+
+/// How many steps can be undone. Each is a copy of the world.
+pub const HISTORY_LIMIT: usize = 64;
 
 impl std::fmt::Debug for Engine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -124,6 +140,19 @@ impl Engine {
             world,
             kinds: BTreeMap::new(),
             terminals: Vec::new(),
+            history: Vec::new(),
+        }
+    }
+
+    fn remember(&mut self) {
+        match self.world.snapshot() {
+            Some(w) => {
+                self.history.push(w);
+                if self.history.len() > HISTORY_LIMIT {
+                    self.history.remove(0);
+                }
+            }
+            None => self.history.clear(),
         }
     }
 
@@ -165,6 +194,8 @@ impl Engine {
                 let Some(Some(sh)) = self.terminals.get_mut(terminal as usize) else {
                     return err("no such terminal");
                 };
+                // A console command changes the world for good; stepping back past it would undo it.
+                self.history.clear();
                 match sh.exec(&mut self.world, &line) {
                     Some(text) => {
                         let prompt = sh.prompt(&self.world);
@@ -201,6 +232,7 @@ impl Engine {
                 if self.kinds.get(&device) != Some(&ShellKind::Host) {
                     return err("only a PC can send a ping");
                 }
+                self.remember();
                 self.world
                     .with_device::<netdev::Host, _>(DeviceId(device), |h, c| {
                         h.ping(c, wire::Ipv4Addr(dst))
@@ -209,44 +241,73 @@ impl Engine {
                     ns: self.world.kernel.now().0,
                 }]
             }
-            EngineCmd::Step => vec![match self.world.step() {
-                Some(crate::Delivered::Frame {
-                    at,
-                    device,
-                    port,
-                    frame,
-                    from,
-                    sent,
-                }) => EngineEvent::Hop {
-                    ns: at.0,
-                    device: device.0,
-                    port: port.0,
-                    summary: wire::summarize(&frame),
-                    bytes: frame.len() as u32,
-                    from: from.0,
-                    sent_ns: sent.0,
-                },
-                Some(crate::Delivered::Timer { at, device }) => EngineEvent::Tick {
-                    ns: at.0,
-                    device: device.0,
-                },
-                None => EngineEvent::Idle {
-                    ns: self.world.kernel.now().0,
-                },
-            }],
+            EngineCmd::StepBack => match self.history.pop() {
+                Some(w) => {
+                    self.world = w;
+                    vec![EngineEvent::Rewound {
+                        ns: self.world.kernel.now().0,
+                        left: self.history.len() as u32,
+                    }]
+                }
+                None => err("nothing to step back to"),
+            },
+            EngineCmd::ForgetHistory => {
+                self.history.clear();
+                vec![]
+            }
+            EngineCmd::Step => {
+                self.remember();
+                let ev = self.step_event();
+                if matches!(ev, EngineEvent::Idle { .. }) {
+                    self.history.pop();
+                }
+                vec![ev]
+            }
             EngineCmd::RunToIdle => {
+                self.history.clear();
                 self.world.run_to_idle();
                 vec![EngineEvent::Time {
                     ns: self.world.kernel.now().0,
                 }]
             }
             EngineCmd::Advance { ns } => {
+                self.history.clear();
                 let to = SimTime(self.world.kernel.now().0.saturating_add(ns));
                 self.world.run_until(to);
                 vec![EngineEvent::Time {
                     ns: self.world.kernel.now().0,
                 }]
             }
+        }
+    }
+
+    /// Dispatch one event and describe it.
+    fn step_event(&mut self) -> EngineEvent {
+        match self.world.step() {
+            Some(crate::Delivered::Frame {
+                at,
+                device,
+                port,
+                frame,
+                from,
+                sent,
+            }) => EngineEvent::Hop {
+                ns: at.0,
+                device: device.0,
+                port: port.0,
+                summary: wire::summarize(&frame),
+                bytes: frame.len() as u32,
+                frame,
+                from: from.0,
+                sent_ns: sent.0,
+            },
+            Some(crate::Delivered::Timer { at, device }) => EngineEvent::Tick {
+                ns: at.0,
+                device: device.0,
+            },
+            None => EngineEvent::Idle {
+                ns: self.world.kernel.now().0,
+            },
         }
     }
 

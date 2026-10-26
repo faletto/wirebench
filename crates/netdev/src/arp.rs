@@ -4,7 +4,7 @@ use wire::{Ipv4Addr, Ipv4Packet, MacAddr};
 
 /// ARP cache plus the queue of packets waiting for resolution, shared by hosts and routers.
 /// Expiry is lazy (checked on lookup) so it generates no timer events.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Resolver {
     cache: BTreeMap<Ipv4Addr, (MacAddr, SimTime)>,
     pending: BTreeMap<Ipv4Addr, Vec<Ipv4Packet>>,

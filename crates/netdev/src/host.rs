@@ -91,7 +91,7 @@ impl Default for DhcpClient {
 }
 
 /// An end host: one NIC, ARP cache, ICMP echo responder and a programmatic ping.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Host {
     pub name: String,
     pub mac: MacAddr,
@@ -672,6 +672,9 @@ impl Device for Host {
         }
     }
 
+    fn clone_box(&self) -> Option<Box<dyn Device>> {
+        Some(Box::new(self.clone()))
+    }
     fn as_any(&self) -> &dyn Any {
         self
     }

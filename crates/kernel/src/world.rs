@@ -48,7 +48,7 @@ impl LinkConfig {
     };
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Link {
     ends: [(DeviceId, PortId); 2],
     cfg: LinkConfig,
@@ -59,7 +59,7 @@ struct Link {
     busy_until: [SimTime; 2],
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Payload {
     Frame {
         link: LinkId,
@@ -78,7 +78,7 @@ enum Payload {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Scheduled {
     at: SimTime,
     seq: u64,
@@ -104,7 +104,7 @@ impl Ord for Scheduled {
 
 /// The event loop state. Devices live outside the kernel and are driven by whoever calls
 /// [`Kernel::next_event`] (the engine), which keeps this crate free of device types.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Kernel {
     now: SimTime,
     next_seq: u64,

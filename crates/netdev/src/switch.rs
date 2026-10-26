@@ -93,7 +93,7 @@ pub struct SpanningConfig {
 
 /// Learning bridge with VLANs: access and trunk ports, 802.1Q tagging, a MAC table per VLAN, and
 /// optionally one spanning tree per VLAN. No DTP or VTP yet.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct L2Switch {
     /// Hostname shown in prompts.
     pub name: String,
@@ -817,6 +817,9 @@ impl Device for L2Switch {
         self.bridge(ctx, Some(port), vlan, prio, &plain);
     }
 
+    fn clone_box(&self) -> Option<Box<dyn Device>> {
+        Some(Box::new(self.clone()))
+    }
     fn as_any(&self) -> &dyn Any {
         self
     }
