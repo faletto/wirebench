@@ -37,6 +37,18 @@ test = false
 doc = false
 
 [[bin]]
+name = "wire_udp"
+path = "fuzz_targets/wire_udp.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "wire_dhcp"
+path = "fuzz_targets/wire_dhcp.rs"
+test = false
+doc = false
+
+[[bin]]
 name = "wire_icmp"
 path = "fuzz_targets/wire_icmp.rs"
 test = false

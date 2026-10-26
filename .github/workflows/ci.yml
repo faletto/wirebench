@@ -81,7 +81,7 @@ jobs:
           tool: cargo-fuzz
       - name: Run every target for 20 seconds
         run: |
-          for t in wire_ethernet wire_arp wire_ipv4 wire_icmp shell_exec lab_load device_frames wire_summary lab_edit; do
+          for t in wire_ethernet wire_arp wire_ipv4 wire_icmp wire_udp wire_dhcp shell_exec lab_load device_frames wire_summary lab_edit; do
             echo "::group::$t"
             # +nightly: rust-toolchain.toml pins stable. --target: the prebuilt cargo-fuzz
             # binary would otherwise default to a musl target that is not installed.
