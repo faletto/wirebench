@@ -1,0 +1,55 @@
+format = "labsim-lab"
+version = 1
+
+[meta]
+title = "Two VLANs across a trunk"
+
+[[device]]
+name = "pc1"
+template = "host-pc"
+pos = [0, 0]
+
+[[device]]
+name = "pc3"
+template = "host-pc"
+pos = [0, 120]
+
+[[device]]
+name = "sw1"
+template = "switch-l2-8"
+pos = [150, 60]
+
+[[device]]
+name = "sw2"
+template = "switch-l2-8"
+pos = [350, 60]
+
+[[device]]
+name = "pc2"
+template = "host-pc"
+pos = [500, 0]
+
+[[device]]
+name = "pc4"
+template = "host-pc"
+pos = [500, 120]
+
+[[link]]
+a = "pc1:eth0"
+b = "sw1:Fa0/1"
+
+[[link]]
+a = "pc3:eth0"
+b = "sw1:Fa0/2"
+
+[[link]]
+a = "sw1:Fa0/8"
+b = "sw2:Fa0/8"
+
+[[link]]
+a = "pc2:eth0"
+b = "sw2:Fa0/1"
+
+[[link]]
+a = "pc4:eth0"
+b = "sw2:Fa0/2"

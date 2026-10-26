@@ -1,0 +1,141 @@
+
+== sw1
+sw1>enable
+sw1#configure terminal
+sw1(config)#vlan 10
+sw1(config-vlan)#name sales
+sw1(config-vlan)#vlan 20
+sw1(config-vlan)#name eng
+sw1(config-vlan)#exit
+sw1(config)#interface fa0/1
+sw1(config-if)#switchport access vlan 10
+sw1(config-if)#exit
+sw1(config)#interface fa0/2
+sw1(config-if)#switchport access vlan 20
+sw1(config-if)#exit
+sw1(config)#interface fa0/8
+sw1(config-if)#switchport mode trunk
+sw1(config-if)#end
+sw1#show vlan brief
+VLAN Name                             Status    Ports
+---- -------------------------------- --------- -------------------------------
+1    default                          active    Fa0/3, Fa0/4, Fa0/5, Fa0/6, Fa0/7
+10   sales                            active    Fa0/1
+20   eng                              active    Fa0/2
+sw1#show interfaces trunk
+Port        Mode         Encapsulation  Status        Native vlan
+Fa0/8       on           802.1q         trunking      1
+
+Port        Vlans allowed on trunk
+Fa0/8       1-4094
+
+Port        Vlans allowed and active in management domain
+Fa0/8       1,10,20
+
+== sw2
+sw2>enable
+sw2#configure terminal
+sw2(config)#vlan 10
+sw2(config-vlan)#name sales
+sw2(config-vlan)#vlan 20
+sw2(config-vlan)#name eng
+sw2(config-vlan)#exit
+sw2(config)#interface fa0/1
+sw2(config-if)#switchport access vlan 10
+sw2(config-if)#exit
+sw2(config)#interface fa0/2
+sw2(config-if)#switchport access vlan 20
+sw2(config-if)#exit
+sw2(config)#interface fa0/8
+sw2(config-if)#switchport mode trunk
+sw2(config-if)#end
+sw2#show running-config
+hostname sw2
+!
+vlan 10
+ name sales
+!
+vlan 20
+ name eng
+!
+interface FastEthernet0/1
+ switchport access vlan 10
+!
+interface FastEthernet0/2
+ switchport access vlan 20
+!
+interface FastEthernet0/8
+ switchport mode trunk
+!
+end
+
+== pc1
+pc1>ipconfig set 10.0.10.1 255.255.255.0
+
+== pc2
+pc2>ipconfig set 10.0.10.2 255.255.255.0
+
+== pc3
+pc3>ipconfig set 10.0.20.3 255.255.255.0
+
+== pc4
+pc4>ipconfig set 10.0.20.4 255.255.255.0
+
+== pc1
+pc1>ping 10.0.10.2
+Reply from 10.0.10.2: time=77us
+Reply from 10.0.10.2: time=42us
+Reply from 10.0.10.2: time=42us
+Reply from 10.0.10.2: time=42us
+Sent 4, received 4
+pc1>ping 10.0.20.4
+No reply (timed out).
+No reply (timed out).
+No reply (timed out).
+No reply (timed out).
+Sent 4, received 0
+
+== pc3
+pc3>ping 10.0.20.4
+Reply from 10.0.20.4: time=77us
+Reply from 10.0.20.4: time=42us
+Reply from 10.0.20.4: time=42us
+Reply from 10.0.20.4: time=42us
+Sent 4, received 4
+
+== sw1
+sw1#show mac address-table
+Vlan  Mac Address     Port
+10    0200.0000.0001  Fa0/1
+10    0200.0000.0401  Fa0/8
+20    0200.0000.0101  Fa0/2
+20    0200.0000.0501  Fa0/8
+sw1#configure terminal
+sw1(config)#interface fa0/8
+sw1(config-if)#switchport trunk allowed vlan remove 20
+sw1(config-if)#end
+sw1#show interfaces trunk
+Port        Mode         Encapsulation  Status        Native vlan
+Fa0/8       on           802.1q         trunking      1
+
+Port        Vlans allowed on trunk
+Fa0/8       1-19,21-4094
+
+Port        Vlans allowed and active in management domain
+Fa0/8       1,10
+
+== pc3
+pc3>ping 10.0.20.4
+No reply (timed out).
+No reply (timed out).
+No reply (timed out).
+No reply (timed out).
+Sent 4, received 0
+
+== pc1
+pc1>ping 10.0.10.2
+Reply from 10.0.10.2: time=42us
+Reply from 10.0.10.2: time=42us
+Reply from 10.0.10.2: time=42us
+Reply from 10.0.10.2: time=42us
+Sent 4, received 4
