@@ -26,6 +26,7 @@ fn protocol_messages_roundtrip() {
         EngineEvent::TerminalOpened {
             terminal: 0,
             prompt: "r1>".into(),
+            greeting: String::new(),
         },
         EngineEvent::Output {
             terminal: 0,
@@ -63,8 +64,9 @@ fn terminal_session_over_the_byte_protocol() {
     let mut call =
         |cmd: EngineCmd| -> Vec<EngineEvent> { decode(&e.handle_bytes(&encode(&cmd))).unwrap() };
 
-    let EngineEvent::TerminalOpened { terminal, prompt } =
-        call(EngineCmd::OpenTerminal { device: r1.0 }).remove(0)
+    let EngineEvent::TerminalOpened {
+        terminal, prompt, ..
+    } = call(EngineCmd::OpenTerminal { device: r1.0 }).remove(0)
     else {
         panic!("expected TerminalOpened")
     };

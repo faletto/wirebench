@@ -74,11 +74,14 @@ fn running_config_roundtrip() {
 fn copy_run_start_saves_the_running_config() {
     let mut c = blank_chain();
     let mut sh = Shell::router(c.r1);
-    assert!(sh.startup_config().is_none());
+    assert!(sh.startup_config(&c.world).is_none());
     for line in ["enable", "copy running-config startup-config"] {
         sh.exec(&mut c.world, line).unwrap();
     }
-    assert!(sh.startup_config().unwrap().starts_with("hostname r1"));
+    assert!(sh
+        .startup_config(&c.world)
+        .unwrap()
+        .starts_with("hostname r1"));
 }
 
 #[test]

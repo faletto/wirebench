@@ -253,6 +253,16 @@ pub fn build(lab: &LabFile, trace: Trace) -> Result<BuiltLab, BuildError> {
         if dev.kind == LabKind::Host {
             continue;
         }
+        // The saved configuration is device state (`reload` restores it); the running one is
+        // replayed over a fresh device.
+        match dev.kind {
+            LabKind::Router => {
+                world.with_device::<Router, _>(dev.id, |r, _| r.startup = d.startup_config.clone())
+            }
+            LabKind::Switch => world
+                .with_device::<L2Switch, _>(dev.id, |s, _| s.startup = d.startup_config.clone()),
+            LabKind::Host => {}
+        }
         if let Some(cfg) = d.running_config.as_ref().or(d.startup_config.as_ref()) {
             apply_config(&mut world, dev, cfg, &mut warnings);
         }
@@ -269,31 +279,15 @@ pub fn build(lab: &LabFile, trace: Trace) -> Result<BuiltLab, BuildError> {
     })
 }
 
-/// Replay IOS-style config text through the router's CLI. Lines the CLI rejects become
+/// Replay IOS-style config text through the device's CLI. Lines the CLI rejects become
 /// warnings, not errors, so an old lab still opens after the grammar changes.
 fn apply_config(world: &mut World, dev: &LabDevice, cfg: &str, warnings: &mut Vec<String>) {
     let mut sh = match dev.kind {
         LabKind::Switch => Shell::switch(dev.id),
         _ => Shell::router(dev.id),
     };
-    for line in ["enable", "configure terminal"] {
-        sh.exec(world, line);
-    }
-    for (n, raw) in cfg.lines().enumerate() {
-        let line = raw.trim();
-        if line.is_empty() || line == "!" || line == "end" {
-            continue;
-        }
-        match sh.exec(world, line) {
-            Some(out) if out.is_empty() => {}
-            Some(out) => warnings.push(format!(
-                "{} config line {}: `{line}`: {}",
-                dev.name,
-                n + 1,
-                out.lines().last().unwrap_or("")
-            )),
-            None => break,
-        }
+    for p in sh.replay(world, cfg) {
+        warnings.push(format!("{} {p}", dev.name));
     }
 }
 
@@ -473,6 +467,16 @@ impl Topology {
                 }
                 LabKind::Host => None,
             };
+            // What `copy running-config startup-config` saved travels with the lab.
+            match d.kind {
+                LabKind::Router => {
+                    entry.startup_config = world.device::<Router>(d.id).startup.clone()
+                }
+                LabKind::Switch => {
+                    entry.startup_config = world.device::<L2Switch>(d.id).startup.clone()
+                }
+                LabKind::Host => {}
+            }
             if let Some(cfg) = config {
                 // Only record a running config when it differs from the startup config.
                 let same = entry
