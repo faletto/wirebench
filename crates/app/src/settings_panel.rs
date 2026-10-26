@@ -70,10 +70,7 @@ impl App {
         self.panel_refresh();
         self.panel.said = said;
         // The device's prompt or hostname may have changed.
-        if let Some(EngineEvent::Time { ns, background }) = self.engine.send(EngineCmd::Now).pop() {
-            self.sim_now = ns;
-            self.background = background;
-        }
+        self.refresh_clock();
     }
 
     /// The panel's state for the active device (reads it first), for tests.

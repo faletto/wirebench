@@ -1,0 +1,68 @@
+format = "labsim-lab"
+version = 1
+
+[meta]
+title = "Redundant switches"
+
+[[device]]
+name = "sw1"
+template = "switch-l2-8"
+pos = [500, 40]
+running_config = """
+spanning-tree mode rapid-pvst
+spanning-tree vlan 1 priority 4096
+"""
+
+[[device]]
+name = "sw2"
+template = "switch-l2-8"
+pos = [250, 200]
+running_config = """
+spanning-tree mode rapid-pvst
+interface FastEthernet0/3
+ spanning-tree portfast
+"""
+
+[[device]]
+name = "sw3"
+template = "switch-l2-8"
+pos = [750, 200]
+running_config = """
+spanning-tree mode rapid-pvst
+interface FastEthernet0/3
+ spanning-tree portfast
+"""
+
+[[device]]
+name = "pc1"
+template = "host-pc"
+pos = [100, 200]
+[device.host]
+ipv4 = "10.0.0.1/24"
+
+[[device]]
+name = "pc2"
+template = "host-pc"
+pos = [900, 200]
+[device.host]
+ipv4 = "10.0.0.2/24"
+
+[[link]]
+a = "sw1:Fa0/1"
+b = "sw2:Fa0/1"
+
+[[link]]
+a = "sw1:Fa0/2"
+b = "sw3:Fa0/1"
+
+[[link]]
+a = "sw2:Fa0/2"
+b = "sw3:Fa0/2"
+
+[[link]]
+a = "pc1:eth0"
+b = "sw2:Fa0/3"
+
+[[link]]
+a = "pc2:eth0"
+b = "sw3:Fa0/3"

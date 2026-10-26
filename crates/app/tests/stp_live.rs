@@ -120,3 +120,48 @@ fn a_lab_without_spanning_tree_leaves_the_clock_alone() {
     }
     assert_eq!(app.sim_time_ns(), 0);
 }
+
+const REDUNDANT: &str = include_str!("../../../testkit/throttle/m2-lab.toml");
+
+/// Found in a real browser: with spanning tree running, the live clock ran a queued ping to the
+/// end between frames, so Step found nothing to step through.
+#[test]
+fn a_ping_being_stepped_through_is_not_run_ahead_by_the_live_clock() {
+    let mut app = App::from_lab_text(REDUNDANT).unwrap();
+    let ctx = Context::default();
+    let mut t = 0.0;
+    let mut frames = |app: &mut App, n: usize| {
+        for _ in 0..n {
+            t += 0.05;
+            frame_at(&ctx, app, t, vec![]);
+        }
+    };
+    frames(&mut app, 200);
+    let before = app.sim_time_ns();
+    assert!(before > 9_000_000_000, "time ran while nothing was queued");
+    app.sim_queue_ping("pc1", [10, 0, 0, 2]);
+    frames(&mut app, 40);
+    assert_eq!(
+        app.sim_hops().len(),
+        0,
+        "nothing was delivered behind the stepper's back"
+    );
+    assert!(
+        app.sim_time_ns() - before < 100_000_000,
+        "and time stood still while frames were queued"
+    );
+    assert!(app.sim_step_hop());
+    assert_eq!(app.sim_hops().len(), 1);
+    // Back to before the ping: nothing is queued, so time runs again.
+    assert!(app.sim_back());
+    assert!(app.sim_back());
+    let at = app.sim_time_ns();
+    frames(&mut app, 40);
+    assert!(app.sim_time_ns() > at + 1_000_000_000);
+    // Stepped to the end, the simulation is idle and the clock resumes.
+    app.sim_queue_ping("pc1", [10, 0, 0, 2]);
+    app.sim_run();
+    let at = app.sim_time_ns();
+    frames(&mut app, 40);
+    assert!(app.sim_time_ns() > at + 1_000_000_000);
+}

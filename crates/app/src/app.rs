@@ -118,6 +118,9 @@ pub struct App {
     /// Simulated time and whether upkeep timers are pending, as the engine last said.
     sim_now: u64,
     background: bool,
+    /// The person is stepping through something (a queued ping): the live clock must not run it
+    /// off ahead of them.
+    busy: bool,
     frame_ms: f32,
     /// Milliseconds from the start of loading to the first drawn frame (see `clock`).
     ready_ms: Option<f64>,
@@ -196,6 +199,7 @@ impl App {
             live_at: None,
             sim_now: 0,
             background: false,
+            busy: false,
             frame_ms: 0.0,
             ready_ms: None,
         };
@@ -929,6 +933,7 @@ impl App {
         };
         let device = n.device;
         self.push_mark();
+        self.busy = true;
         let ev = self.engine.send(EngineCmd::PingOnce { device, dst });
         self.apply_sim(ev, false);
     }
@@ -967,8 +972,10 @@ impl App {
         if !matches!(ev.first(), Some(EngineEvent::Rewound { .. })) {
             return false;
         }
+        self.refresh_clock();
         let keep = self.sim.marks.pop().unwrap_or(0);
         self.sim.hops.truncate(keep);
+        self.busy = !self.sim.marks.is_empty();
         self.anim.flights.clear();
         if self.sim.selected.is_some_and(|i| i >= keep) {
             self.sim.selected = None;
@@ -1163,6 +1170,7 @@ impl App {
             if ui.button("Clear").clicked() {
                 self.sim.hops.clear();
                 self.sim.marks.clear();
+                self.busy = false;
                 self.sim.selected = None;
                 self.sim.field = None;
                 self.engine.send(EngineCmd::ForgetHistory);
@@ -1325,7 +1333,8 @@ impl App {
     /// something happens. While such timers are pending, let simulated time pass as real time
     /// does, so that waiting at a console works the way it does on a real switch.
     fn run_live_time(&mut self, ui: &Ui) {
-        if !self.background || self.anim.playing {
+        // While a ping is being stepped through, time must not run on ahead of the person stepping.
+        if !self.background || self.busy || self.anim.playing {
             self.live_at = None;
             return;
         }
@@ -1352,10 +1361,16 @@ impl App {
                     self.sim_now = *ns;
                     self.background = *background;
                 }
-                EngineEvent::Hop { ns, .. }
-                | EngineEvent::Tick { ns, .. }
-                | EngineEvent::Idle { ns }
-                | EngineEvent::Rewound { ns, .. } => self.sim_now = *ns,
+                // Stepping delivers what was queued; the engine says when nothing is left.
+                EngineEvent::Hop { ns, .. } | EngineEvent::Tick { ns, .. } => {
+                    self.sim_now = *ns;
+                    self.busy = true;
+                }
+                EngineEvent::Idle { ns } => {
+                    self.sim_now = *ns;
+                    self.busy = false;
+                }
+                EngineEvent::Rewound { ns, .. } => self.sim_now = *ns,
                 _ => {}
             }
         }
