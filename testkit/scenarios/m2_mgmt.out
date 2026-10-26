@@ -1,0 +1,256 @@
+
+== r1
+r1>enable
+r1#configure terminal
+r1(config)#hostname edge
+edge(config)#enable secret cisco
+edge(config)#enable password plain
+edge(config)#service password-encryption
+edge(config)#banner motd #Authorised users only#
+edge(config)#line console 0
+edge(config-line)#password lab
+edge(config-line)#login
+edge(config-line)#exit
+edge(config)#line vty 0 4
+edge(config-line)#password vty
+edge(config-line)#login
+edge(config-line)#end
+edge#show running-config
+service password-encryption
+!
+hostname edge
+!
+enable secret wb1$2c72007c$8da5a0f424257774
+enable password wb0$0705130c0c
+!
+interface GigabitEthernet0/0
+ no ip address
+ shutdown
+!
+interface GigabitEthernet0/1
+ no ip address
+ shutdown
+!
+banner motd #
+Authorised users only
+#
+!
+line console 0
+ password wb0$1b0810
+ login
+!
+line vty 0 4
+ password wb0$011d0b
+ login
+!
+end
+edge#write
+Configuration saved.
+edge#show startup-config
+service password-encryption
+!
+hostname edge
+!
+enable secret wb1$2c72007c$8da5a0f424257774
+enable password wb0$0705130c0c
+!
+interface GigabitEthernet0/0
+ no ip address
+ shutdown
+!
+interface GigabitEthernet0/1
+ no ip address
+ shutdown
+!
+banner motd #
+Authorised users only
+#
+!
+line console 0
+ password wb0$1b0810
+ login
+!
+line vty 0 4
+ password wb0$011d0b
+ login
+!
+end
+
+== r1 (new session)
+Authorised users only
+
+User Access Verification
+Password: 
+Password: 
+Password: 
+% Bad passwords
+Password: 
+edge>enable
+Password: 
+Password: 
+Password: 
+% Bad secrets
+edge>enable
+Password: 
+edge#show running-config
+service password-encryption
+!
+hostname edge
+!
+enable secret wb1$2c72007c$8da5a0f424257774
+enable password wb0$0705130c0c
+!
+interface GigabitEthernet0/0
+ no ip address
+ shutdown
+!
+interface GigabitEthernet0/1
+ no ip address
+ shutdown
+!
+banner motd #
+Authorised users only
+#
+!
+line console 0
+ password wb0$1b0810
+ login
+!
+line vty 0 4
+ password wb0$011d0b
+ login
+!
+end
+edge#configure terminal
+edge(config)#hostname temp
+temp(config)#interface g0/0
+temp(config-if)#ip address 10.0.0.1 255.255.255.0
+temp(config-if)#no shutdown
+temp(config-if)#end
+temp#reload
+System configuration has been modified. Save? [yes/no]: maybe
+% Please answer 'yes' or 'no'.
+System configuration has been modified. Save? [yes/no]: no
+Proceed with reload? [confirm]y
+Reload requested.
+System restarted.
+
+Authorised users only
+
+User Access Verification
+Password: 
+edge>enable
+Password: 
+edge#show running-config
+service password-encryption
+!
+hostname edge
+!
+enable secret wb1$2c72007c$8da5a0f424257774
+enable password wb0$0705130c0c
+!
+interface GigabitEthernet0/0
+ no ip address
+ shutdown
+!
+interface GigabitEthernet0/1
+ no ip address
+ shutdown
+!
+banner motd #
+Authorised users only
+#
+!
+line console 0
+ password wb0$1b0810
+ login
+!
+line vty 0 4
+ password wb0$011d0b
+ login
+!
+end
+
+== r1 (new session)
+Authorised users only
+
+User Access Verification
+Password: 
+edge>enable
+Password: 
+edge#erase startup-config
+Erasing the saved configuration. [confirm]n
+edge#erase startup-config
+Erasing the saved configuration. [confirm]
+Erase of the saved configuration complete.
+edge#reload
+System configuration has been modified. Save? [yes/no]: no
+Proceed with reload? [confirm]
+Reload requested.
+System restarted.
+Router>enable
+Router#show startup-config
+startup-config is not present
+
+== r1 (new session)
+Router>enable
+Router#configure terminal
+Router(config)#banner motd #
+Enter TEXT message.  End with the character '#'.
+Line one
+
+! not a comment
+#
+Router(config)#end
+Router#show running-config
+hostname Router
+!
+interface GigabitEthernet0/0
+ no ip address
+ shutdown
+!
+interface GigabitEthernet0/1
+ no ip address
+ shutdown
+!
+banner motd #
+Line one
+
+! not a comment
+#
+!
+end
+
+== sw1
+sw1>enable
+sw1#configure terminal
+sw1(config)#enable secret swpass
+sw1(config)#vlan 10
+sw1(config-vlan)#name sales
+sw1(config-vlan)#banner motd $Switch banner$
+sw1(config-vlan)#end
+sw1#write
+Configuration saved.
+sw1#show running-config
+hostname sw1
+!
+enable secret wb1$5d0a12ba$b7de47052a95624c
+!
+vlan 10
+ name sales
+!
+banner motd #
+Switch banner
+#
+!
+end
+sw1#disable
+sw1>enable
+Password: 
+Password: 
+sw1#reload
+Proceed with reload? [confirm]
+Reload requested.
+System restarted.
+
+Switch banner

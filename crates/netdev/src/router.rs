@@ -1,5 +1,5 @@
 use crate::fib::{mask, Fib, Route, RouteKind};
-use crate::{Ctx, Device, DeviceEvent, Resolver};
+use crate::{Ctx, Device, DeviceEvent, Mgmt, Resolver};
 use kernel::{PortId, SimTime};
 use std::any::Any;
 use wire::{
@@ -81,6 +81,10 @@ pub struct Router {
     /// With routing off, where traffic for other networks goes (`ip default-gateway`).
     default_gateway: Option<Ipv4Addr>,
     outbox: Vec<Outgoing>,
+    /// Passwords, banner and lines (see [`Mgmt`]).
+    pub mgmt: Mgmt,
+    /// The saved configuration: what `copy running-config startup-config` stored.
+    pub startup: Option<String>,
 }
 
 impl Router {
@@ -107,7 +111,29 @@ impl Router {
             routing: true,
             default_gateway: None,
             outbox: Vec::new(),
+            mgmt: Mgmt::default(),
+            startup: None,
         }
+    }
+
+    /// Back to what a router is before anyone configures it: default name, nothing addressed,
+    /// every port shut down, no routes, passwords or banner, empty ARP cache. The saved
+    /// configuration survives (it is what a reload restores).
+    pub fn factory_reset(&mut self) {
+        self.name = "Router".to_string();
+        self.ifaces.truncate(self.n_ports as usize);
+        for ifc in &mut self.ifaces {
+            ifc.addr = None;
+            ifc.shutdown = true;
+            ifc.line_down = false;
+        }
+        self.statics.clear();
+        self.arp = Resolver::default();
+        self.outbox.clear();
+        self.routing = true;
+        self.default_gateway = None;
+        self.mgmt = Mgmt::default();
+        self.rebuild_fib();
     }
 
     /// Every logical interface: the physical ports, then subinterfaces.

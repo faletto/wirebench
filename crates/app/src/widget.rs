@@ -42,7 +42,8 @@ pub fn handle_events(model: &mut TermModel, events: &[Event]) -> Vec<TermAction>
             Event::Text(_) if device_switch => {}
             Event::Text(s) => {
                 for ch in s.chars() {
-                    if ch == '?' {
+                    // A password may contain `?`; everywhere else it asks for help.
+                    if ch == '?' && !model.secret {
                         actions.push(TermAction::Help(model.input()));
                     } else {
                         model.insert(ch.encode_utf8(&mut [0; 4]));
@@ -117,6 +118,7 @@ pub fn show(
     prompt: &str,
     request_focus: bool,
 ) -> Vec<TermAction> {
+    model.secret = prompt == engine::shell::PASSWORD_PROMPT;
     let font = TextStyle::Monospace.resolve(ui.style());
     let row_h = ui.fonts_mut(|f| f.row_height(&font));
     let fg = ui.visuals().text_color();
@@ -184,7 +186,12 @@ fn draw_input_row(
     fg: Color32,
     dim: Color32,
 ) -> (egui::Rect, egui::Rect) {
-    let input: Vec<char> = model.input().chars().collect();
+    // A password is never drawn, not even as dots: only the cursor shows the line is live.
+    let input: Vec<char> = if model.secret {
+        Vec::new()
+    } else {
+        model.input().chars().collect()
+    };
     let cursor = model.cursor().min(input.len());
     let before: String = input[..cursor].iter().collect();
     let under = input.get(cursor).copied().unwrap_or(' ');
@@ -198,7 +205,7 @@ fn draw_input_row(
     let mut job = LayoutJob::default();
     job.append(prompt, 0.0, plain(dim));
     job.append(&before, 0.0, plain(fg));
-    if !model.preedit.is_empty() {
+    if !model.preedit.is_empty() && !model.secret {
         let mut f = plain(fg);
         f.underline = egui::Stroke::new(1.0, fg);
         job.append(&model.preedit, 0.0, f);

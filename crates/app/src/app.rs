@@ -1086,7 +1086,12 @@ impl App {
         let terminal = t.terminal;
         match action {
             TermAction::Submit(line) => {
-                t.model.push_output(&format!("{}{line}", t.prompt));
+                // What is typed at a password prompt is not echoed.
+                if t.prompt == engine::shell::PASSWORD_PROMPT {
+                    t.model.push_output(&t.prompt);
+                } else {
+                    t.model.push_output(&format!("{}{line}", t.prompt));
+                }
                 match self.engine.handle(EngineCmd::Exec { terminal, line }).pop() {
                     Some(EngineEvent::Output { text, prompt, .. }) => {
                         t.model.push_output(&text);
@@ -1094,7 +1099,11 @@ impl App {
                     }
                     Some(EngineEvent::Closed { .. }) => {
                         t.model.push_output("[session closed; opened a new one]");
-                        let (terminal, prompt) = open_terminal(&mut self.engine, t.device);
+                        let (terminal, prompt, greeting) =
+                            open_terminal(&mut self.engine, t.device);
+                        if !greeting.is_empty() {
+                            t.model.push_output(&greeting);
+                        }
                         t.terminal = terminal;
                         t.prompt = prompt;
                     }
@@ -1327,12 +1336,15 @@ fn new_tab(engine: &mut Engine, d: &LabDevice, node: usize) -> Tab {
         LabKind::Switch => ShellKind::Switch,
     };
     engine.set_kind(d.id, kind);
-    let (terminal, prompt) = open_terminal(engine, d.id.0);
+    let (terminal, prompt, greeting) = open_terminal(engine, d.id.0);
     let mut model = TermModel::default();
     model.push_output(&format!(
         "{}: type ? for help, Tab to complete. Try `enable`, `configure terminal`.",
         d.name
     ));
+    if !greeting.is_empty() {
+        model.push_output(&greeting);
+    }
     Tab {
         name: d.name.clone(),
         node,
@@ -1343,9 +1355,13 @@ fn new_tab(engine: &mut Engine, d: &LabDevice, node: usize) -> Tab {
     }
 }
 
-fn open_terminal(engine: &mut Engine, device: u32) -> (u32, String) {
+fn open_terminal(engine: &mut Engine, device: u32) -> (u32, String, String) {
     match engine.handle(EngineCmd::OpenTerminal { device }).remove(0) {
-        EngineEvent::TerminalOpened { terminal, prompt } => (terminal, prompt),
+        EngineEvent::TerminalOpened {
+            terminal,
+            prompt,
+            greeting,
+        } => (terminal, prompt, greeting),
         other => panic!("unexpected {other:?}"),
     }
 }

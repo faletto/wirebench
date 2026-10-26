@@ -2,7 +2,7 @@
 //! Re-bless deliberately: `BLESS=1 cargo test -p engine --test vlan_scenario`.
 
 use engine::lab::{load_and_build, LabKind};
-use engine::shell::Shell;
+use engine::shell::{Shell, PASSWORD_PROMPT};
 use kernel::Trace;
 use std::path::Path;
 
@@ -22,6 +22,12 @@ const INTER_VLAN: Scenario = Scenario {
     lab: include_str!("../../../testkit/scenarios/m2_inter_vlan.lab.toml"),
     script: include_str!("../../../testkit/scenarios/m2_inter_vlan.script"),
     golden: "../../testkit/scenarios/m2_inter_vlan.out",
+};
+
+const MGMT: Scenario = Scenario {
+    lab: include_str!("../../../testkit/scenarios/m2_mgmt.lab.toml"),
+    script: include_str!("../../../testkit/scenarios/m2_mgmt.script"),
+    golden: "../../testkit/scenarios/m2_mgmt.out",
 };
 
 const SVI: Scenario = Scenario {
@@ -47,21 +53,48 @@ fn transcript(sc: &Scenario) -> String {
         .collect();
     let mut out = String::new();
     let mut cur = 0;
-    for line in sc.script.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
+    for raw in sc.script.lines() {
+        // `# ` starts a comment (a lone `#` is text: a banner delimiter). An empty line is skipped;
+        // `<enter>` sends an empty line, as pressing Return at a [confirm] prompt does.
+        let line = raw.trim_end();
+        if line.is_empty() || line.starts_with("# ") {
             continue;
         }
-        if let Some(name) = line.strip_prefix('@') {
+        let line = if line == "<enter>" { "" } else { line };
+        if let Some(name) = raw.trim_end().strip_prefix('@') {
+            let (name, fresh) = match name.strip_suffix('!') {
+                Some(n) => (n, true),
+                None => (name, false),
+            };
             cur = shells
                 .iter()
                 .position(|(n, _)| n == name)
                 .expect("known device");
-            out += &format!("\n== {name}\n");
+            out += &format!("\n== {name}{}\n", if fresh { " (new session)" } else { "" });
+            if fresh {
+                let d = &lab.devices[cur];
+                let mut sh = match d.kind {
+                    LabKind::Host => Shell::host(d.id),
+                    LabKind::Router => Shell::router(d.id),
+                    LabKind::Switch => Shell::switch(d.id),
+                };
+                let greeting = sh.greeting(&lab.world);
+                if !greeting.is_empty() {
+                    out += &greeting;
+                    out += "\n";
+                }
+                shells[cur].1 = sh;
+            }
             continue;
         }
         let sh = &mut shells[cur].1;
-        out += &format!("{}{line}\n", sh.prompt(&lab.world));
+        let prompt = sh.prompt(&lab.world);
+        // Typed passwords are not echoed, as in the app.
+        if prompt == PASSWORD_PROMPT {
+            out += &format!("{prompt}\n");
+        } else {
+            out += &format!("{prompt}{line}\n");
+        }
         if let Some(text) = sh.exec(&mut lab.world, line) {
             if !text.is_empty() {
                 out += &text;
@@ -91,6 +124,11 @@ fn the_two_vlan_lab_matches_its_golden_transcript() {
 #[test]
 fn the_router_on_a_stick_lab_matches_its_golden_transcript() {
     check_golden(&INTER_VLAN);
+}
+
+#[test]
+fn the_management_lab_matches_its_golden_transcript() {
+    check_golden(&MGMT);
 }
 
 #[test]

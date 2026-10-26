@@ -12,6 +12,8 @@ pub struct TermModel {
     draft: Vec<char>,
     /// IME composition text shown at the cursor but not yet part of the input.
     pub preedit: String,
+    /// The line being typed is a password: nothing is echoed, remembered or recalled.
+    pub secret: bool,
 }
 
 const MAX_SCROLLBACK: usize = 5_000;
@@ -131,7 +133,7 @@ impl TermModel {
     /// Finish the line: returns it, records it in history, and clears the input.
     pub fn take_line(&mut self) -> String {
         let line = self.input();
-        if !line.trim().is_empty() && self.history.last() != Some(&line) {
+        if !self.secret && !line.trim().is_empty() && self.history.last() != Some(&line) {
             self.history.push(line.clone());
         }
         self.clear_line();
@@ -139,7 +141,7 @@ impl TermModel {
     }
 
     pub fn history_prev(&mut self) {
-        if self.history.is_empty() {
+        if self.secret || self.history.is_empty() {
             return;
         }
         let i = match self.hist_pos {
@@ -155,7 +157,9 @@ impl TermModel {
     }
 
     pub fn history_next(&mut self) {
-        let Some(i) = self.hist_pos else { return };
+        let Some(i) = self.hist_pos.filter(|_| !self.secret) else {
+            return;
+        };
         if i + 1 < self.history.len() {
             self.hist_pos = Some(i + 1);
             self.input = self.history[i + 1].chars().collect();

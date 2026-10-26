@@ -5,6 +5,7 @@ mod arp;
 mod device;
 mod fib;
 mod host;
+mod mgmt;
 mod router;
 mod switch;
 mod vlan;
@@ -13,6 +14,10 @@ pub use arp::Resolver;
 pub use device::{Ctx, Device, DeviceEvent};
 pub use fib::{mask, Fib, Route, RouteKind};
 pub use host::{Host, PingResult};
+pub use mgmt::{
+    banner_delimiter, check_secret, hash_secret, is_hashed, obscure, password_text, plain_password,
+    reveal, stored_secret, Line, Mgmt,
+};
 pub use router::{EncapError, Interface, Outgoing, Router, StaticRoute, SubInterface};
 pub use switch::{L2Switch, MacEntry, PortConfig, PortMode};
 pub use vlan::{all_vlans, format_vlan_list, parse_vlan_list, DEFAULT_VLAN, MAX_VLAN};

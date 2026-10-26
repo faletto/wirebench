@@ -1,5 +1,5 @@
 use crate::vlan::{all_vlans, DEFAULT_VLAN};
-use crate::{Ctx, Device, DeviceEvent, Router};
+use crate::{Ctx, Device, DeviceEvent, Mgmt, Router};
 use kernel::{PortId, SimTime};
 use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
@@ -59,12 +59,16 @@ pub struct L2Switch {
     l3: Router,
     /// Makes SVI MAC addresses unique across switches in a lab.
     unit: u8,
+    /// Passwords, banner and lines (see [`Mgmt`]).
+    pub mgmt: Mgmt,
+    /// The saved configuration: what `copy running-config startup-config` stored.
+    pub startup: Option<String>,
 }
 
 impl L2Switch {
     pub fn new(n_ports: u16) -> Self {
         L2Switch {
-            name: "switch".to_string(),
+            name: "Switch".to_string(),
             ports: vec![PortConfig::default(); n_ports as usize],
             vlans: BTreeMap::from([(DEFAULT_VLAN, "default".to_string())]),
             table: BTreeMap::new(),
@@ -75,7 +79,26 @@ impl L2Switch {
                 r
             },
             unit: 0,
+            mgmt: Mgmt::default(),
+            startup: None,
         }
+    }
+
+    /// Back to an unconfigured switch: default name, every port an access port in VLAN 1, only
+    /// VLAN 1, no SVIs, empty MAC table, no passwords or banner. The saved configuration
+    /// survives (it is what a reload restores).
+    pub fn factory_reset(&mut self) {
+        self.name = "Switch".to_string();
+        let n = self.ports.len();
+        self.ports = vec![PortConfig::default(); n];
+        self.vlans = BTreeMap::from([(DEFAULT_VLAN, "default".to_string())]);
+        self.table.clear();
+        self.l3 = {
+            let mut r = Router::new("switch", 0, 0);
+            r.set_routing(false);
+            r
+        };
+        self.mgmt = Mgmt::default();
     }
 
     /// Set before creating SVIs; their MACs are `02:bb:00:<unit>:<vlan>`.

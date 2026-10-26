@@ -52,6 +52,9 @@ pub enum EngineEvent {
     TerminalOpened {
         terminal: u32,
         prompt: String,
+        /// Text to show before the prompt: the login banner and, if the console needs a
+        /// password, the notice before the password prompt. Often empty.
+        greeting: String,
     },
     Output {
         terminal: u32,
@@ -143,17 +146,19 @@ impl Engine {
         match cmd {
             EngineCmd::OpenTerminal { device } => {
                 let id = DeviceId(device);
-                let shell = match self.kinds.get(&device) {
+                let mut shell = match self.kinds.get(&device) {
                     Some(ShellKind::Router) => Shell::router(id),
                     Some(ShellKind::Host) => Shell::host(id),
                     Some(ShellKind::Switch) => Shell::switch(id),
                     None => return err("device has no shell"),
                 };
+                let greeting = shell.greeting(&self.world);
                 let prompt = shell.prompt(&self.world);
                 self.terminals.push(Some(shell));
                 vec![EngineEvent::TerminalOpened {
                     terminal: self.terminals.len() as u32 - 1,
                     prompt,
+                    greeting,
                 }]
             }
             EngineCmd::Exec { terminal, line } => {
