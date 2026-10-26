@@ -19,7 +19,7 @@ AI assistant and should not be used to size M3.
 | DTP | `provenance/dtp.md` | Dynamic auto/desirable, `nonegotiate`; **default port mode is now dynamic auto** |
 | Packet inspector | `provenance/packet-inspector.md` | Filter, field tree, hex view, exact step back |
 | Device settings panels | `provenance/device-panels.md` | PC, router, switch; run through the real CLI |
-| Engine in a Web Worker | `docs/engine-worker.md` | Steps 1 to 4 of 5 done; see below |
+| Engine in a Web Worker | `docs/engine-worker.md` | All 5 steps done; load-tested at 8x; browser check in CI |
 
 About 500 tests (unit, integration, property, golden transcripts, a late-answering engine) pass on
 the three CI targets; there are fuzz targets for every new parser.
@@ -68,8 +68,8 @@ ranges (found by fuzzing, not the browser). See `testkit/throttle/README.md` and
 
 ## Open
 
-- **Worker, last step:** run the load test at 8x and add a check of the worker to CI
-  (`engine-worker.md`). The clock is still driven by page frames, so a hidden tab pauses it.
+- **Worker:** the CI job `worker-browser` is new and has not run on a GitHub runner yet. The clock
+  is still driven by page frames, so a hidden tab pauses it (`engine-worker.md`).
 - **UI scale:** one tab per device means 84 tabs take a fifth of the window, and a frame costs
   6 to 7 ms with that many devices. The plan's per-frame budget is still not met or measured on a
   100-node lab.
