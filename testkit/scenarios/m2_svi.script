@@ -1,0 +1,86 @@
+# One switch, two VLANs, one SVI per VLAN. The switch only answers for its own addresses until
+# `ip routing` turns it into a router; an SVI is down while its VLAN has no port.
+@sw1
+enable
+configure terminal
+interface fa0/1
+switchport access vlan 10
+exit
+interface fa0/2
+switchport access vlan 20
+exit
+interface vlan 10
+ip address 10.0.10.1 255.255.255.0
+exit
+interface vlan 20
+ip address 10.0.20.1 255.255.255.0
+end
+show ip interface brief
+show ip route
+
+@pc1
+ipconfig set 10.0.10.2 255.255.255.0
+ipconfig gateway 10.0.10.1
+@pc2
+ipconfig set 10.0.20.2 255.255.255.0
+ipconfig gateway 10.0.20.1
+
+# Management only: each SVI answers its own VLAN, nothing is routed between them.
+@pc1
+ping 10.0.10.1
+ping 10.0.20.2
+
+@sw1
+configure terminal
+ip routing
+end
+show ip route
+@pc1
+ping 10.0.20.2
+@pc2
+ping 10.0.10.2
+
+@sw1
+show mac address-table
+
+# Take pc2's port out of VLAN 20: SVI 20 goes down and the route to it disappears.
+configure terminal
+interface fa0/2
+switchport access vlan 10
+end
+show ip interface brief
+show ip route
+@pc1
+ping 10.0.20.2
+@sw1
+configure terminal
+interface fa0/2
+switchport access vlan 20
+exit
+interface vlan 10
+shutdown
+end
+show ip interface brief
+@pc2
+ping 10.0.10.2
+
+# Errors: an address on a switch port, switchport on an SVI, a VLAN interface that is not there.
+@sw1
+configure terminal
+interface fa0/3
+ip address 10.9.9.1 255.255.255.0
+interface vlan 20
+switchport mode trunk
+no interface vlan 30
+no interface vlan 20
+end
+show running-config
+
+# Without routing the switch uses a default gateway for its own traffic.
+configure terminal
+no ip routing
+interface vlan 10
+no shutdown
+ip default-gateway 10.0.10.254
+end
+show ip route

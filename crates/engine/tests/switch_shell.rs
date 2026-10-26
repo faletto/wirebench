@@ -320,3 +320,59 @@ fn help_and_abbreviations_work_for_switchport() {
     assert_eq!(out, "");
     assert!(show(&mut lab, "show interfaces trunk").contains("1-4094"));
 }
+
+#[test]
+fn svi_config_survives_a_save_and_reload_and_still_routes() {
+    let mut lab = load_and_build(LAB, Trace::new()).unwrap();
+    let out = conf(
+        &mut lab,
+        &[
+            "interface fa0/1",
+            "switchport access vlan 10",
+            "interface fa0/2",
+            "switchport access vlan 20",
+            "interface vlan 10",
+            "ip address 10.0.10.1 255.255.255.0",
+            "interface vlan 20",
+            "ip address 10.0.20.1 255.255.255.0",
+            "shutdown",
+            "exit",
+            "ip routing",
+            "ip route 192.168.0.0 255.255.0.0 10.0.10.9",
+            "ip default-gateway 10.0.10.9",
+        ],
+    );
+    assert!(
+        !out.contains("% ") || out.matches("% ").count() == 2,
+        "{out}"
+    );
+    let cfg = show(&mut lab, "show running-config");
+    for want in [
+        "ip routing",
+        "interface Vlan10\n ip address 10.0.10.1 255.255.255.0",
+        "interface Vlan20\n ip address 10.0.20.1 255.255.255.0\n shutdown",
+        "ip default-gateway 10.0.10.9",
+        "ip route 192.168.0.0 255.255.0.0 10.0.10.9",
+    ] {
+        assert!(cfg.contains(want), "missing {want:?} in\n{cfg}");
+    }
+    let with_cfg = LAB.replace(
+        "template = \"switch-l2-8\"\npos = [100, 0]",
+        &format!("template = \"switch-l2-8\"\npos = [100, 0]\nstartup_config = '''\n{cfg}\n'''"),
+    );
+    let mut again = load_and_build(&with_cfg, Trace::new()).unwrap();
+    assert!(again.warnings.is_empty(), "{:?}", again.warnings);
+    assert_eq!(show(&mut again, "show running-config"), cfg);
+    // The reloaded switch answers for its SVI: pc1 (VLAN 10) pings 10.0.10.1.
+    let mut pc = Shell::host(again.devices[0].id);
+    run(
+        &mut pc,
+        &mut again.world,
+        &[
+            "ipconfig set 10.0.10.2 255.255.255.0",
+            "ipconfig gateway 10.0.10.1",
+        ],
+    );
+    let out = run(&mut pc, &mut again.world, &["ping 10.0.10.1"]);
+    assert!(out.contains("received 4"), "{out}");
+}

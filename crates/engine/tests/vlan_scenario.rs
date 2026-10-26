@@ -24,6 +24,12 @@ const INTER_VLAN: Scenario = Scenario {
     golden: "../../testkit/scenarios/m2_inter_vlan.out",
 };
 
+const SVI: Scenario = Scenario {
+    lab: include_str!("../../../testkit/scenarios/m2_svi.lab.toml"),
+    script: include_str!("../../../testkit/scenarios/m2_svi.script"),
+    golden: "../../testkit/scenarios/m2_svi.out",
+};
+
 fn transcript(sc: &Scenario) -> String {
     let mut lab = load_and_build(sc.lab, Trace::new()).expect("lab builds");
     assert!(lab.warnings.is_empty(), "{:?}", lab.warnings);
@@ -85,6 +91,11 @@ fn the_two_vlan_lab_matches_its_golden_transcript() {
 #[test]
 fn the_router_on_a_stick_lab_matches_its_golden_transcript() {
     check_golden(&INTER_VLAN);
+}
+
+#[test]
+fn the_svi_lab_matches_its_golden_transcript() {
+    check_golden(&SVI);
 }
 
 #[test]

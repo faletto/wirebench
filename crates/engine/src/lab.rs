@@ -158,6 +158,7 @@ fn instantiate(
         Template::Switch(n) => {
             let mut sw = L2Switch::new(n);
             sw.name = d.name.clone();
+            sw.set_unit(unit);
             (world.add_device(sw), LabKind::Switch, n)
         }
         Template::Host => {
