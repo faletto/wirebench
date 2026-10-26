@@ -9,6 +9,7 @@ mod changes;
 pub mod clock;
 mod files;
 mod history;
+mod inspector;
 mod sim;
 mod term;
 pub mod widget;

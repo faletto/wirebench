@@ -7,6 +7,11 @@ pub struct HopRow {
     pub device: String,
     pub port: u16,
     pub summary: String,
+    /// The frame as delivered, and its layers, for the field tree and the hex view.
+    pub frame: Vec<u8>,
+    pub layers: Vec<wire::Node>,
+    /// Layer names (`icmp`, `arp`, ...) for the filter.
+    pub protocols: Vec<&'static str>,
 }
 
 #[derive(Debug, Default)]
@@ -15,6 +20,13 @@ pub struct Sim {
     pub src: Option<usize>,
     pub dst: String,
     pub hops: Vec<HopRow>,
+    /// Text typed in the filter box.
+    pub filter: String,
+    /// The row open in the detail view (an index into `hops`), and the bytes of the field picked.
+    pub selected: Option<usize>,
+    pub field: Option<std::ops::Range<usize>>,
+    /// `hops.len()` before each step or queued ping the engine can still undo, oldest first.
+    pub marks: Vec<usize>,
 }
 
 /// `a.b.c.d`, nothing else.

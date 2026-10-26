@@ -124,7 +124,7 @@ pub struct Engine {
 }
 
 /// How many steps can be undone. Each is a copy of the world.
-const HISTORY_LIMIT: usize = 64;
+pub const HISTORY_LIMIT: usize = 64;
 
 impl std::fmt::Debug for Engine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
