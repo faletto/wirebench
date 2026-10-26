@@ -166,3 +166,38 @@ fn a_ping_being_stepped_through_is_not_run_ahead_by_the_live_clock() {
     frames(&mut app, 40);
     assert!(app.sim_time_ns() > at + 1_000_000_000);
 }
+
+/// A hidden tab draws no frames. When the next one comes, the time that went by is made up for, in
+/// bounded rounds, so the lab is where it would have been had the clock kept running.
+#[test]
+fn time_that_passed_while_no_frames_were_drawn_is_made_up_for() {
+    let mut app = App::from_lab_text(REDUNDANT).unwrap();
+    let ctx = Context::default();
+    let mut t = 0.0;
+    for _ in 0..40 {
+        t += 0.05;
+        frame_at(&ctx, &mut app, t, vec![]);
+    }
+    let before = app.sim_time_ns();
+    // Half an hour with the tab hidden.
+    t += 1800.0;
+    for _ in 0..60 {
+        t += 0.1;
+        frame_at(&ctx, &mut app, t, vec![]);
+    }
+    let gained = (app.sim_time_ns() - before) as f64 / 1e9;
+    assert!(
+        gained >= 1800.0,
+        "only {gained} s of the half hour was made up"
+    );
+    assert!(gained < 1820.0, "{gained} s: more than passed");
+    // Beyond an hour the lab carries on from where it was rather than racing to catch up.
+    let before = app.sim_time_ns();
+    t += 5.0 * 3600.0;
+    for _ in 0..100 {
+        t += 0.1;
+        frame_at(&ctx, &mut app, t, vec![]);
+    }
+    let gained = (app.sim_time_ns() - before) as f64 / 1e9;
+    assert!((3600.0..3640.0).contains(&gained), "{gained}");
+}

@@ -20,6 +20,12 @@ use engine::protocol::{DeviceView, EngineCmd, EngineEvent, LabView, ShellKind};
 
 /// The shortest wall time, in seconds, between rounds of messages that move the live clock on.
 const LIVE_ROUND: f64 = 0.1;
+/// The most simulated time one round asks for. A tab that was hidden owes all the time that went by
+/// and pays it back in rounds, so the engine is never given more than a moment's work at once.
+const LIVE_CHUNK: f64 = 600.0;
+/// The longest gap between frames that is made up for (a hidden tab, a laptop that slept). Beyond
+/// this the lab simply carries on from where it was.
+const LIVE_MAX_GAP: f64 = 3600.0;
 
 /// Events asked for in one message when fast-forwarding.
 const RUN_BATCH: u32 = 5_000;
@@ -1353,16 +1359,18 @@ impl App {
             return;
         }
         if let Some(last) = self.live_at.replace(self.wall) {
-            // A long gap (a hidden tab) is not made up for.
-            self.live_debt += (self.wall - last).clamp(0.0, 0.25);
+            // A long gap (a hidden tab draws no frames) is made up for on the next one: what the
+            // lab did meanwhile is the same as if the clock had kept running.
+            self.live_debt += (self.wall - last).clamp(0.0, LIVE_MAX_GAP);
             // One round at a time: an engine that falls behind is not sent more to do, and the
             // time that passed meanwhile is asked for together when it catches up.
             // Also not more often than the page asks to be drawn: an answer wakes the page, and
             // without this the answer would start the next round at once, a loop at full speed.
             if !self.live_in_flight && self.wall - self.live_sent >= LIVE_ROUND {
                 self.live_sent = self.wall;
-                let ns = (self.live_debt * 1e9) as u64;
-                self.live_debt = 0.0;
+                let owed = self.live_debt.min(LIVE_CHUNK);
+                let ns = (owed * 1e9) as u64;
+                self.live_debt -= owed;
                 self.live_in_flight = true;
                 // One message a round: advancing time already makes the engine forget what could
                 // be stepped back over, and its answer carries the clock.
