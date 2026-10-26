@@ -11,6 +11,7 @@ mod files;
 mod history;
 mod inspector;
 mod link;
+mod settings;
 mod sim;
 mod term;
 pub mod widget;

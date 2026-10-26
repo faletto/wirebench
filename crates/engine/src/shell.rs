@@ -1344,7 +1344,7 @@ fn if_name(port: usize) -> String {
 
 /// Name of logical interface `i`: `GigabitEthernet0/1`, or `GigabitEthernet0/1.10` for a
 /// subinterface.
-fn iface_name(r: &Router, i: usize) -> String {
+pub(crate) fn iface_name(r: &Router, i: usize) -> String {
     let ifc = &r.interfaces()[i];
     match (ifc.svi, ifc.sub) {
         (Some(v), _) => format!("Vlan{v}"),
@@ -1698,6 +1698,14 @@ impl Shell {
     }
 
     /// Run one line; returns the text to show (possibly empty). `None` means the session ended.
+    /// Start in global configuration mode, with no password asked: for the settings panels, which
+    /// act for the owner of the lab rather than for someone at a login prompt.
+    pub fn enter_config(&mut self) {
+        if self.kind != Kind::Host {
+            self.session.enter(self.modes.config, None);
+        }
+    }
+
     pub fn exec(&mut self, w: &mut World, line: &str) -> Option<String> {
         if let Some(p) = self.pending.take() {
             return Some(self.answer(w, p, line));
