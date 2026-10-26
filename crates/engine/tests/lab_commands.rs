@@ -207,3 +207,68 @@ fn now_reports_the_clock_and_whether_upkeep_is_pending() {
         other => panic!("{other:?}"),
     }
 }
+
+fn texts(evs: &[EngineEvent]) -> Vec<&String> {
+    evs.iter()
+        .filter_map(|e| match e {
+            EngineEvent::LabText { text } => Some(text),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_engine_pushes_the_lab_text_after_what_can_change_it_and_only_when_it_did() {
+    let mut r = Rig::new();
+    let evs = r.send(EngineCmd::Load { lab: LAB.into() });
+    assert!(matches!(evs[0], EngineEvent::Lab { .. }));
+    assert_eq!(texts(&evs).len(), 1, "a load is followed by the text");
+    let loaded = texts(&evs)[0].clone();
+    assert_eq!(loaded, r.text());
+    let evs = r.send(EngineCmd::AddDevice {
+        kind: ShellKind::Switch,
+        pos: [1, 2],
+    });
+    assert_eq!(texts(&evs).len(), 1);
+    assert_ne!(*texts(&evs)[0], loaded);
+    let EngineEvent::Lab { view } = &evs[0] else {
+        panic!()
+    };
+    let (n, dev) = (
+        view.devices.len() - 1,
+        view.devices[view.devices.len() - 1].clone(),
+    );
+    // A move to where the device already is changes nothing, so nothing is pushed.
+    let evs = r.send(EngineCmd::MoveDevice {
+        device: n,
+        pos: dev.pos,
+    });
+    assert!(texts(&evs).is_empty(), "{evs:?}");
+    let evs = r.send(EngineCmd::MoveDevice {
+        device: n,
+        pos: [7, 8],
+    });
+    assert_eq!(texts(&evs).len(), 1);
+    // A console line that changes the config is followed by the text; one that does not, is not.
+    let term = match r
+        .send(EngineCmd::OpenTerminal { device: dev.device })
+        .remove(0)
+    {
+        EngineEvent::TerminalOpened { terminal, .. } => terminal,
+        other => panic!("{other:?}"),
+    };
+    let say = |r: &mut Rig, line: &str| {
+        r.send(EngineCmd::Exec {
+            terminal: term,
+            line: line.into(),
+        })
+    };
+    assert!(texts(&say(&mut r, "enable")).is_empty());
+    assert!(texts(&say(&mut r, "show vlan brief")).is_empty());
+    say(&mut r, "configure terminal");
+    let evs = say(&mut r, "hostname pushed");
+    assert_eq!(texts(&evs).len(), 1);
+    assert!(texts(&evs)[0].contains("pushed"));
+    // The output still comes first.
+    assert!(matches!(evs[0], EngineEvent::Output { .. }));
+}

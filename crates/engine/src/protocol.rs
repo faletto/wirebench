@@ -196,6 +196,20 @@ pub enum EngineEvent {
     },
 }
 
+/// A command with the number its answer will carry, as it crosses to an engine that answers later.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct Request {
+    pub id: u64,
+    pub cmd: EngineCmd,
+}
+
+/// What came of one [`Request`]. Answers arrive in the order the requests were made.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct Response {
+    pub id: u64,
+    pub events: Vec<EngineEvent>,
+}
+
 pub fn encode<T: Serialize>(v: &T) -> Vec<u8> {
     postcard::to_allocvec(v).expect("serialisable")
 }
@@ -212,6 +226,8 @@ pub struct Engine {
     history: Vec<World>,
     /// The lab behind the world, when the engine was made from one.
     topology: Option<Topology>,
+    /// The last lab text sent, to send only changes.
+    last_text: Option<String>,
 }
 
 fn shell_kind(k: LabKind) -> ShellKind {
@@ -249,6 +265,7 @@ impl Engine {
             terminals: Vec::new(),
             history: Vec::new(),
             topology: None,
+            last_text: None,
         }
     }
 
@@ -269,6 +286,7 @@ impl Engine {
         }
         self.terminals.clear();
         self.history.clear();
+        self.last_text = None;
         let view = Self::view_of(&topo, warnings);
         self.topology = Some(topo);
         view
@@ -376,7 +394,35 @@ impl Engine {
         self.kinds.insert(device.0, kind);
     }
 
+    /// Run one command. Anything that can change the lab as `Snapshot` would write it (an edit,
+    /// a console line, a panel) is followed by a `LabText` when the text really did change, so a
+    /// UI can keep a current copy and never has to wait to ask for one.
     pub fn handle(&mut self, cmd: EngineCmd) -> Vec<EngineEvent> {
+        let may_change = matches!(
+            cmd,
+            EngineCmd::Load { .. }
+                | EngineCmd::AddDevice { .. }
+                | EngineCmd::MoveDevice { .. }
+                | EngineCmd::AddLink { .. }
+                | EngineCmd::RemoveDevice { .. }
+                | EngineCmd::RemoveLink { .. }
+                | EngineCmd::Exec { .. }
+                | EngineCmd::Configure { .. }
+        );
+        let mut events = self.handle_one(cmd);
+        if may_change {
+            if let Some(t) = &self.topology {
+                let text = labfile::save(&t.snapshot(&self.world));
+                if self.last_text.as_deref() != Some(text.as_str()) {
+                    self.last_text = Some(text.clone());
+                    events.push(EngineEvent::LabText { text });
+                }
+            }
+        }
+        events
+    }
+
+    fn handle_one(&mut self, cmd: EngineCmd) -> Vec<EngineEvent> {
         let err = |m: &str| {
             vec![EngineEvent::Error {
                 message: m.to_string(),
@@ -569,6 +615,22 @@ impl Engine {
             None => EngineEvent::Idle {
                 ns: self.world.kernel.now().0,
             },
+        }
+    }
+
+    /// The form a worker runs: a postcard [`Request`] in, a postcard [`Response`] out.
+    pub fn serve(&mut self, input: &[u8]) -> Vec<u8> {
+        match decode::<Request>(input) {
+            Ok(Request { id, cmd }) => encode(&Response {
+                id,
+                events: self.handle(cmd),
+            }),
+            Err(_) => encode(&Response {
+                id: u64::MAX,
+                events: vec![EngineEvent::Error {
+                    message: "undecodable request".to_string(),
+                }],
+            }),
         }
     }
 

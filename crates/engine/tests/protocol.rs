@@ -128,3 +128,20 @@ fn terminal_session_over_the_byte_protocol() {
         }]
     );
 }
+
+#[test]
+fn requests_and_responses_carry_the_number_that_pairs_them() {
+    use engine::protocol::{Request, Response};
+    let mut e = Engine::new(engine::World::new(kernel::Trace::new()));
+    let out = e.serve(&encode(&Request {
+        id: 41,
+        cmd: EngineCmd::Now,
+    }));
+    let r: Response = decode(&out).unwrap();
+    assert_eq!(r.id, 41);
+    assert!(matches!(r.events[0], EngineEvent::Time { .. }));
+    // Garbage is answered, with a number that matches nothing.
+    let r: Response = decode(&e.serve(&[0xff, 0xff, 0xff])).unwrap();
+    assert_eq!(r.id, u64::MAX);
+    assert!(matches!(r.events[0], EngineEvent::Error { .. }));
+}

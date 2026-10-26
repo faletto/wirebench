@@ -27,6 +27,15 @@ pub struct Sim {
     pub field: Option<std::ops::Range<usize>>,
     /// `hops.len()` before each step or queued ping the engine can still undo, oldest first.
     pub marks: Vec<usize>,
+    /// A step is out with the engine; no other is started until it is answered.
+    pub in_flight: bool,
+    /// Steps left before a stepping run gives up (so a runaway lab cannot hang the UI).
+    pub budget: u32,
+    /// How the latest stepping run ended: `Some(true)` something happened (or the budget ran
+    /// out), `Some(false)` the simulation is idle.
+    pub outcome: Option<bool>,
+    /// Whether the latest `StepBack` was done.
+    pub rewound: bool,
 }
 
 /// `a.b.c.d`, nothing else.

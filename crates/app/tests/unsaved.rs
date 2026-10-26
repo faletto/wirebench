@@ -400,6 +400,7 @@ fn autosave_fires_after_the_delay_and_only_once_per_change() {
     app.add_device(LabKind::Host, [0, 0]);
     frame(&ctx, &mut app, 11.0); // this frame also sends the new title, which repaints once
     frame(&ctx, &mut app, 11.05); // and egui reports a request one frame late
+    frame(&ctx, &mut app, 11.07); // the settings panel for the new device draws once its state arrives
     let w = frame(&ctx, &mut app, 11.1);
     assert!(store.load().is_none(), "too soon");
     assert!(

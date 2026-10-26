@@ -25,6 +25,9 @@ fn ready() -> (App, Context) {
     let ctx = Context::default();
     frame(&ctx, &mut app, 0.0);
     frame(&ctx, &mut app, 0.01);
+    // The settings panel asks the engine for the open device's state and draws it a frame later.
+    frame(&ctx, &mut app, 0.02);
+    frame(&ctx, &mut app, 0.03);
     (app, ctx)
 }
 
