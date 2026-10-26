@@ -1,0 +1,62 @@
+# Two switches joined on Fa0/8, a PC in VLAN 10 on each. Nothing sets a trunk by hand: sw1 asks
+# for one (dynamic desirable) and sw2 is left at its default (dynamic auto).
+@sw1
+enable
+configure terminal
+vlan 10
+exit
+interface fa0/1
+switchport access vlan 10
+exit
+interface fa0/8
+switchport mode dynamic desirable
+end
+show interfaces fa0/8 switchport
+@sw2
+enable
+configure terminal
+vlan 10
+exit
+interface fa0/1
+switchport access vlan 10
+end
+show interfaces fa0/8 switchport
+%wait 3
+show interfaces fa0/8 switchport
+show interfaces trunk
+@sw1
+show interfaces trunk
+@pc1
+ipconfig set 10.0.10.1 255.255.255.0
+@pc2
+ipconfig set 10.0.10.2 255.255.255.0
+@pc1
+ping 10.0.10.2
+# nonegotiate and a dynamic mode cannot go together.
+@sw1
+configure terminal
+interface fa0/8
+switchport nonegotiate
+switchport mode trunk
+switchport nonegotiate
+end
+show interfaces fa0/8 switchport
+show running-config
+# With sw1 silent, sw2 keeps its trunk for three DTP intervals, then gives up.
+@sw2
+%wait 30
+show interfaces trunk
+%wait 70
+show interfaces trunk
+@pc1
+ping 10.0.10.2
+# Both ends set by hand and nothing negotiated: it works.
+@sw2
+configure terminal
+interface fa0/8
+switchport mode trunk
+switchport nonegotiate
+end
+show interfaces trunk
+@pc1
+ping 10.0.10.2

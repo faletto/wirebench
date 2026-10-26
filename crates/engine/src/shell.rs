@@ -30,6 +30,8 @@ const SVI_ONLY: &str = "% Addresses go on VLAN interfaces (interface vlan N), no
 const BAD_BRIDGE_PRIORITY: &str = "% Bridge Priority must be in increments of 4096.\n% Allowed values are:\n  0     4096  8192  12288 16384 20480 24576 28672\n  32768 36864 40960 45056 49152 53248 57344 61440";
 const BAD_PORT_PRIORITY: &str = "% Port priority must be a multiple of 16.";
 const NO_SPAN_INSTANCE: &str = "No spanning tree instance exists.";
+const NEGOTIATE_CONFLICT: &str =
+    "Command rejected: Conflict between 'nonegotiate' and 'dynamic' status.";
 const PORT_ONLY: &str = "% switchport commands apply to switch ports, not VLAN interfaces.";
 /// A prompt that asks for a secret; the UI must not echo what is typed after it.
 pub const PASSWORD_PROMPT: &str = "Password: ";
@@ -161,6 +163,11 @@ const CLEAR_DHCP_ADDR: u32 = 139;
 const TRACERT: u32 = 150;
 const ROUTER_PING: u32 = 151;
 const TRACEROUTE: u32 = 152;
+const SW_MODE_AUTO: u32 = 180;
+const SW_MODE_DESIRABLE: u32 = 181;
+const SW_NONEGOTIATE: u32 = 182;
+const NO_SW_NONEGOTIATE: u32 = 183;
+const SHOW_SWITCHPORT: u32 = 184;
 const SPAN_MODE_PVST: u32 = 160;
 const SPAN_MODE_RAPID: u32 = 161;
 const NO_SPAN_MODE: u32 = 162;
@@ -548,6 +555,51 @@ fn switch_grammar() -> (Grammar, Modes) {
         "switchport mode trunk",
         &["Switch port settings", "Port mode", "Tagged, many VLANs"],
         h(SW_MODE_TRUNK),
+    );
+    g.cmd(
+        &[config_if],
+        "switchport mode dynamic auto",
+        &[
+            "Switch port settings",
+            "Port mode",
+            "Negotiate",
+            "Trunk if the neighbour asks",
+        ],
+        h(SW_MODE_AUTO),
+    );
+    g.cmd(
+        &[config_if],
+        "switchport mode dynamic desirable",
+        &[
+            "Switch port settings",
+            "Port mode",
+            "Negotiate",
+            "Ask the neighbour to trunk",
+        ],
+        h(SW_MODE_DESIRABLE),
+    );
+    g.cmd(
+        &[config_if],
+        "switchport nonegotiate",
+        &["Switch port settings", "Send no trunk negotiation"],
+        h(SW_NONEGOTIATE),
+    );
+    g.cmd(
+        &[config_if],
+        "no switchport nonegotiate",
+        &["Negate", "Switch port settings", "Negotiate trunking again"],
+        h(NO_SW_NONEGOTIATE),
+    );
+    g.cmd(
+        &[user, privileged],
+        "show interfaces <name:word> switchport",
+        &[
+            "Show",
+            "Interface information",
+            "Interface, e.g. fa0/1",
+            "Switching settings",
+        ],
+        h(SHOW_SWITCHPORT),
     );
     g.cmd(
         &[config_if],
@@ -1666,7 +1718,7 @@ impl Shell {
     /// After a command: a switch looks at its cables and gets spanning tree going if it is on.
     fn settle(&self, w: &mut World) {
         if self.kind == Kind::Switch {
-            w.with_device::<L2Switch, _>(self.device, |s, ctx| s.stp_refresh(ctx));
+            w.with_device::<L2Switch, _>(self.device, |s, ctx| s.refresh(ctx));
         }
     }
 
@@ -2031,6 +2083,17 @@ impl Shell {
                     w.with_device::<L2Switch, _>(id, |s, _| s.set_vlan_name(vid, name));
                 }
             }
+            SW_MODE_AUTO | SW_MODE_DESIRABLE | SW_NONEGOTIATE | NO_SW_NONEGOTIATE => {
+                return self.switchport(w, handler, a)
+            }
+            SHOW_SWITCHPORT => {
+                let name = a.word("name").unwrap();
+                let sw = w.device::<L2Switch>(id);
+                return match parse_switch_ifname(name, sw.n_ports() as usize) {
+                    Some(p) => show_switchport(sw, p),
+                    None => format!("{UNKNOWN_INTERFACE} {name}"),
+                };
+            }
             SW_MODE_ACCESS | SW_MODE_TRUNK | NO_SW_MODE | SW_ACCESS_VLAN | NO_SW_ACCESS_VLAN
             | SW_NATIVE | NO_SW_NATIVE | SW_ALLOWED | SW_ALLOWED_ADD | SW_ALLOWED_REMOVE
             | SW_ALLOWED_ALL | SW_ALLOWED_NONE => return self.switchport(w, handler, a),
@@ -2254,6 +2317,15 @@ impl Shell {
         };
         let port = PortId(port);
         let mut notice = String::new();
+        {
+            let c = w.device::<L2Switch>(id).port(port).expect("port in range");
+            let dynamic_now = c.mode.is_dynamic();
+            if (handler == SW_NONEGOTIATE && dynamic_now)
+                || (matches!(handler, SW_MODE_AUTO | SW_MODE_DESIRABLE) && c.nonegotiate)
+            {
+                return NEGOTIATE_CONFLICT.to_string();
+            }
+        }
         // Parse the VLAN list first so a bad one changes nothing.
         let list = match handler {
             SW_ALLOWED | SW_ALLOWED_ADD | SW_ALLOWED_REMOVE => {
@@ -2272,8 +2344,12 @@ impl Shell {
         }
         w.with_device::<L2Switch, _>(id, |s, _| {
             s.configure_port(port, |c| match handler {
-                SW_MODE_ACCESS | NO_SW_MODE => c.mode = PortMode::Access,
+                SW_MODE_ACCESS => c.mode = PortMode::Access,
+                NO_SW_MODE | SW_MODE_AUTO => c.mode = PortMode::DynamicAuto,
+                SW_MODE_DESIRABLE => c.mode = PortMode::DynamicDesirable,
                 SW_MODE_TRUNK => c.mode = PortMode::Trunk,
+                SW_NONEGOTIATE => c.nonegotiate = true,
+                NO_SW_NONEGOTIATE => c.nonegotiate = false,
                 SW_ACCESS_VLAN | NO_SW_ACCESS_VLAN => c.access_vlan = vid,
                 SW_NATIVE | NO_SW_NATIVE => c.native_vlan = vid,
                 SW_ALLOWED => c.allowed = list,
@@ -2424,8 +2500,14 @@ pub fn switch_config(s: &L2Switch) -> String {
             continue;
         }
         o += &format!("interface FastEthernet0/{}\n", p + 1);
-        if c.mode == PortMode::Trunk {
-            o += " switchport mode trunk\n";
+        match c.mode {
+            PortMode::Trunk => o += " switchport mode trunk\n",
+            PortMode::Access => o += " switchport mode access\n",
+            PortMode::DynamicDesirable => o += " switchport mode dynamic desirable\n",
+            PortMode::DynamicAuto => {}
+        }
+        if c.nonegotiate {
+            o += " switchport nonegotiate\n";
         }
         if c.access_vlan != DEFAULT_VLAN {
             o += &format!(" switchport access vlan {}\n", c.access_vlan);
@@ -2609,7 +2691,7 @@ fn show_vlan_brief(s: &L2Switch) -> String {
         let ports: Vec<String> = (0..s.n_ports())
             .filter(|p| {
                 let c = s.port(kernel::PortId(*p)).expect("port in range");
-                c.mode == PortMode::Access && c.access_vlan == id
+                !s.is_trunk(kernel::PortId(*p)) && c.access_vlan == id
             })
             .map(|p| fa(p as usize))
             .collect();
@@ -2624,10 +2706,52 @@ fn show_vlan_brief(s: &L2Switch) -> String {
     o
 }
 
+/// `show interfaces fa0/1 switchport`.
+fn show_switchport(s: &L2Switch, p: usize) -> String {
+    let c = s.port(kernel::PortId(p as u16)).expect("port in range");
+    let admin = match c.mode {
+        PortMode::Access => "static access",
+        PortMode::Trunk => "trunk",
+        PortMode::DynamicAuto => "dynamic auto",
+        PortMode::DynamicDesirable => "dynamic desirable",
+    };
+    let trunk = s.is_trunk(kernel::PortId(p as u16));
+    let vlan = |v: u16, name: &str| {
+        if v == DEFAULT_VLAN {
+            format!("{v} ({name})")
+        } else {
+            v.to_string()
+        }
+    };
+    let allowed = if c.allowed == all_vlans() {
+        "ALL".to_string()
+    } else if c.allowed.is_empty() {
+        "NONE".to_string()
+    } else {
+        format_vlan_list(&c.allowed)
+    };
+    format!(
+        "Name: {}\nSwitchport: Enabled\nAdministrative Mode: {admin}\nOperational Mode: {}\n\
+Administrative Trunking Encapsulation: dot1q\nOperational Trunking Encapsulation: {}\n\
+Negotiation of Trunking: {}\nAccess Mode VLAN: {}\nTrunking Native Mode VLAN: {}\n\
+Trunking VLANs Enabled: {allowed}",
+        fa(p),
+        if trunk { "trunk" } else { "static access" },
+        if trunk { "dot1q" } else { "native" },
+        if c.nonegotiate || c.mode == PortMode::Access {
+            "Off"
+        } else {
+            "On"
+        },
+        vlan(c.access_vlan, "default"),
+        vlan(c.native_vlan, "default"),
+    )
+}
+
 fn show_trunks(s: &L2Switch) -> String {
     let trunks: Vec<(usize, &netdev::PortConfig)> = (0..s.n_ports())
         .filter_map(|p| s.port(kernel::PortId(p)).map(|c| (p as usize, c)))
-        .filter(|(_, c)| c.mode == PortMode::Trunk)
+        .filter(|(p, _)| s.is_trunk(kernel::PortId(*p as u16)))
         .collect();
     if trunks.is_empty() {
         return String::new();
@@ -2640,7 +2764,11 @@ fn show_trunks(s: &L2Switch) -> String {
         o += &format!(
             "\n{:<12}{:<13}{:<15}{:<14}{}",
             fa(*p),
-            "on",
+            match c.mode {
+                PortMode::DynamicAuto => "auto",
+                PortMode::DynamicDesirable => "desirable",
+                _ => "on",
+            },
             "802.1q",
             "trunking",
             c.native_vlan

@@ -1,0 +1,171 @@
+
+== sw1
+sw1>enable
+sw1#configure terminal
+sw1(config)#vlan 10
+sw1(config-vlan)#exit
+sw1(config)#interface fa0/1
+sw1(config-if)#switchport access vlan 10
+sw1(config-if)#exit
+sw1(config)#interface fa0/8
+sw1(config-if)#switchport mode dynamic desirable
+sw1(config-if)#end
+sw1#show interfaces fa0/8 switchport
+Name: Fa0/8
+Switchport: Enabled
+Administrative Mode: dynamic desirable
+Operational Mode: static access
+Administrative Trunking Encapsulation: dot1q
+Operational Trunking Encapsulation: native
+Negotiation of Trunking: On
+Access Mode VLAN: 1 (default)
+Trunking Native Mode VLAN: 1 (default)
+Trunking VLANs Enabled: ALL
+
+== sw2
+sw2>enable
+sw2#configure terminal
+sw2(config)#vlan 10
+sw2(config-vlan)#exit
+sw2(config)#interface fa0/1
+sw2(config-if)#switchport access vlan 10
+sw2(config-if)#end
+sw2#show interfaces fa0/8 switchport
+Name: Fa0/8
+Switchport: Enabled
+Administrative Mode: dynamic auto
+Operational Mode: static access
+Administrative Trunking Encapsulation: dot1q
+Operational Trunking Encapsulation: native
+Negotiation of Trunking: On
+Access Mode VLAN: 1 (default)
+Trunking Native Mode VLAN: 1 (default)
+Trunking VLANs Enabled: ALL
+
+-- 3 s pass
+sw2#show interfaces fa0/8 switchport
+Name: Fa0/8
+Switchport: Enabled
+Administrative Mode: dynamic auto
+Operational Mode: trunk
+Administrative Trunking Encapsulation: dot1q
+Operational Trunking Encapsulation: dot1q
+Negotiation of Trunking: On
+Access Mode VLAN: 1 (default)
+Trunking Native Mode VLAN: 1 (default)
+Trunking VLANs Enabled: ALL
+sw2#show interfaces trunk
+Port        Mode         Encapsulation  Status        Native vlan
+Fa0/8       auto         802.1q         trunking      1
+
+Port        Vlans allowed on trunk
+Fa0/8       1-4094
+
+Port        Vlans allowed and active in management domain
+Fa0/8       1,10
+
+== sw1
+sw1#show interfaces trunk
+Port        Mode         Encapsulation  Status        Native vlan
+Fa0/8       desirable    802.1q         trunking      1
+
+Port        Vlans allowed on trunk
+Fa0/8       1-4094
+
+Port        Vlans allowed and active in management domain
+Fa0/8       1,10
+
+== pc1
+pc1>ipconfig set 10.0.10.1 255.255.255.0
+
+== pc2
+pc2>ipconfig set 10.0.10.2 255.255.255.0
+
+== pc1
+pc1>ping 10.0.10.2
+Reply from 10.0.10.2: time=77us
+Reply from 10.0.10.2: time=42us
+Reply from 10.0.10.2: time=42us
+Reply from 10.0.10.2: time=42us
+Sent 4, received 4
+
+== sw1
+sw1#configure terminal
+sw1(config)#interface fa0/8
+sw1(config-if)#switchport nonegotiate
+Command rejected: Conflict between 'nonegotiate' and 'dynamic' status.
+sw1(config-if)#switchport mode trunk
+sw1(config-if)#switchport nonegotiate
+sw1(config-if)#end
+sw1#show interfaces fa0/8 switchport
+Name: Fa0/8
+Switchport: Enabled
+Administrative Mode: trunk
+Operational Mode: trunk
+Administrative Trunking Encapsulation: dot1q
+Operational Trunking Encapsulation: dot1q
+Negotiation of Trunking: Off
+Access Mode VLAN: 1 (default)
+Trunking Native Mode VLAN: 1 (default)
+Trunking VLANs Enabled: ALL
+sw1#show running-config
+hostname sw1
+!
+vlan 10
+!
+interface FastEthernet0/1
+ switchport access vlan 10
+!
+interface FastEthernet0/8
+ switchport mode trunk
+ switchport nonegotiate
+!
+end
+
+== sw2
+
+-- 30 s pass
+sw2#show interfaces trunk
+Port        Mode         Encapsulation  Status        Native vlan
+Fa0/8       auto         802.1q         trunking      1
+
+Port        Vlans allowed on trunk
+Fa0/8       1-4094
+
+Port        Vlans allowed and active in management domain
+Fa0/8       1,10
+
+-- 70 s pass
+sw2#show interfaces trunk
+
+== pc1
+pc1>ping 10.0.10.2
+No reply (timed out).
+No reply (timed out).
+No reply (timed out).
+No reply (timed out).
+Sent 4, received 0
+
+== sw2
+sw2#configure terminal
+sw2(config)#interface fa0/8
+sw2(config-if)#switchport mode trunk
+sw2(config-if)#switchport nonegotiate
+sw2(config-if)#end
+sw2#show interfaces trunk
+Port        Mode         Encapsulation  Status        Native vlan
+Fa0/8       on           802.1q         trunking      1
+
+Port        Vlans allowed on trunk
+Fa0/8       1-4094
+
+Port        Vlans allowed and active in management domain
+Fa0/8       1,10
+
+== pc1
+pc1>ping 10.0.10.2
+Reply from 10.0.10.2: time=42us
+Reply from 10.0.10.2: time=42us
+Reply from 10.0.10.2: time=42us
+Reply from 10.0.10.2: time=42us
+Sent 4, received 4
