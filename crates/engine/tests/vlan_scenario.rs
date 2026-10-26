@@ -48,6 +48,12 @@ const STP: Scenario = Scenario {
     golden: "../../testkit/scenarios/m2_stp.out",
 };
 
+const DTP: Scenario = Scenario {
+    lab: include_str!("../../../testkit/scenarios/m2_dtp.lab.toml"),
+    script: include_str!("../../../testkit/scenarios/m2_dtp.script"),
+    golden: "../../testkit/scenarios/m2_dtp.out",
+};
+
 const SVI: Scenario = Scenario {
     lab: include_str!("../../../testkit/scenarios/m2_svi.lab.toml"),
     script: include_str!("../../../testkit/scenarios/m2_svi.script"),
@@ -169,6 +175,11 @@ fn the_traceroute_lab_matches_its_golden_transcript() {
 #[test]
 fn the_spanning_tree_lab_matches_its_golden_transcript() {
     check_golden(&STP);
+}
+
+#[test]
+fn the_dtp_lab_matches_its_golden_transcript() {
+    check_golden(&DTP);
 }
 
 #[test]

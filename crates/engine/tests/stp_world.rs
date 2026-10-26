@@ -51,7 +51,7 @@ fn triangle(mode: StpMode, portfast_pcs: bool) -> Tri {
             if portfast_pcs {
                 s.configure_port(PortId(2), |c| c.portfast = true);
             }
-            s.stp_refresh(ctx);
+            s.refresh(ctx);
         });
     }
     Tri { w, sw, pc, links }
@@ -180,7 +180,7 @@ fn each_vlan_has_its_own_tree_so_different_links_can_block() {
                 c.priority.insert(10, if i == 0 { 4096 } else { 32768 });
                 c.priority.insert(20, if i == 1 { 4096 } else { 32768 });
             });
-            s.stp_refresh(ctx);
+            s.refresh(ctx);
         });
     }
     run(&mut w, 15);
@@ -229,7 +229,7 @@ fn a_switch_with_spanning_tree_off_floods_bpdus_like_any_multicast() {
     for s in [a, b] {
         w.with_device::<L2Switch, _>(s, |s, ctx| {
             s.configure_spanning(|c| c.mode = Some(StpMode::Rapid));
-            s.stp_refresh(ctx);
+            s.refresh(ctx);
         });
     }
     run(&mut w, 10);

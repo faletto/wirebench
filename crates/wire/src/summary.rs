@@ -1,6 +1,6 @@
 use crate::{
-    ArpOp, ArpPacket, Bpdu, BpduKind, DhcpMessage, DhcpOp, EtherType, EthernetFrame, IcmpEcho,
-    IcmpError, IcmpErrorKind, IpProto, Ipv4Packet, UdpDatagram,
+    ArpOp, ArpPacket, Bpdu, BpduKind, DhcpMessage, DhcpOp, Dtp, DtpMode, EtherType, EthernetFrame,
+    IcmpEcho, IcmpError, IcmpErrorKind, IpProto, Ipv4Packet, UdpDatagram,
 };
 
 /// One-line description of a frame for the packet inspector. Never fails: unparseable
@@ -62,9 +62,19 @@ pub fn summarize(frame: &[u8]) -> String {
             Err(_) => "IPv4 (malformed)".into(),
         },
         // A length instead of a type: an LLC frame, which here means a spanning tree BPDU.
-        EtherType(t) if t < 0x0600 => match Bpdu::parse(&f.payload) {
-            Ok(b) => bpdu_summary(&b),
-            Err(_) => format!("LLC frame ({t} bytes)"),
+        EtherType(t) if t < 0x0600 => match (Bpdu::parse(&f.payload), Dtp::parse(&f.payload)) {
+            (Ok(b), _) => bpdu_summary(&b),
+            (_, Ok(d)) => format!(
+                "DTP {}{}",
+                match d.mode {
+                    DtpMode::On => "on",
+                    DtpMode::Off => "off",
+                    DtpMode::Desirable => "desirable",
+                    DtpMode::Auto => "auto",
+                },
+                if d.trunking { " (trunking)" } else { "" }
+            ),
+            _ => format!("LLC frame ({t} bytes)"),
         },
         EtherType(t) => format!("ethertype {t:#06x}"),
     }

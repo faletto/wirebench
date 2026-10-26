@@ -89,3 +89,9 @@ name = "wire_bpdu"
 path = "fuzz_targets/wire_bpdu.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "wire_dtp"
+path = "fuzz_targets/wire_dtp.rs"
+test = false
+doc = false

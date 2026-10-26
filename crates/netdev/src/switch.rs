@@ -4,7 +4,9 @@ use crate::{Ctx, Device, DeviceEvent, Mgmt, Router};
 use kernel::{PortId, SimTime, TimerId};
 use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
-use wire::{Bpdu, BridgeId, EtherType, EthernetFrame, MacAddr, PVST_MULTICAST};
+use wire::{
+    Bpdu, BridgeId, Dtp, DtpMode, EtherType, EthernetFrame, MacAddr, DTP_MULTICAST, PVST_MULTICAST,
+};
 
 const DOT1Q: [u8; 2] = [0x81, 0x00];
 
@@ -20,6 +22,17 @@ pub const DEFAULT_BRIDGE_PRIORITY: u16 = 32768;
 pub enum PortMode {
     Access,
     Trunk,
+    /// `dynamic auto`: becomes a trunk if the neighbour asks. The default, as on the real thing.
+    DynamicAuto,
+    /// `dynamic desirable`: asks the neighbour to trunk.
+    DynamicDesirable,
+}
+
+impl PortMode {
+    /// The mode is settled by negotiation rather than by configuration.
+    pub fn is_dynamic(self) -> bool {
+        matches!(self, PortMode::DynamicAuto | PortMode::DynamicDesirable)
+    }
 }
 
 /// What a port does with VLANs. Access and trunk settings are kept side by side, as on a real
@@ -30,6 +43,8 @@ pub struct PortConfig {
     pub access_vlan: u16,
     pub native_vlan: u16,
     pub allowed: BTreeSet<u16>,
+    /// Send no DTP and ignore any received (`switchport nonegotiate`). Only for static modes.
+    pub nonegotiate: bool,
     /// Administratively down: carries nothing and takes no part in spanning tree.
     pub shutdown: bool,
     /// Spanning tree: forward at once, as a port facing a host does (`spanning-tree portfast`).
@@ -43,10 +58,11 @@ pub struct PortConfig {
 impl Default for PortConfig {
     fn default() -> Self {
         PortConfig {
-            mode: PortMode::Access,
+            mode: PortMode::DynamicAuto,
             access_vlan: DEFAULT_VLAN,
             native_vlan: DEFAULT_VLAN,
             allowed: all_vlans(),
+            nonegotiate: false,
             shutdown: false,
             portfast: false,
             stp_cost: None,
@@ -104,7 +120,18 @@ pub struct L2Switch {
     /// BPDUs and flushes decided without a context to send them in, delivered at the next event.
     stp_pending: Vec<(u16, StpAction)>,
     stp_timer: Option<TimerId>,
+    /// Dynamic ports: whether negotiation has made each one a trunk.
+    trunking: Vec<bool>,
+    /// What each neighbour last said in DTP, and when.
+    dtp_peer: Vec<Option<(DtpMode, SimTime)>>,
+    /// Something changed that the neighbours should hear about.
+    dtp_dirty: bool,
+    /// Ticks since DTP was last sent periodically.
+    dtp_secs: u32,
 }
+
+/// DTP is repeated this often, and a neighbour not heard from for three times as long is gone.
+const DTP_INTERVAL: u32 = 30;
 
 impl L2Switch {
     pub fn new(n_ports: u16) -> Self {
@@ -127,6 +154,10 @@ impl L2Switch {
             link_up: vec![false; n_ports as usize],
             stp_pending: Vec::new(),
             stp_timer: None,
+            trunking: vec![false; n_ports as usize],
+            dtp_peer: vec![None; n_ports as usize],
+            dtp_dirty: false,
+            dtp_secs: 0,
         }
     }
 
@@ -148,6 +179,9 @@ impl L2Switch {
         self.spanning = SpanningConfig::default();
         self.trees.clear();
         self.stp_pending.clear();
+        self.trunking = vec![false; n];
+        self.dtp_peer = vec![None; n];
+        self.dtp_dirty = false;
     }
 
     /// Set before creating SVIs; their MACs are `02:bb:00:<unit>:<vlan>`.
@@ -281,6 +315,43 @@ impl L2Switch {
     pub fn configure_port(&mut self, p: PortId, f: impl FnOnce(&mut PortConfig)) {
         if let Some(cfg) = self.ports.get_mut(p.0 as usize) {
             f(cfg);
+            self.dtp_dirty = true;
+            self.dtp_decide(p);
+            self.table.retain(|_, (port, _)| *port != p);
+            self.refresh_svis();
+            self.sync_stp();
+        }
+    }
+
+    /// Whether port `p` is operating as a trunk: configured so, or negotiated.
+    pub fn is_trunk(&self, p: PortId) -> bool {
+        match self.ports.get(p.0 as usize).map(|c| c.mode) {
+            Some(PortMode::Trunk) => true,
+            Some(m) if m.is_dynamic() => self.trunking[p.0 as usize],
+            _ => false,
+        }
+    }
+
+    /// What the neighbour on `p` last announced, if it is still heard.
+    pub fn dtp_neighbour(&self, p: PortId) -> Option<DtpMode> {
+        self.dtp_peer.get(p.0 as usize)?.map(|(m, _)| m)
+    }
+
+    /// Settle whether a dynamic port trunks, from its own mode and its neighbour's.
+    fn dtp_decide(&mut self, p: PortId) {
+        let i = p.0 as usize;
+        let want = matches!(
+            (self.ports[i].mode, self.dtp_peer[i].map(|(m, _)| m)),
+            (
+                PortMode::DynamicAuto,
+                Some(DtpMode::On | DtpMode::Desirable)
+            ) | (
+                PortMode::DynamicDesirable,
+                Some(DtpMode::On | DtpMode::Desirable | DtpMode::Auto)
+            )
+        ) && !self.ports[i].nonegotiate;
+        if self.trunking[i] != want {
+            self.trunking[i] = want;
             self.table.retain(|_, (port, _)| *port != p);
             self.refresh_svis();
             self.sync_stp();
@@ -294,9 +365,10 @@ impl L2Switch {
         };
         !cfg.shutdown
             && self.vlans.contains_key(&v)
-            && match cfg.mode {
-                PortMode::Access => cfg.access_vlan == v,
-                PortMode::Trunk => cfg.allowed.contains(&v),
+            && if self.is_trunk(p) {
+                cfg.allowed.contains(&v)
+            } else {
+                cfg.access_vlan == v
             }
     }
 
@@ -314,15 +386,17 @@ impl L2Switch {
         } else {
             (0, 0, frame.to_vec())
         };
-        let vlan = match cfg.mode {
-            PortMode::Access => match (tagged, vlan) {
+        let vlan = if !self.is_trunk(port) {
+            match (tagged, vlan) {
                 (false, _) => cfg.access_vlan,
                 (true, v) if v == cfg.access_vlan || v == 0 => cfg.access_vlan,
                 _ => return None,
-            },
+            }
+        } else if !tagged || vlan == 0 {
             // A priority tag (id 0) belongs to the native VLAN, like an untagged frame.
-            PortMode::Trunk if !tagged || vlan == 0 => cfg.native_vlan,
-            PortMode::Trunk => vlan,
+            cfg.native_vlan
+        } else {
+            vlan
         };
         self.carries(port, vlan).then_some((vlan, prio, plain))
     }
@@ -330,7 +404,7 @@ impl L2Switch {
     /// The frame as port `p` sends it for VLAN `v`: tagged on a trunk unless it is the native VLAN.
     fn egress(&self, p: PortId, v: u16, prio: u8, plain: &[u8]) -> Vec<u8> {
         let cfg = &self.ports[p.0 as usize];
-        if cfg.mode == PortMode::Access || cfg.native_vlan == v {
+        if !self.is_trunk(p) || cfg.native_vlan == v {
             return plain.to_vec();
         }
         let mut out = plain[..12].to_vec();
@@ -499,26 +573,72 @@ impl L2Switch {
 
     /// Look at the cables, settle the trees and send what is waiting. Called after
     /// configuration changes, which is what starts spanning tree running, and on every tick.
-    pub fn stp_refresh(&mut self, ctx: &mut Ctx) {
-        if self.spanning.mode.is_none() {
+    pub fn refresh(&mut self, ctx: &mut Ctx) {
+        let initiates = self.ports.iter().any(|c| {
+            matches!(c.mode, PortMode::Trunk | PortMode::DynamicDesirable) && !c.nonegotiate
+        });
+        if !self.upkeep_needed() && !initiates {
             self.trees.clear();
+            self.link_up = vec![false; self.ports.len()];
             return;
         }
         for p in 0..self.ports.len() {
-            self.link_up[p] = ctx.port_up(PortId(p as u16));
+            let up = ctx.port_up(PortId(p as u16));
+            if self.link_up[p] != up {
+                self.link_up[p] = up;
+                // A cable gone takes its neighbour with it; one arriving should hear from us.
+                self.dtp_peer[p] = None;
+                self.dtp_decide(PortId(p as u16));
+                self.dtp_dirty = true;
+            }
         }
         self.sync_stp();
         self.flush_stp(ctx);
-        if self.stp_timer.is_none() {
+        if self.dtp_dirty {
+            self.dtp_dirty = false;
+            // Ports that want a trunk, or have just said they never will, speak up; dynamic auto ports
+            // only answer (see `on_dtp`).
+            for p in 0..self.ports.len() {
+                if matches!(
+                    self.ports[p].mode,
+                    PortMode::Trunk | PortMode::DynamicDesirable | PortMode::Access
+                ) {
+                    self.dtp_send(ctx, PortId(p as u16));
+                }
+            }
+        }
+        let busy = self.spanning.mode.is_some() || self.dtp_peer.iter().any(Option::is_some);
+        if busy && self.stp_timer.is_none() {
             self.stp_timer = Some(ctx.schedule_background(SimTime::from_secs(1), STP_TIMER));
         }
     }
 
+    /// Whether the one-second tick has anything to do: spanning tree is running, or some
+    /// neighbour is being listened to for DTP.
+    fn upkeep_needed(&self) -> bool {
+        self.spanning.mode.is_some() || self.dtp_peer.iter().any(Option::is_some) || self.dtp_dirty
+    }
+
     fn stp_tick(&mut self, ctx: &mut Ctx) {
-        if self.spanning.mode.is_none() {
+        if !self.upkeep_needed() {
             return;
         }
-        self.stp_refresh(ctx);
+        // Neighbours not heard for three intervals are gone; the rest hear from us every interval.
+        let now = ctx.now();
+        for p in 0..self.ports.len() {
+            if let Some((_, heard)) = self.dtp_peer[p] {
+                if now > heard + SimTime::from_secs(u64::from(3 * DTP_INTERVAL)) {
+                    self.dtp_peer[p] = None;
+                    self.dtp_decide(PortId(p as u16));
+                }
+            }
+        }
+        self.dtp_secs += 1;
+        if self.dtp_secs >= DTP_INTERVAL {
+            self.dtp_secs = 0;
+            self.dtp_dirty = true;
+        }
+        self.refresh(ctx);
         let mut acts = vec![];
         for (v, t) in &mut self.trees {
             acts.extend(t.tick().into_iter().map(|a| (*v, a)));
@@ -558,6 +678,68 @@ impl L2Switch {
         }
     }
 
+    fn dtp_mac(&self, p: PortId) -> MacAddr {
+        MacAddr([2, 0xbb, 0xff, self.unit, 0, p.0 as u8 + 1])
+    }
+
+    /// Tell the neighbour on `p` what this port is set to, if it takes part in DTP.
+    fn dtp_send(&mut self, ctx: &mut Ctx, p: PortId) {
+        let i = p.0 as usize;
+        let cfg = &self.ports[i];
+        if cfg.nonegotiate || cfg.shutdown || !self.link_up[i] {
+            return;
+        }
+        let mode = match cfg.mode {
+            PortMode::Trunk => DtpMode::On,
+            PortMode::Access => DtpMode::Off,
+            PortMode::DynamicAuto => DtpMode::Auto,
+            PortMode::DynamicDesirable => DtpMode::Desirable,
+        };
+        let payload = Dtp {
+            mode,
+            trunking: self.is_trunk(p),
+            domain: vec![],
+            sender: self.bridge_mac(),
+        }
+        .emit();
+        let frame = EthernetFrame {
+            dst: DTP_MULTICAST,
+            src: self.dtp_mac(p),
+            vlan: None,
+            ethertype: EtherType(payload.len() as u16),
+            payload,
+        }
+        .emit();
+        ctx.transmit(p, frame);
+    }
+
+    /// A DTP message from the neighbour on `port`. Answers at once when it is news, which is what
+    /// lets a switch with no configuration at all be trunked by one that has some.
+    fn on_dtp(&mut self, ctx: &mut Ctx, port: PortId, frame: &[u8]) {
+        let i = port.0 as usize;
+        let cfg = &self.ports[i];
+        if cfg.nonegotiate || cfg.shutdown || cfg.mode == PortMode::Access {
+            return;
+        }
+        let Ok(d) = EthernetFrame::parse(frame)
+            .map_err(drop)
+            .and_then(|f| Dtp::parse(&f.payload).map_err(drop))
+        else {
+            return;
+        };
+        let news = self.dtp_peer[i].map(|(m, _)| m) != Some(d.mode);
+        self.dtp_peer[i] = Some((d.mode, ctx.now()));
+        let was = self.is_trunk(port);
+        self.dtp_decide(port);
+        if news || was != self.is_trunk(port) {
+            self.link_up[i] = true;
+            self.dtp_send(ctx, port);
+        }
+        if self.stp_timer.is_none() {
+            self.stp_timer = Some(ctx.schedule_background(SimTime::from_secs(1), STP_TIMER));
+        }
+    }
+
     fn on_bpdu(&mut self, ctx: &mut Ctx, port: PortId, vlan: u16, plain: &[u8]) {
         let Ok(f) = EthernetFrame::parse(plain) else {
             return;
@@ -590,6 +772,10 @@ impl Device for L2Switch {
             }
         };
         if frame.len() < 14 {
+            return;
+        }
+        if frame[0..6] == DTP_MULTICAST.0 && frame[12..14] != DOT1Q {
+            self.on_dtp(ctx, port, &frame);
             return;
         }
         let Some((vlan, prio, plain)) = self.ingress(port, &frame) else {
