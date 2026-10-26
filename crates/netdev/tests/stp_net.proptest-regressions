@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 28064ff5519cc30ad78e5394a6b3ed194fa642d307082ae3d133b09c5df1e7e4 # shrinks to n = 2, extra = [], prios = [0, 0, 0, 0, 0, 0], rapid = true
+cc e0f5b8541a3fcf15dd658c928c7215aee4e82d3c609a19c35960e18034f4fadc # shrinks to n = 5, extra = [(1, 2), (2, 1), (3, 0)], prios = [1, 1, 1, 1, 0, 0], flaps = [(3, 0), (3, 0), (10, 0)], rapid = false
+cc 1c71f393ff51e7a9e2e344b759bf6f221ff5e833a39a0a6d8137800f86e5f6c1 # shrinks to n = 4, extra = [(2, 1)], prios = [0, 0, 0, 0, 0, 0], flaps = [(0, 0), (0, 0), (0, 0)], rapid = true
+cc 0b54b925dab9e297e781fb37f8612793b3d48d7ceb11253763c37954b3b1dff6 # shrinks to n = 5, extra = [(3, 2), (4, 2), (5, 4)], prios = [4, 0, 0, 0, 0, 0], flaps = [(8, 0), (6, 0)], rapid = false
