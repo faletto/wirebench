@@ -8,6 +8,7 @@ mod canvas;
 mod changes;
 pub mod clock;
 mod files;
+mod history;
 mod sim;
 mod term;
 pub mod widget;
