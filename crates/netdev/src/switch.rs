@@ -30,6 +30,8 @@ pub struct PortConfig {
     pub access_vlan: u16,
     pub native_vlan: u16,
     pub allowed: BTreeSet<u16>,
+    /// Administratively down: carries nothing and takes no part in spanning tree.
+    pub shutdown: bool,
     /// Spanning tree: forward at once, as a port facing a host does (`spanning-tree portfast`).
     pub portfast: bool,
     /// Spanning tree path cost; `None` is the default for the port.
@@ -45,6 +47,7 @@ impl Default for PortConfig {
             access_vlan: DEFAULT_VLAN,
             native_vlan: DEFAULT_VLAN,
             allowed: all_vlans(),
+            shutdown: false,
             portfast: false,
             stp_cost: None,
             stp_priority: None,
@@ -289,7 +292,8 @@ impl L2Switch {
         let Some(cfg) = self.ports.get(p.0 as usize) else {
             return false;
         };
-        self.vlans.contains_key(&v)
+        !cfg.shutdown
+            && self.vlans.contains_key(&v)
             && match cfg.mode {
                 PortMode::Access => cfg.access_vlan == v,
                 PortMode::Trunk => cfg.allowed.contains(&v),

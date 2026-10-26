@@ -14,6 +14,7 @@ use crate::widget::{self, TermAction};
 use egui::{Key, Modifiers, Pos2, Ui};
 use engine::lab::{BuiltLab, LabDevice, LabKind, Topology};
 use engine::protocol::{Engine, EngineCmd, EngineEvent, ShellKind};
+use kernel::SimTime;
 
 /// The lab the app opens with until file loading exists.
 const DEFAULT_LAB: &str = include_str!("../../../labs/m1_static_routes.lab.toml");
@@ -107,6 +108,8 @@ pub struct App {
     file_path: String,
     /// Wall-clock seconds as of the latest frame (egui's clock; works on web too).
     wall: f64,
+    /// The wall time at the last frame that advanced simulated time by itself (see `run_live_time`).
+    live_at: Option<f64>,
     frame_ms: f32,
     /// Milliseconds from the start of loading to the first drawn frame (see `clock`).
     ready_ms: Option<f64>,
@@ -181,6 +184,7 @@ impl App {
             inbox: Inbox::default(),
             file_path: String::new(),
             wall: 0.0,
+            live_at: None,
             frame_ms: 0.0,
             ready_ms: None,
         };
@@ -194,6 +198,11 @@ impl App {
     }
 
     /// Number of devices on the canvas.
+    /// Simulated time so far, in nanoseconds.
+    pub fn sim_time_ns(&self) -> u64 {
+        self.engine.world.kernel.now().0
+    }
+
     pub fn device_count(&self) -> usize {
         self.nodes.len()
     }
@@ -1134,6 +1143,25 @@ impl App {
     }
 
     /// Draw the whole UI. Takes only a `Ui` so headless tests can drive it.
+    /// Spanning tree and its kind keep time themselves; the rest of the simulation only moves when
+    /// something happens. While such timers are pending, let simulated time pass as real time
+    /// does, so that waiting at a console works the way it does on a real switch.
+    fn run_live_time(&mut self, ui: &Ui) {
+        let world = &mut self.engine.world;
+        if !world.kernel.has_background() || self.anim.playing {
+            self.live_at = None;
+            return;
+        }
+        if let Some(last) = self.live_at.replace(self.wall) {
+            // A long gap (a hidden tab) is not made up for.
+            let dt = (self.wall - last).clamp(0.0, 0.25);
+            let to = world.kernel.now() + SimTime((dt * 1e9) as u64);
+            world.run_until(to);
+        }
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(100));
+    }
+
     pub fn ui(&mut self, ui: &mut Ui) {
         let began = crate::clock::since_start_ms();
         if self.ready_ms.is_none() {
@@ -1171,6 +1199,7 @@ impl App {
                 .send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.confirm = Some(Pending::Close);
         }
+        self.run_live_time(ui);
         // Playing: one hop per `hop_secs`, then stop when the simulation goes idle.
         if self.anim.playing && self.wall >= self.anim.next_step {
             if self.sim_step_hop() {

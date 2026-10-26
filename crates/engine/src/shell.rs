@@ -8,7 +8,7 @@ use kernel::{DeviceId, PortId, SimTime};
 use netdev::{
     all_vlans, banner_delimiter, format_vlan_list, mask, parse_vlan_list, password_text,
     plain_password, stored_secret, EncapError, Host, L2Switch, Mgmt, PortMode, RouteKind, Router,
-    StaticRoute, DEFAULT_VLAN,
+    StaticRoute, StpMode, StpRole, StpState, DEFAULT_VLAN,
 };
 use std::sync::Arc;
 use wire::{IcmpErrorKind, Ipv4Addr};
@@ -27,6 +27,9 @@ const ENCAP_IN_USE: &str = "% That VLAN is already used by another subinterface 
 const ENCAP_NOT_SUB: &str = "% Encapsulation can only be set on a subinterface.";
 const NO_SUCH_INTERFACE: &str = "% No such interface.";
 const SVI_ONLY: &str = "% Addresses go on VLAN interfaces (interface vlan N), not on switch ports.";
+const BAD_BRIDGE_PRIORITY: &str = "% Bridge Priority must be in increments of 4096.\n% Allowed values are:\n  0     4096  8192  12288 16384 20480 24576 28672\n  32768 36864 40960 45056 49152 53248 57344 61440";
+const BAD_PORT_PRIORITY: &str = "% Port priority must be a multiple of 16.";
+const NO_SPAN_INSTANCE: &str = "No spanning tree instance exists.";
 const PORT_ONLY: &str = "% switchport commands apply to switch ports, not VLAN interfaces.";
 /// A prompt that asks for a secret; the UI must not echo what is typed after it.
 pub const PASSWORD_PROMPT: &str = "Password: ";
@@ -158,6 +161,23 @@ const CLEAR_DHCP_ADDR: u32 = 139;
 const TRACERT: u32 = 150;
 const ROUTER_PING: u32 = 151;
 const TRACEROUTE: u32 = 152;
+const SPAN_MODE_PVST: u32 = 160;
+const SPAN_MODE_RAPID: u32 = 161;
+const NO_SPAN_MODE: u32 = 162;
+const SPAN_PRIORITY: u32 = 163;
+const NO_SPAN_PRIORITY: u32 = 164;
+const SPAN_ROOT_PRIMARY: u32 = 165;
+const SPAN_ROOT_SECONDARY: u32 = 166;
+const SPAN_VLAN_ON: u32 = 167;
+const SPAN_VLAN_OFF: u32 = 168;
+const PORTFAST: u32 = 169;
+const NO_PORTFAST: u32 = 170;
+const SPAN_COST: u32 = 171;
+const NO_SPAN_COST: u32 = 172;
+const SPAN_PORT_PRIO: u32 = 173;
+const NO_SPAN_PORT_PRIO: u32 = 174;
+const SHOW_SPAN: u32 = 175;
+const SHOW_SPAN_VLAN: u32 = 176;
 
 fn router_grammar() -> (Grammar, Modes) {
     let mut g = Grammar::new();
@@ -728,6 +748,7 @@ fn switch_grammar() -> (Grammar, Modes) {
     mgmt_commands(&mut g, privileged, config, config_line);
     dhcp_commands(&mut g, privileged, config, config_if, config_dhcp);
     probe_commands(&mut g, privileged);
+    span_commands(&mut g, user, privileged, config, config_if);
     (
         g,
         Modes {
@@ -768,6 +789,127 @@ fn probe_commands(g: &mut Grammar, privileged: ModeId) {
             "Last TTL",
         ],
         h(TRACEROUTE),
+    );
+}
+
+/// Spanning tree: mode, per-VLAN bridge priority, port settings and `show spanning-tree`.
+fn span_commands(
+    g: &mut Grammar,
+    user: ModeId,
+    privileged: ModeId,
+    config: ModeId,
+    config_if: ModeId,
+) {
+    let h = Action::Handler;
+    let st = "Spanning tree subsystem";
+    g.cmd(
+        &[config],
+        "spanning-tree mode pvst",
+        &[st, "Protocol mode", "Per-VLAN spanning tree (802.1D)"],
+        h(SPAN_MODE_PVST),
+    );
+    g.cmd(
+        &[config],
+        "spanning-tree mode rapid-pvst",
+        &[st, "Protocol mode", "Per-VLAN rapid spanning tree (802.1w)"],
+        h(SPAN_MODE_RAPID),
+    );
+    g.cmd(
+        &[config],
+        "no spanning-tree mode",
+        &["Negate", st, "Turn spanning tree off"],
+        h(NO_SPAN_MODE),
+    );
+    let vl = "VLAN list, e.g. 10,20-30";
+    g.cmd(
+        &[config],
+        "spanning-tree vlan <list:word>",
+        &[st, "VLANs", vl],
+        h(SPAN_VLAN_ON),
+    );
+    g.cmd(
+        &[config],
+        "no spanning-tree vlan <list:word>",
+        &["Negate", st, "VLANs", vl],
+        h(SPAN_VLAN_OFF),
+    );
+    g.cmd(
+        &[config],
+        "spanning-tree vlan <list:word> priority <prio:int(0..61440)>",
+        &[
+            st,
+            "VLANs",
+            vl,
+            "Bridge priority",
+            "Priority, a multiple of 4096",
+        ],
+        h(SPAN_PRIORITY),
+    );
+    g.cmd(
+        &[config],
+        "no spanning-tree vlan <list:word> priority",
+        &["Negate", st, "VLANs", vl, "Back to the default priority"],
+        h(NO_SPAN_PRIORITY),
+    );
+    g.cmd(
+        &[config],
+        "spanning-tree vlan <list:word> root primary",
+        &[st, "VLANs", vl, "Make this the root", "Win the election"],
+        h(SPAN_ROOT_PRIMARY),
+    );
+    g.cmd(
+        &[config],
+        "spanning-tree vlan <list:word> root secondary",
+        &[st, "VLANs", vl, "Make this the root", "Be the next best"],
+        h(SPAN_ROOT_SECONDARY),
+    );
+    g.cmd(
+        &[config_if],
+        "spanning-tree portfast",
+        &[st, "Forward at once (a port facing a host)"],
+        h(PORTFAST),
+    );
+    g.cmd(
+        &[config_if],
+        "no spanning-tree portfast",
+        &["Negate", st, "Take part in the election"],
+        h(NO_PORTFAST),
+    );
+    g.cmd(
+        &[config_if],
+        "spanning-tree cost <cost:int(1..200000000)>",
+        &[st, "Path cost", "Cost"],
+        h(SPAN_COST),
+    );
+    g.cmd(
+        &[config_if],
+        "no spanning-tree cost",
+        &["Negate", st, "Back to the default cost"],
+        h(NO_SPAN_COST),
+    );
+    g.cmd(
+        &[config_if],
+        "spanning-tree port-priority <prio:int(0..240)>",
+        &[st, "Port priority", "Priority, a multiple of 16"],
+        h(SPAN_PORT_PRIO),
+    );
+    g.cmd(
+        &[config_if],
+        "no spanning-tree port-priority",
+        &["Negate", st, "Back to the default priority"],
+        h(NO_SPAN_PORT_PRIO),
+    );
+    g.cmd(
+        &[user, privileged],
+        "show spanning-tree",
+        &["Show", "Spanning tree information"],
+        h(SHOW_SPAN),
+    );
+    g.cmd(
+        &[user, privileged],
+        "show spanning-tree vlan <id:int(1..4094)>",
+        &["Show", "Spanning tree information", "One VLAN", "VLAN id"],
+        h(SHOW_SPAN_VLAN),
     );
 }
 
@@ -1513,7 +1655,18 @@ impl Shell {
             Exec::Empty | Exec::Moved => Some(String::new()),
             Exec::Logout => None,
             Exec::Error(e) => Some(render_error(&prompt, &e)),
-            Exec::Run { handler, args } => Some(self.run(w, handler, &args)),
+            Exec::Run { handler, args } => {
+                let out = self.run(w, handler, &args);
+                self.settle(w);
+                Some(out)
+            }
+        }
+    }
+
+    /// After a command: a switch looks at its cables and gets spanning tree going if it is on.
+    fn settle(&self, w: &mut World) {
+        if self.kind == Kind::Switch {
+            w.with_device::<L2Switch, _>(self.device, |s, ctx| s.stp_refresh(ctx));
         }
     }
 
@@ -1884,6 +2037,23 @@ impl Shell {
             SHOW_RUN if self.kind == Kind::Switch => {
                 return switch_config(w.device::<L2Switch>(id));
             }
+            SPAN_MODE_PVST | SPAN_MODE_RAPID | NO_SPAN_MODE => {
+                let mode = match handler {
+                    SPAN_MODE_PVST => Some(StpMode::Stp),
+                    SPAN_MODE_RAPID => Some(StpMode::Rapid),
+                    _ => None,
+                };
+                w.with_device::<L2Switch, _>(id, |s, _| s.configure_spanning(|c| c.mode = mode));
+            }
+            SPAN_PRIORITY | NO_SPAN_PRIORITY | SPAN_ROOT_PRIMARY | SPAN_ROOT_SECONDARY
+            | SPAN_VLAN_ON | SPAN_VLAN_OFF => return self.spanning_vlans(w, handler, a),
+            PORTFAST | NO_PORTFAST | SPAN_COST | NO_SPAN_COST | SPAN_PORT_PRIO
+            | NO_SPAN_PORT_PRIO => return self.spanning_port(w, handler, a),
+            SHOW_SPAN => return show_spanning_tree(w.device::<L2Switch>(id), None),
+            SHOW_SPAN_VLAN => {
+                let v = a.int("id").unwrap() as u16;
+                return show_spanning_tree(w.device::<L2Switch>(id), Some(v));
+            }
             SHOW_MACS => return show_macs(w.device::<L2Switch>(id), w.kernel.now()),
             SHOW_VLAN => return show_vlan_brief(w.device::<L2Switch>(id)),
             SHOW_TRUNK => return show_trunks(w.device::<L2Switch>(id)),
@@ -1965,6 +2135,16 @@ impl Shell {
 
     /// `ip address` and `shutdown` inside `interface vlan N` on a switch.
     fn svi_interface_cmd(&mut self, w: &mut World, handler: u32, a: &Args) -> String {
+        // `shutdown` on a switch port, not an SVI.
+        if let (SHUTDOWN | NO_SHUTDOWN, Some(port)) = (
+            handler,
+            self.session.context().and_then(|c| c.parse::<u16>().ok()),
+        ) {
+            w.with_device::<L2Switch, _>(self.device, |s, _| {
+                s.configure_port(PortId(port), |c| c.shutdown = handler == SHUTDOWN)
+            });
+            return String::new();
+        }
         let Some(vlan) = self
             .session
             .context()
@@ -1985,6 +2165,82 @@ impl Shell {
             NO_IP_ADDRESS => r.set_address(port, None),
             SHUTDOWN => r.set_shutdown(port, true),
             _ => r.set_shutdown(port, false),
+        });
+        String::new()
+    }
+
+    /// Global `spanning-tree vlan ...` commands.
+    fn spanning_vlans(&mut self, w: &mut World, handler: u32, a: &Args) -> String {
+        let text = a.word("list").unwrap_or_default();
+        let Some(vlans) = parse_vlan_list(text) else {
+            return format!("{BAD_VLAN_LIST} {text}");
+        };
+        let prio = a.int("prio").map_or(0, |p| p as u16);
+        if handler == SPAN_PRIORITY && prio % 4096 != 0 {
+            return BAD_BRIDGE_PRIORITY.to_string();
+        }
+        w.with_device::<L2Switch, _>(self.device, |s, _| {
+            // `root primary` looks at who is root now, so work that out before changing anything.
+            let wanted: Vec<(u16, u16)> = vlans
+                .iter()
+                .map(|v| {
+                    let current = s
+                        .tree(*v)
+                        .map(|t| t.root().root.priority.saturating_sub(*v));
+                    let p = match (handler, current) {
+                        (SPAN_ROOT_SECONDARY, _) => 28672,
+                        (SPAN_ROOT_PRIMARY, Some(r))
+                            if r <= 24576 && !s.tree(*v).is_some_and(|t| t.is_root()) =>
+                        {
+                            r.saturating_sub(4096)
+                        }
+                        (SPAN_ROOT_PRIMARY, Some(_)) | (SPAN_ROOT_PRIMARY, None) => 24576,
+                        _ => prio,
+                    };
+                    (*v, p)
+                })
+                .collect();
+            s.configure_spanning(|c| {
+                for (v, p) in wanted {
+                    match handler {
+                        SPAN_PRIORITY | SPAN_ROOT_PRIMARY | SPAN_ROOT_SECONDARY => {
+                            c.priority.insert(v, p);
+                        }
+                        NO_SPAN_PRIORITY => {
+                            c.priority.remove(&v);
+                        }
+                        SPAN_VLAN_ON => {
+                            c.disabled.remove(&v);
+                        }
+                        _ => {
+                            c.disabled.insert(v);
+                        }
+                    }
+                }
+            });
+        });
+        String::new()
+    }
+
+    /// `spanning-tree portfast`, `cost` and `port-priority` inside an interface.
+    fn spanning_port(&mut self, w: &mut World, handler: u32, a: &Args) -> String {
+        let Some(port) = self.session.context().and_then(|c| c.parse().ok()) else {
+            return PORT_ONLY.to_string();
+        };
+        let prio = a.int("prio").map_or(128, |p| p as u8);
+        if handler == SPAN_PORT_PRIO && prio % 16 != 0 {
+            return BAD_PORT_PRIORITY.to_string();
+        }
+        let cost = a.int("cost").map(|c| c as u32);
+        w.with_device::<L2Switch, _>(self.device, |s, _| {
+            s.configure_port(PortId(port), |c| match handler {
+                PORTFAST => c.portfast = true,
+                NO_PORTFAST => c.portfast = false,
+                SPAN_COST => c.stp_cost = cost,
+                NO_SPAN_COST => c.stp_cost = None,
+                SPAN_PORT_PRIO => c.stp_priority = Some(prio),
+                _ => c.stp_priority = None,
+            })
         });
         String::new()
     }
@@ -2156,6 +2412,7 @@ pub fn switch_config(s: &L2Switch) -> String {
         }
         o += "!\n";
     }
+    o += &spanning_config(s);
     if s.l3().routing() {
         o += "ip routing\n!\n";
     }
@@ -2181,6 +2438,18 @@ pub fn switch_config(s: &L2Switch) -> String {
                 " switchport trunk allowed vlan {}\n",
                 format_vlan_list(&c.allowed)
             );
+        }
+        if c.shutdown {
+            o += " shutdown\n";
+        }
+        if c.portfast {
+            o += " spanning-tree portfast\n";
+        }
+        if let Some(cost) = c.stp_cost {
+            o += &format!(" spanning-tree cost {cost}\n");
+        }
+        if let Some(p) = c.stp_priority {
+            o += &format!(" spanning-tree port-priority {p}\n");
         }
         o += "!\n";
     }
@@ -2226,6 +2495,111 @@ fn show_macs(s: &L2Switch, now: SimTime) -> String {
         o += "\n(no addresses learned)";
     }
     o
+}
+
+/// The global spanning tree lines of a running config.
+fn spanning_config(s: &L2Switch) -> String {
+    let c = s.spanning();
+    let mut o = String::new();
+    match c.mode {
+        Some(StpMode::Stp) => o += "spanning-tree mode pvst\n",
+        Some(StpMode::Rapid) => o += "spanning-tree mode rapid-pvst\n",
+        None => {}
+    }
+    for v in &c.disabled {
+        o += &format!("no spanning-tree vlan {v}\n");
+    }
+    for (v, p) in &c.priority {
+        o += &format!("spanning-tree vlan {v} priority {p}\n");
+    }
+    if !o.is_empty() {
+        o += "!\n";
+    }
+    o
+}
+
+/// `show spanning-tree`, for every VLAN with a tree or for one.
+fn show_spanning_tree(s: &L2Switch, only: Option<u16>) -> String {
+    let trees: Vec<(u16, &netdev::Stp)> = s
+        .trees()
+        .filter(|(v, _)| only.is_none_or(|o| o == *v))
+        .collect();
+    if trees.is_empty() {
+        return match only {
+            Some(v) => format!("Spanning tree instance(s) for vlan {v} does not exist."),
+            None => NO_SPAN_INSTANCE.to_string(),
+        };
+    }
+    let mut blocks = vec![];
+    for (v, t) in trees {
+        let hello = "Hello Time   2 sec  Max Age 20 sec  Forward Delay 15 sec";
+        let protocol = match t.mode() {
+            StpMode::Stp => "ieee",
+            StpMode::Rapid => "rstp",
+        };
+        let root = t.root();
+        let mut o = format!("VLAN{v:04}\n  Spanning tree enabled protocol {protocol}\n");
+        o += &format!(
+            "  Root ID    Priority    {}\n             Address     {}\n",
+            root.root.priority, root.root.mac
+        );
+        match t.root_port() {
+            None => o += "             This bridge is the root\n",
+            Some(rp) => {
+                o += &format!(
+                    "             Cost        {}\n             Port        {} (FastEthernet0/{})\n",
+                    root.cost,
+                    rp + 1,
+                    rp + 1
+                )
+            }
+        }
+        o += &format!("             {hello}\n\n");
+        let own = t.bridge();
+        o += &format!(
+            "  Bridge ID  Priority    {}  (priority {} sys-id-ext {v})\n             Address     {}\n             {hello}\n             Aging Time  {} sec\n\n",
+            own.priority,
+            own.priority - v,
+            own.mac,
+            s.aging.0 / 1_000_000_000
+        );
+        o += &format!(
+            "{:<20}{:<5}{:<4}{:<10}{:<9}{}\n{:-<19} {:-<4} {:-<3} {:-<9} {:-<8} {:-<32}",
+            "Interface", "Role", "Sts", "Cost", "Prio.Nbr", "Type", "", "", "", "", "", ""
+        );
+        for p in 0..t.n_ports() {
+            let pv = t.port(p);
+            let role = match pv.role {
+                StpRole::Disabled => continue,
+                StpRole::Root => "Root",
+                StpRole::Designated => "Desg",
+                StpRole::Alternate => "Altn",
+                StpRole::Backup => "Back",
+            };
+            let sts = match pv.state {
+                StpState::Discarding => "BLK",
+                StpState::Listening => "LIS",
+                StpState::Learning => "LRN",
+                StpState::Forwarding => "FWD",
+            };
+            let kind = match (pv.edge, pv.compat) {
+                (_, true) => "P2p Peer(STP)",
+                (true, _) => "P2p Edge",
+                _ => "P2p",
+            };
+            o += &format!(
+                "\n{:<20}{:<5}{:<4}{:<10}{:<9}{}",
+                fa(p),
+                role,
+                sts,
+                pv.cost,
+                format!("{}.{}", pv.priority, p + 1),
+                kind
+            );
+        }
+        blocks.push(o);
+    }
+    blocks.join("\n\n")
 }
 
 fn show_vlan_brief(s: &L2Switch) -> String {

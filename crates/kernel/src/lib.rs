@@ -11,4 +11,4 @@ mod world;
 pub use rng::DeviceRng;
 pub use time::SimTime;
 pub use trace::{Trace, TraceKind};
-pub use world::{DeviceId, Event, Kernel, LinkConfig, LinkId, PortId, TimerId};
+pub use world::{DeviceId, Event, Kernel, LinkConfig, LinkId, PortId, TimerId, LINK_QUEUE};
