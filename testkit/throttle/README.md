@@ -52,3 +52,20 @@ There are no assertions: the evidence is the screenshots (`01-opened` to `11-fra
 last line of output. Read them. Coordinates are for a 1366x768 window and the M2 layout (settings
 panel on the left, simulation panel on the right). A click on the settings panel takes keyboard
 focus from the console, so the script clicks the device again before typing.
+
+## The load run (`load.mjs`)
+
+`load.mjs` opens `big-lab.toml` (12 switches on rapid spanning tree and 72 PCs, 84 devices) and
+measures frame pacing while the engine runs the lab live, then after typing a command. Run it
+twice, `?engine=inline` (engine in the page) against the default (engine in a Web Worker):
+
+```sh
+CHROMIUM=... node load.mjs 4 http://localhost:8765/ out-load
+CHROMIUM=... node load.mjs 4 "http://localhost:8765/?engine=inline" out-load-inline
+```
+
+Both should show the same frame gaps (median about 8 ms, 99th percentile about 16 ms at 4x on the
+machine this was written on). The first version of the worker did not: every answer woke the page,
+which sent the next round of the live clock at once, a loop at full speed that doubled the page's
+work (median 49 ms). Rounds are now one message each, at most every 0.1 s and one at a time, and an
+answer to the live clock does not ask for a frame.

@@ -39,6 +39,8 @@ pub(super) enum Awaiting {
     PanelState { device: u32 },
     /// Lines were sent from the panel.
     Configured { device: u32 },
+    /// The last of the commands that moved the live clock on: the next may be sent.
+    LiveClock,
     /// Only the side effects matter (the lab text, the clock).
     Nothing,
 }
@@ -94,6 +96,17 @@ impl App {
     pub(super) fn post(&mut self, cmd: EngineCmd, what: Awaiting) {
         let id = self.engine.post(cmd);
         self.pending.insert(id, what);
+        self.update_wake();
+    }
+
+    /// Tell the transport whether an answer needs a frame: only if somebody besides the live
+    /// clock is waiting for one.
+    pub(super) fn update_wake(&self) {
+        let waiting = self
+            .pending
+            .values()
+            .any(|w| !matches!(w, Awaiting::LiveClock | Awaiting::Nothing));
+        self.wake_needed.set(waiting);
     }
 
     /// Deal with every answer that has arrived. Called at the start of each frame and after
@@ -112,6 +125,7 @@ impl App {
                 }
             }
         }
+        self.update_wake();
     }
 
     fn on_response(&mut self, what: Awaiting, events: Vec<EngineEvent>) {
@@ -260,6 +274,10 @@ impl App {
             }
             Awaiting::Ping => self.apply_sim(events, false),
             Awaiting::Step {
+                kind: StepKind::Run,
+                ..
+            } => self.run_answered(events),
+            Awaiting::Step {
                 animate,
                 kind,
                 play,
@@ -313,7 +331,40 @@ impl App {
                     self.refresh_clock();
                 }
             }
+            Awaiting::LiveClock => self.live_in_flight = false,
             Awaiting::Nothing => {}
+        }
+    }
+
+    /// A batch of steps from `Run`: log what each delivered, with a mark before each so Back can
+    /// undo them one at a time, and ask for the next batch unless it ended or the budget is spent.
+    fn run_answered(&mut self, events: Vec<EngineEvent>) {
+        let mut done = 0u32;
+        let mut more = true;
+        for ev in events {
+            match ev {
+                EngineEvent::Idle { .. } => {
+                    self.note_clock(&[ev]);
+                    more = false;
+                    break;
+                }
+                EngineEvent::Hop { .. } | EngineEvent::Tick { .. } => {
+                    done += 1;
+                    self.push_mark();
+                    self.apply_sim(vec![ev], false);
+                }
+                _ => {}
+            }
+        }
+        self.sim.budget = self.sim.budget.saturating_sub(done);
+        if more && self.sim.budget > 0 {
+            self.sim_post_step(false, StepKind::Run, false);
+        } else {
+            self.sim.in_flight = false;
+            self.sim.outcome = Some(more);
+            if more {
+                self.notice = Some("stopped after 100000 events; Run again to continue".into());
+            }
         }
     }
 

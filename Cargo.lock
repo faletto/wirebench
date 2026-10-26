@@ -164,6 +164,7 @@ dependencies = [
  "js-sys",
  "kernel",
  "labfile",
+ "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
  "wire",

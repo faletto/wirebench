@@ -309,3 +309,51 @@ fn the_settings_panel_shows_what_the_engine_says_when_it_says_it() {
     assert_eq!(h.ip, "10.0.1.66");
     assert!(app.is_dirty());
 }
+
+#[test]
+fn a_slow_engine_is_not_sent_the_clock_faster_than_it_can_take_it() {
+    let lab = include_str!("../../../testkit/throttle/m2-lab.toml");
+    // Answers take 20 frames: far longer than the 0.25 s a frame's worth of time would be.
+    let mut app = App::from_lab_text_delayed(lab, 20).unwrap();
+    let mut d = Driver::new();
+    d.frames(&mut app, 60);
+    let at = app.sim_time_ns();
+    d.frames(&mut app, 200); // ten seconds of wall time at 20 frames a second
+    let gained = (app.sim_time_ns() - at) as f64 / 1e9;
+    // The debt is paid in batches, so what has happened trails the wall clock by a round or two
+    // at most; it neither stalls nor runs ahead.
+    assert!(
+        (6.0..=10.5).contains(&gained),
+        "{gained} simulated seconds in 10"
+    );
+}
+
+#[test]
+fn fast_forward_in_batches_matches_stepping_one_event_at_a_time() {
+    let lab = include_str!("../../../testkit/throttle/m2-lab.toml");
+    let mut a = App::from_lab_text_delayed(lab, 2).unwrap();
+    let mut b = App::from_lab_text_delayed(lab, 2).unwrap();
+    let mut d = Driver::new();
+    for app in [&mut a, &mut b] {
+        d.frames(app, 40);
+        app.sim_queue_ping("pc1", [10, 0, 0, 2]);
+    }
+    a.sim_run();
+    d.frames(&mut a, 80);
+    for _ in 0..60 {
+        b.sim_step();
+        d.frames(&mut b, 3);
+    }
+    // The two apps' clocks were run by frames of their own, so compare times from the first frame.
+    let rows = |app: &App| -> Vec<String> {
+        let t0 = app.sim_hops().first().map_or(0, |h| h.ns);
+        app.sim_hops()
+            .iter()
+            // Spanning tree's own hellos depend on when the live clock last ran; the ping does not.
+            .filter(|h| !h.summary.contains("BPDU"))
+            .map(|h| format!("+{} {}:{} {}", h.ns - t0, h.device, h.port, h.summary))
+            .collect()
+    };
+    assert!(!rows(&a).is_empty());
+    assert_eq!(rows(&a), rows(&b));
+}

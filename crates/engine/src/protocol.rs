@@ -113,6 +113,12 @@ pub enum EngineCmd {
     },
     /// Dispatch exactly one simulation event.
     Step,
+    /// Step up to `max` times in a row, answering with what each step delivered, in order. It
+    /// stops early, with an `Idle` as the last answer, when nothing is left to do. Each step can
+    /// be undone with `StepBack` as if it had been asked for singly.
+    Run {
+        max: u32,
+    },
     /// Undo the latest `Step` or `PingOnce`, exactly: the world goes back to how it was.
     StepBack,
     /// Drop the saved states `StepBack` uses (after the world was changed some other way).
@@ -567,6 +573,22 @@ impl Engine {
                     self.history.pop();
                 }
                 vec![ev]
+            }
+            EngineCmd::Run { max } => {
+                let mut out = Vec::new();
+                for _ in 0..max {
+                    self.remember();
+                    let ev = self.step_event();
+                    let idle = matches!(ev, EngineEvent::Idle { .. });
+                    if idle {
+                        self.history.pop();
+                    }
+                    out.push(ev);
+                    if idle {
+                        break;
+                    }
+                }
+                out
             }
             EngineCmd::RunToIdle => {
                 self.history.clear();
