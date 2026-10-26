@@ -27,7 +27,8 @@ struct Tab {
     /// Index into `App::nodes`.
     node: usize,
     device: u32,
-    terminal: u32,
+    /// `None` while the engine is still opening it.
+    terminal: Option<u32>,
     prompt: String,
     model: TermModel,
 }
@@ -72,8 +73,11 @@ enum Drag {
     Recorded,
 }
 
+#[path = "responses.rs"]
+mod responses;
 #[path = "settings_panel.rs"]
 mod settings_panel;
+use responses::Awaiting;
 
 #[derive(Debug)]
 pub struct App {
@@ -95,6 +99,8 @@ pub struct App {
     /// The lab as lab-file text, as the engine last pushed it: what saving, dirty tracking,
     /// autosave and the undo history read, so none of them has to ask and wait.
     lab_text: String,
+    /// Commands sent and not yet answered, and what each was for.
+    pending: std::collections::HashMap<u64, Awaiting>,
     sim: Sim,
     panel: Panel,
     anim: Anim,
@@ -150,15 +156,26 @@ impl App {
         Self::assemble(engine, view)
     }
 
+    /// An app whose engine takes `polls` frames to answer anything, as one in a Web Worker does.
+    /// For tests of what must cope with late answers.
+    pub fn from_lab_text_delayed(text: &str, polls: usize) -> Result<Self, String> {
+        let built = engine::lab::load_and_build(text, kernel::Trace::new())?;
+        let (engine, view) = EngineLink::from_built_delayed(built, polls);
+        Ok(Self::assemble(engine, view))
+    }
+
     /// An app around an engine that already holds the lab `view` describes.
     fn assemble(engine: EngineLink, view: LabView) -> Self {
         let warnings = view.warnings.clone();
         let lab_text = engine.snapshot();
         let mut nodes = Vec::new();
         let mut tabs: Vec<Tab> = Vec::new();
+        let mut opens = Vec::new();
         for d in &view.devices {
             let tab = Some(tabs.len());
-            tabs.push(new_tab(&engine, d, nodes.len()));
+            let (tab_, id) = new_tab(&engine, d, nodes.len());
+            tabs.push(tab_);
+            opens.push((id, Awaiting::OpenTerminal { device: d.device }));
             nodes.push(NodeInfo {
                 name: d.name.clone(),
                 kind: lab_kind(d.kind),
@@ -187,6 +204,7 @@ impl App {
                 ..Sim::default()
             },
             lab_text,
+            pending: opens.into_iter().collect(),
             panel: Panel::default(),
             anim: Anim::default(),
             changes: Changes::default(),
@@ -208,6 +226,7 @@ impl App {
             frame_ms: 0.0,
             ready_ms: None,
         };
+        app.pump();
         app.changes = Changes::clean(app.export_lab());
         app.refresh_clock();
         app
@@ -305,7 +324,11 @@ impl App {
                 let i = view.devices.len() - 1;
                 let d = view.devices[i].clone();
                 self.history.record(format!("add {}", d.name), before);
-                self.tabs.push(new_tab(&self.engine, &d, i));
+                let (tab_, id) = new_tab(&self.engine, &d, i);
+                self.tabs.push(tab_);
+                self.pending
+                    .insert(id, Awaiting::OpenTerminal { device: d.device });
+                self.pump();
                 self.nodes.push(NodeInfo {
                     name: d.name.clone(),
                     kind: lab_kind(d.kind),
@@ -1272,11 +1295,14 @@ impl App {
         }
     }
 
-    /// Run one terminal action against the engine and print the result.
+    /// Run one terminal action against the engine; the output is printed when it arrives.
     pub fn apply(&mut self, tab: usize, action: TermAction) {
-        let is_submit = matches!(action, TermAction::Submit(_));
         let t = &mut self.tabs[tab];
-        let terminal = t.terminal;
+        let device = t.device;
+        // Until the engine has opened the console there is nothing to type at.
+        let Some(terminal) = t.terminal else {
+            return;
+        };
         match action {
             TermAction::Submit(line) => {
                 // What is typed at a password prompt is not echoed.
@@ -1287,56 +1313,28 @@ impl App {
                 }
                 self.sim.marks.clear();
                 self.panel.stale = true;
-                let events = self.engine.send(EngineCmd::Exec { terminal, line });
-                absorb(&mut self.lab_text, &events);
-                let reply = events
-                    .into_iter()
-                    .find(|e| !matches!(e, EngineEvent::LabText { .. }));
+                self.post(
+                    EngineCmd::Exec { terminal, line },
+                    Awaiting::Exec { device },
+                );
                 // A command may have started spanning tree, which keeps its own time.
-                if let Some(EngineEvent::Time { ns, background }) =
-                    self.engine.send(EngineCmd::Now).pop()
-                {
-                    self.sim_now = ns;
-                    self.background = background;
-                }
-                match reply {
-                    Some(EngineEvent::Output { text, prompt, .. }) => {
-                        t.model.push_output(&text);
-                        t.prompt = prompt;
-                    }
-                    Some(EngineEvent::Closed { .. }) => {
-                        t.model.push_output("[session closed; opened a new one]");
-                        let (terminal, prompt, greeting) = open_terminal(&self.engine, t.device);
-                        if !greeting.is_empty() {
-                            t.model.push_output(&greeting);
-                        }
-                        t.terminal = terminal;
-                        t.prompt = prompt;
-                    }
-                    Some(EngineEvent::Error { message }) => t.model.push_output(&message),
-                    _ => {}
-                }
+                self.post(EngineCmd::Now, Awaiting::Nothing);
             }
             TermAction::Help(line) => {
                 t.model.push_output(&format!("{}{line}?", t.prompt));
-                if let Some(EngineEvent::Output { text, .. }) =
-                    self.engine.send(EngineCmd::Help { terminal, line }).pop()
-                {
-                    t.model.push_output(&text);
-                }
+                self.post(
+                    EngineCmd::Help { terminal, line },
+                    Awaiting::Help { device },
+                );
             }
             TermAction::Tab(line) => {
-                if let Some(EngineEvent::Completion { line, .. }) =
-                    self.engine.send(EngineCmd::Tab { terminal, line }).pop()
-                {
-                    t.model.set_input(&line);
-                }
+                self.post(
+                    EngineCmd::Tab { terminal, line },
+                    Awaiting::Complete { device },
+                );
             }
         }
-        // A command may have changed a config; only a real change makes the lab dirty.
-        if is_submit {
-            self.observe_changes();
-        }
+        self.pump();
     }
 
     /// Draw the whole UI. Takes only a `Ui` so headless tests can drive it.
@@ -1404,6 +1402,7 @@ impl App {
         self.wall = ui.input(|i| i.time);
         self.ctx = Some(ui.ctx().clone());
         self.drain_inbox();
+        self.pump();
         // Ctrl/Cmd+S saves and Ctrl/Cmd+O opens, taken before any widget can see them (the web
         // build also stops the browser's own Save Page / Open File dialogs).
         if self.confirm.is_none() {
@@ -1592,36 +1591,25 @@ impl App {
     }
 }
 
-/// Open the device's first terminal.
-fn new_tab(engine: &EngineLink, d: &DeviceView, node: usize) -> Tab {
-    let (terminal, prompt, greeting) = open_terminal(engine, d.device);
+/// A tab for the device, and the number of the request that opens its console.
+fn new_tab(engine: &EngineLink, d: &DeviceView, node: usize) -> (Tab, u64) {
+    let id = engine.post(EngineCmd::OpenTerminal { device: d.device });
     let mut model = TermModel::default();
     model.push_output(&format!(
         "{}: type ? for help, Tab to complete. Try `enable`, `configure terminal`.",
         d.name
     ));
-    if !greeting.is_empty() {
-        model.push_output(&greeting);
-    }
-    Tab {
-        name: d.name.clone(),
-        node,
-        device: d.device,
-        terminal,
-        prompt,
-        model,
-    }
-}
-
-fn open_terminal(engine: &EngineLink, device: u32) -> (u32, String, String) {
-    match engine.send(EngineCmd::OpenTerminal { device }).remove(0) {
-        EngineEvent::TerminalOpened {
-            terminal,
-            prompt,
-            greeting,
-        } => (terminal, prompt, greeting),
-        other => panic!("unexpected {other:?}"),
-    }
+    (
+        Tab {
+            name: d.name.clone(),
+            node,
+            device: d.device,
+            terminal: None,
+            prompt: String::new(),
+            model,
+        },
+        id,
+    )
 }
 
 impl eframe::App for App {

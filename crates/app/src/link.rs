@@ -113,6 +113,15 @@ impl EngineLink {
         (EngineLink::new(Local::new(engine)), view)
     }
 
+    /// Like [`EngineLink::from_built`] but every answer takes `polls` polls to arrive.
+    pub fn from_built_delayed(built: BuiltLab, polls: usize) -> (EngineLink, LabView) {
+        let (engine, view) = Engine::from_built(built);
+        (
+            EngineLink::new(Delayed::new(Local::new(engine), polls)),
+            view,
+        )
+    }
+
     /// A stand-in while the real link is moved into a new `App`; never sent anything.
     pub fn detached() -> EngineLink {
         EngineLink::new(Local::new(Engine::new(engine::World::new(
