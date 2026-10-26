@@ -1,0 +1,86 @@
+# r1 is the DHCP server for two networks: its own LAN (pc1, pc2 behind sw1) and the LAN behind r2,
+# whose requests r2 relays with ip helper-address. All three PCs start with no address.
+@r1
+enable
+configure terminal
+interface g0/0
+ip address 10.0.1.1 255.255.255.0
+no shutdown
+exit
+interface g0/1
+ip address 10.0.12.1 255.255.255.252
+no shutdown
+exit
+ip route 10.0.2.0 255.255.255.0 10.0.12.2
+ip dhcp excluded-address 10.0.1.1 10.0.1.9
+ip dhcp excluded-address 10.0.2.1 10.0.2.9
+ip dhcp pool lan1
+network 10.0.1.0 255.255.255.0
+default-router 10.0.1.1
+dns-server 8.8.8.8
+lease 0 8
+exit
+ip dhcp pool lan2
+network 10.0.2.0 255.255.255.0
+default-router 10.0.2.1
+dns-server 8.8.8.8 8.8.4.4
+end
+show ip dhcp pool
+
+@r2
+enable
+configure terminal
+interface g0/0
+ip address 10.0.12.2 255.255.255.252
+no shutdown
+exit
+interface g0/1
+ip address 10.0.2.1 255.255.255.0
+ip helper-address 10.0.12.1
+no shutdown
+exit
+ip route 10.0.1.0 255.255.255.0 10.0.12.1
+end
+show running-config
+
+@pc1
+ipconfig dhcp
+@pc2
+ipconfig dhcp
+@pc3
+ipconfig dhcp
+
+@pc1
+ping 10.0.2.10
+@pc3
+ping 10.0.1.10
+
+@r1
+show ip dhcp binding
+show ip dhcp pool
+
+# Giving an address back frees it, and it is the next one offered.
+@pc2
+ipconfig release
+ipconfig
+@r1
+show ip dhcp binding
+@pc2
+ipconfig renew
+
+# With the service off nobody answers.
+@r1
+configure terminal
+no service dhcp
+end
+@pc2
+ipconfig release
+ipconfig dhcp
+@r1
+configure terminal
+service dhcp
+end
+@pc2
+ipconfig renew
+@r1
+show running-config

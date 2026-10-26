@@ -255,7 +255,14 @@ impl DhcpServer {
                         state: BindingState::Offered,
                     },
                 );
-                Some(self.reply(DhcpType::Offer, msg, &pool, ip, server_ip, ip))
+                Some(self.reply(
+                    DhcpType::Offer,
+                    msg,
+                    &pool,
+                    ip,
+                    server_ip,
+                    Ipv4Addr::UNSPECIFIED,
+                ))
             }
             DhcpType::Request => self.on_request(now, msg, &client, server_ip, link, reserved),
             _ => None,
@@ -450,6 +457,11 @@ mod tests {
         assert_eq!((offer.t1_secs, offer.t2_secs), (Some(43_200), Some(75_600)));
         assert_eq!(offer.xid, 1);
         assert_eq!(offer.op, DhcpOp::Reply);
+        assert_eq!(
+            offer.ciaddr,
+            Ipv4Addr::UNSPECIFIED,
+            "an offer has no client address yet"
+        );
     }
 
     #[test]

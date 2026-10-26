@@ -30,6 +30,12 @@ const MGMT: Scenario = Scenario {
     golden: "../../testkit/scenarios/m2_mgmt.out",
 };
 
+const DHCP: Scenario = Scenario {
+    lab: include_str!("../../../testkit/scenarios/m2_dhcp.lab.toml"),
+    script: include_str!("../../../testkit/scenarios/m2_dhcp.script"),
+    golden: "../../testkit/scenarios/m2_dhcp.out",
+};
+
 const SVI: Scenario = Scenario {
     lab: include_str!("../../../testkit/scenarios/m2_svi.lab.toml"),
     script: include_str!("../../../testkit/scenarios/m2_svi.script"),
@@ -129,6 +135,11 @@ fn the_router_on_a_stick_lab_matches_its_golden_transcript() {
 #[test]
 fn the_management_lab_matches_its_golden_transcript() {
     check_golden(&MGMT);
+}
+
+#[test]
+fn the_dhcp_lab_matches_its_golden_transcript() {
+    check_golden(&DHCP);
 }
 
 #[test]

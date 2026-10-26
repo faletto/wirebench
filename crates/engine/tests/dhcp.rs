@@ -522,3 +522,227 @@ fn the_exchange_is_deterministic_and_visible_in_the_inspector() {
         );
     }
 }
+
+// ---- how a server addresses its replies (RFC 2131 section 4.1) ----
+
+/// One DHCP frame seen on the wire.
+struct Seen {
+    l2_dst: MacAddr,
+    src: Ipv4Addr,
+    dst: Ipv4Addr,
+    ports: (u16, u16),
+    msg: DhcpMessage,
+}
+
+const CLIENT_MAC: MacAddr = MacAddr([2, 0, 0, 0, 0, 0x77]);
+
+/// A router at 10.0.0.1/24 with a pool, and a probe on its port that plays a client by hand.
+fn probe_rig() -> (World, DeviceId) {
+    let mut w = World::new(Trace::new());
+    let r1 = w.add_device(Router::new("r1", 1, 2));
+    let probe = w.add_device(FakeServer::default());
+    w.connect((probe, 0), (r1, 0), LinkConfig::FAST_ETHERNET);
+    address(&mut w, r1, 0, ip(10, 0, 0, 1), 24);
+    pool(&mut w, r1, ip(10, 0, 0, 0), ip(10, 0, 0, 1));
+    (w, probe)
+}
+
+fn client_msg(kind: DhcpType, broadcast: bool) -> DhcpMessage {
+    let mut m = DhcpMessage {
+        xid: 7,
+        chaddr: CLIENT_MAC,
+        msg_type: Some(kind),
+        ..DhcpMessage::default()
+    };
+    m.set_broadcast(broadcast);
+    m
+}
+
+/// Send `m` to the router as a client would and return what came back as
+/// (layer 2 destination, IP source, IP destination, UDP ports, message).
+fn exchange(
+    w: &mut World,
+    probe: DeviceId,
+    m: &DhcpMessage,
+    l2: MacAddr,
+    src: Ipv4Addr,
+    dst: Ipv4Addr,
+) -> Vec<Seen> {
+    let udp = UdpDatagram {
+        src_port: 68,
+        dst_port: 67,
+        payload: m.emit(),
+    };
+    let pkt = Ipv4Packet {
+        dscp_ecn: 0,
+        ident: 1,
+        flags_frag: 0,
+        ttl: 64,
+        proto: IpProto::UDP,
+        src,
+        dst,
+        payload: udp.emit(src, dst),
+    };
+    let frame = EthernetFrame {
+        dst: l2,
+        src: CLIENT_MAC,
+        vlan: None,
+        ethertype: EtherType::IPV4,
+        payload: pkt.emit(),
+    }
+    .emit();
+    w.with_device::<FakeServer, _>(probe, |p, c| {
+        p.frames.clear();
+        c.transmit(PortId(0), frame)
+    });
+    w.run_to_idle();
+    w.device::<FakeServer>(probe)
+        .frames
+        .iter()
+        .filter_map(|f| {
+            let e = EthernetFrame::parse(f).ok()?;
+            let p = Ipv4Packet::parse(&e.payload).ok()?;
+            let u = UdpDatagram::parse(&p.payload).ok()?;
+            let d = DhcpMessage::parse(&u.payload).ok()?;
+            Some(Seen {
+                l2_dst: e.dst,
+                src: p.src,
+                dst: p.dst,
+                ports: (u.src_port, u.dst_port),
+                msg: d,
+            })
+        })
+        .collect()
+}
+
+fn discover_from_nobody(w: &mut World, probe: DeviceId, broadcast: bool) -> Vec<Seen> {
+    exchange(
+        w,
+        probe,
+        &client_msg(DhcpType::Discover, broadcast),
+        MacAddr::BROADCAST,
+        Ipv4Addr::UNSPECIFIED,
+        Ipv4Addr::BROADCAST,
+    )
+}
+
+#[test]
+fn an_offer_goes_by_unicast_to_the_clients_hardware_address_unless_it_asked_for_broadcast() {
+    let (mut w, probe) = probe_rig();
+    let r = discover_from_nobody(&mut w, probe, false);
+    assert_eq!(r.len(), 1);
+    let Seen {
+        l2_dst: l2,
+        src,
+        dst,
+        ports,
+        msg: m,
+    } = &r[0];
+    assert_eq!(*l2, CLIENT_MAC, "it cannot ARP, so the server uses chaddr");
+    assert_eq!((*src, *dst), (ip(10, 0, 0, 1), ip(10, 0, 0, 2)));
+    assert_eq!(*ports, (67, 68));
+    assert_eq!(m.msg_type, Some(DhcpType::Offer));
+    // The same request with the broadcast flag: everything is broadcast.
+    let (mut w, probe) = probe_rig();
+    let r = discover_from_nobody(&mut w, probe, true);
+    let Seen {
+        l2_dst: l2,
+        dst,
+        msg: m,
+        ..
+    } = &r[0];
+    assert_eq!((*l2, *dst), (MacAddr::BROADCAST, Ipv4Addr::BROADCAST));
+    assert!(m.broadcast(), "the flag is echoed");
+}
+
+#[test]
+fn a_nak_is_always_broadcast_and_a_renewal_is_answered_at_the_clients_own_address() {
+    let (mut w, probe) = probe_rig();
+    let offer = discover_from_nobody(&mut w, probe, false).remove(0).msg;
+    // Selecting us but asking for an address outside the pool.
+    let mut bad = client_msg(DhcpType::Request, false);
+    bad.server_id = Some(ip(10, 0, 0, 1));
+    bad.requested_ip = Some(ip(192, 168, 1, 1));
+    let r = exchange(
+        &mut w,
+        probe,
+        &bad,
+        MacAddr::BROADCAST,
+        Ipv4Addr::UNSPECIFIED,
+        Ipv4Addr::BROADCAST,
+    );
+    let Seen {
+        l2_dst: l2,
+        dst,
+        msg: m,
+        ..
+    } = &r[0];
+    assert_eq!(m.msg_type, Some(DhcpType::Nak));
+    assert_eq!((*l2, *dst), (MacAddr::BROADCAST, Ipv4Addr::BROADCAST));
+    // Take the offered address properly, then renew by unicast to the server.
+    let mut take = client_msg(DhcpType::Request, false);
+    take.server_id = Some(ip(10, 0, 0, 1));
+    take.requested_ip = Some(offer.yiaddr);
+    let r = exchange(
+        &mut w,
+        probe,
+        &take,
+        MacAddr::BROADCAST,
+        Ipv4Addr::UNSPECIFIED,
+        Ipv4Addr::BROADCAST,
+    );
+    assert_eq!(r[0].msg.msg_type, Some(DhcpType::Ack));
+    let mut renew = client_msg(DhcpType::Request, false);
+    renew.ciaddr = offer.yiaddr;
+    let r = exchange(
+        &mut w,
+        probe,
+        &renew,
+        MacAddr([2, 0xaa, 0, 0, 1, 0]),
+        offer.yiaddr,
+        ip(10, 0, 0, 1),
+    );
+    let Seen {
+        l2_dst: l2,
+        src,
+        dst,
+        msg: m,
+        ..
+    } = &r[0];
+    assert_eq!(m.msg_type, Some(DhcpType::Ack));
+    assert_eq!(
+        (*l2, *src, *dst),
+        (CLIENT_MAC, ip(10, 0, 0, 1), offer.yiaddr)
+    );
+    assert_eq!(m.ciaddr, offer.yiaddr, "ciaddr echoes the request");
+}
+
+#[test]
+fn a_request_to_another_server_gets_no_answer_and_garbage_gets_none_either() {
+    let (mut w, probe) = probe_rig();
+    let mut other = client_msg(DhcpType::Request, false);
+    other.server_id = Some(ip(10, 0, 0, 99));
+    other.requested_ip = Some(ip(10, 0, 0, 10));
+    assert!(exchange(
+        &mut w,
+        probe,
+        &other,
+        MacAddr::BROADCAST,
+        Ipv4Addr::UNSPECIFIED,
+        Ipv4Addr::BROADCAST
+    )
+    .is_empty());
+    // A reply-type message from a "client" is not for the server to answer.
+    let mut odd = client_msg(DhcpType::Discover, false);
+    odd.op = DhcpOp::Reply;
+    odd.giaddr = ip(1, 2, 3, 4);
+    assert!(exchange(
+        &mut w,
+        probe,
+        &odd,
+        MacAddr::BROADCAST,
+        Ipv4Addr::UNSPECIFIED,
+        Ipv4Addr::BROADCAST
+    )
+    .is_empty());
+}
