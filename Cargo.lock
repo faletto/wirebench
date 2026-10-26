@@ -166,6 +166,7 @@ dependencies = [
  "labfile",
  "wasm-bindgen-futures",
  "web-sys",
+ "wire",
 ]
 
 [[package]]
