@@ -1,0 +1,93 @@
+# Management plane on a router: enable secret and password, console and vty login, banner, saving
+# and reloading. `@name!` opens a fresh console session (banner and login prompt included).
+@r1
+enable
+configure terminal
+hostname edge
+enable secret cisco
+enable password plain
+service password-encryption
+banner motd #Authorised users only#
+line console 0
+password lab
+login
+exit
+line vty 0 4
+password vty
+login
+end
+show running-config
+write
+show startup-config
+
+@r1!
+wrong
+wrong
+wrong
+lab
+enable
+bad
+bad
+bad
+enable
+cisco
+show running-config
+
+# Change something without saving, then reload: the saved configuration comes back.
+configure terminal
+hostname temp
+interface g0/0
+ip address 10.0.0.1 255.255.255.0
+no shutdown
+end
+reload
+maybe
+no
+y
+lab
+enable
+cisco
+show running-config
+
+# With the saved configuration erased, a reload gives a blank router.
+@r1!
+lab
+enable
+cisco
+erase startup-config
+n
+erase startup-config
+<enter>
+reload
+no
+<enter>
+enable
+show startup-config
+
+@r1!
+enable
+configure terminal
+banner motd #
+Line one
+<enter>
+! not a comment
+#
+end
+show running-config
+
+@sw1
+enable
+configure terminal
+enable secret swpass
+vlan 10
+name sales
+banner motd $Switch banner$
+end
+write
+show running-config
+disable
+enable
+nope
+swpass
+reload
+<enter>

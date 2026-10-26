@@ -1,0 +1,19 @@
+format = "labsim-lab"
+version = 1
+
+[meta]
+title = "Passwords, banner, save and reload"
+
+[[device]]
+name = "r1"
+template = "router-2g"
+pos = [0, 0]
+
+[[device]]
+name = "sw1"
+template = "switch-l2-8"
+pos = [150, 0]
+
+[[link]]
+a = "r1:Gi0/0"
+b = "sw1:Fa0/1"
