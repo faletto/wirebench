@@ -83,3 +83,9 @@ name = "lab_edit"
 path = "fuzz_targets/lab_edit.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "wire_bpdu"
+path = "fuzz_targets/wire_bpdu.rs"
+test = false
+doc = false
