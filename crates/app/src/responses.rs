@@ -71,7 +71,8 @@ pub(super) enum Then {
     Nothing,
     /// It arrived through the inbox (the browser's file picker).
     Inbox,
-    /// It was read from this path.
+    /// It was read from this path (native builds).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     Path(String),
     /// It is the autosave being recovered; if it will not load, the offer stands.
     Recovered(crate::autosave::Autosave),

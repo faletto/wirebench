@@ -1,12 +1,11 @@
 # Moving the engine into a Web Worker
 
-**Status 2026-10-26:** steps 1 and 2 of 5 are done (step 2 is described under "Done"). The app talks to the engine only through
-`EngineLink` (`crates/app/src/link.rs`), and every command and answer crosses it as postcard
-bytes, so everything that must cross a worker boundary is already serialisable and exercised by
-the whole app test suite (462 tests). The engine still runs in the page's thread; nothing in the
-browser has changed, and nothing about the worker has been tried in a browser.
+**Status 2026-10-26:** the engine runs in a Web Worker on the web build, and the app talks to it
+only through serialisable messages that may be answered late. What is left is moving pacing off
+the page's thread and testing under load (see "To do"). Native builds still run the engine in the
+app's thread through the same link.
 
-## Done
+## Done in step 1: the app talks to the engine only by message
 
 - The engine owns the world **and** the topology. A UI loads, edits and snapshots a lab with
   `Load`, `AddDevice`, `MoveDevice`, `AddLink`, `RemoveDevice`, `RemoveLink`, `Snapshot` and
@@ -34,16 +33,31 @@ browser has changed, and nothing about the worker has been tried in a browser.
 - The only blocking calls left are the first snapshot when an app is built around an engine in
   this thread (`App::from_built`), and `EngineLink::send`, used only by tests of the link.
 
+## Done in step 3: the engine runs in a Web Worker
+
+- The page's own wasm bundle is started a second time inside a module worker
+  (`crates/app/src/worker.rs`). There `main` returns at once (no page) and the worker's script
+  calls the exported `worker_start`, which makes an `Engine` and hands back the function that
+  answers each message with `Engine::serve`. The worker's script is built at run time as a blob
+  that `import()`s the bundle trunk linked (found through the page's `modulepreload` and `preload`
+  links), so trunk needed no change. Messages that arrive while the wasm is loading are queued.
+- `WorkerTransport` is the page's end; it wakes the page (`request_repaint`) when an answer
+  comes. `App::with_transport` builds the screen from a local copy of the bundled lab and tells
+  the worker to load the same lab before anything else, so device numbers agree.
+- It is the default on the web. `?engine=inline` keeps the engine in the page, and so does any
+  failure to start a worker (the console says why).
+- Checked in Chromium (`testkit/throttle`): `demo.mjs` (build from scratch, configure, ping,
+  save, reload, open, step, animate) and `m2.mjs` (spanning tree live clock, settings panel,
+  Step/Back, field tree) give the same results with the worker as without. There is no test of
+  the worker in CI; the harness is run by hand.
+
 ## To do, in order
 
-2. **The worker entry.** A second wasm target that owns an `Engine` and loops
-   `onmessage -> handle_bytes -> postMessage`, built next to the page's by trunk. Transfer
-   `ArrayBuffer`s rather than copying.
-3. **Pacing.** Run-to-idle and live time then happen off the page's thread, so a storm or a
+1. **Pacing.** Run-to-idle and live time then happen off the page's thread, so a storm or a
    long Run cannot stall drawing. `Advance` can be driven by the worker's own timer instead of
    the page's frames.
-4. **Prove it in a browser.** The throttled-browser harness (`testkit/throttle`: `demo.mjs` and
-   `m2.mjs`) is the way, with the engine in the worker, at 1x and 8x. The plan's per-frame budget is easiest to meet once this is true.
+2. **Prove it in a browser, under load.** The throttled-browser harness (`testkit/throttle`: `demo.mjs` and
+   `m2.mjs`) is the way, at 8x and with a lab big enough that the engine is busy; and put a check of the worker in CI. The plan's per-frame budget is easiest to meet once this is true.
 
 ## Why this order
 

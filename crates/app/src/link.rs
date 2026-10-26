@@ -18,6 +18,9 @@ pub trait Transport {
     fn post(&mut self, request: Vec<u8>);
     /// Responses that have arrived since the last call, oldest first.
     fn poll(&mut self) -> Vec<Vec<u8>>;
+    /// Called once with a function that wakes whoever polls: a transport whose answers arrive on
+    /// their own (a worker's messages) calls it when one does, so the page draws a frame to see it.
+    fn set_waker(&mut self, _wake: Box<dyn Fn()>) {}
 }
 
 /// The engine in this thread: a request is answered as it is posted.
@@ -127,6 +130,11 @@ impl EngineLink {
         EngineLink::new(Local::new(Engine::new(engine::World::new(
             kernel::Trace::new(),
         ))))
+    }
+
+    /// Have `wake` called whenever an answer arrives by itself.
+    pub fn set_waker(&self, wake: Box<dyn Fn()>) {
+        self.transport.borrow_mut().set_waker(wake);
     }
 
     /// Send a command and say which answer is its own.
