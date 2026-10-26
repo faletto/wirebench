@@ -24,6 +24,23 @@ AI assistant and should not be used to size M3.
 About 500 tests (unit, integration, property, golden transcripts, a late-answering engine) pass on
 the three CI targets; there are fuzz targets for every new parser.
 
+## Against the plan's M2 scope and exit demo
+
+The plan (M2, "MVP, public alpha") lists more than the table above. Not done:
+
+- **mstpd oracle for spanning tree**, which the plan calls "not optional". It is Linux-only and was
+  not available; properties and mutation checks stand in for it, which is weaker.
+- **PWA offline.**
+- **"100-node benchmark green."** Measured instead: an 84-device lab in a throttled browser (frame
+  gaps, not the plan's per-frame budget) and, in M1, engine cold start at 100 nodes.
+- **Exit demo:** "ten switching and addressing labs ... each with a scripted golden test". There
+  are eight M2 golden scenarios (VLANs, router on a stick, SVIs, management plane, DHCP,
+  traceroute, spanning tree, DTP), written by the assistant, not ten, and **no tester** who knows
+  Packet Tracer has tried any of them.
+- **Public alpha** under the new name, and the legal read the plan puts before it.
+- Also from the plan's scope: Kea/other oracles were never run (DHCP), and device config panels
+  cover PCs, routers and switches but not every setting.
+
 ## Deviations from the plan and from the devices imitated
 
 - **Spanning tree starts off** on a new switch (IOS starts in `pvst`), so labs without redundant
