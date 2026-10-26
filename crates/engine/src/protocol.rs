@@ -2,6 +2,7 @@
 //! [`Engine::handle`] directly; on the web the same messages cross a Web Worker boundary
 //! as postcard bytes ([`Engine::handle_bytes`]). Either way the UI never touches a `World`.
 
+use crate::lab::{build, load_and_build, BuiltLab, LabKind, Topology};
 use crate::shell::Shell;
 use crate::World;
 use kernel::{DeviceId, SimTime};
@@ -15,8 +16,67 @@ pub enum ShellKind {
     Switch,
 }
 
+/// What the UI needs to know about a lab to draw it: no devices, just names, places and cables.
+#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub struct LabView {
+    pub title: String,
+    pub devices: Vec<DeviceView>,
+    /// Cables between indices of `devices`, with the 0-based port on each end.
+    pub links: Vec<LinkView>,
+    pub notes: Vec<(String, [i32; 2])>,
+    /// Non-fatal problems found while building the lab.
+    pub warnings: Vec<String>,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct DeviceView {
+    pub name: String,
+    pub kind: ShellKind,
+    pub pos: [i32; 2],
+    pub ports: u16,
+    /// The id every other message uses for this device.
+    pub device: u32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct LinkView {
+    pub a: usize,
+    pub b: usize,
+    pub pa: u16,
+    pub pb: u16,
+}
+
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum EngineCmd {
+    /// Replace everything with the lab in this text (the lab file format). Consoles close.
+    Load {
+        lab: String,
+    },
+    /// Add a device of this kind at this place; it gets the next free name.
+    AddDevice {
+        kind: ShellKind,
+        pos: [i32; 2],
+    },
+    MoveDevice {
+        device: usize,
+        pos: [i32; 2],
+    },
+    /// Cable the first free port on each device (indices into the lab view).
+    AddLink {
+        a: usize,
+        b: usize,
+    },
+    /// Delete a device and its cables. The world is rebuilt, so consoles close.
+    RemoveDevice {
+        device: usize,
+    },
+    RemoveLink {
+        link: usize,
+    },
+    /// The lab as it stands, configurations included, as lab file text.
+    Snapshot,
+    /// What time it is in the simulation (answers with `Time`).
+    Now,
     OpenTerminal {
         device: u32,
     },
@@ -53,6 +113,14 @@ pub enum EngineCmd {
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum EngineEvent {
+    /// The lab changed (loaded, edited): this is how it looks now.
+    Lab {
+        view: LabView,
+    },
+    /// Answer to `Snapshot`.
+    LabText {
+        text: String,
+    },
     TerminalOpened {
         terminal: u32,
         prompt: String,
@@ -74,6 +142,8 @@ pub enum EngineEvent {
     },
     Time {
         ns: u64,
+        /// Periodic upkeep (spanning tree) is scheduled, so time only moves if someone moves it.
+        background: bool,
     },
     Error {
         message: String,
@@ -121,6 +191,24 @@ pub struct Engine {
     terminals: Vec<Option<Shell>>,
     /// The world as it was before each of the latest steps, oldest first.
     history: Vec<World>,
+    /// The lab behind the world, when the engine was made from one.
+    topology: Option<Topology>,
+}
+
+fn shell_kind(k: LabKind) -> ShellKind {
+    match k {
+        LabKind::Router => ShellKind::Router,
+        LabKind::Host => ShellKind::Host,
+        LabKind::Switch => ShellKind::Switch,
+    }
+}
+
+fn lab_kind(k: ShellKind) -> LabKind {
+    match k {
+        ShellKind::Router => LabKind::Router,
+        ShellKind::Host => LabKind::Host,
+        ShellKind::Switch => LabKind::Switch,
+    }
 }
 
 /// How many steps can be undone. Each is a copy of the world.
@@ -141,6 +229,109 @@ impl Engine {
             kinds: BTreeMap::new(),
             terminals: Vec::new(),
             history: Vec::new(),
+            topology: None,
+        }
+    }
+
+    /// An engine for a built lab, with a console for each device.
+    pub fn from_built(built: BuiltLab) -> (Engine, LabView) {
+        let mut e = Engine::new(World::new(kernel::Trace::new()));
+        let view = e.install(built);
+        (e, view)
+    }
+
+    /// Replace the world and topology with `built`'s. Consoles close and saved states go.
+    fn install(&mut self, built: BuiltLab) -> LabView {
+        let (world, topo, warnings) = built.into_parts();
+        self.world = world;
+        self.kinds.clear();
+        for d in &topo.devices {
+            self.kinds.insert(d.id.0, shell_kind(d.kind));
+        }
+        self.terminals.clear();
+        self.history.clear();
+        let view = Self::view_of(&topo, warnings);
+        self.topology = Some(topo);
+        view
+    }
+
+    fn view_of(topo: &Topology, warnings: Vec<String>) -> LabView {
+        LabView {
+            title: topo.title.clone(),
+            devices: topo
+                .devices
+                .iter()
+                .map(|d| DeviceView {
+                    name: d.name.clone(),
+                    kind: shell_kind(d.kind),
+                    pos: d.pos,
+                    ports: d.ports,
+                    device: d.id.0,
+                })
+                .collect(),
+            links: topo
+                .links
+                .iter()
+                .map(|l| LinkView {
+                    a: l.a,
+                    b: l.b,
+                    pa: l.pa,
+                    pb: l.pb,
+                })
+                .collect(),
+            notes: topo
+                .annotations
+                .iter()
+                .map(|a| (a.text.clone(), a.pos))
+                .collect(),
+            warnings,
+        }
+    }
+
+    /// Edits to the lab: run `f` on the topology and world, then report the lab as it is now.
+    fn edit(
+        &mut self,
+        f: impl FnOnce(&mut Topology, &mut World) -> Result<(), String>,
+    ) -> Vec<EngineEvent> {
+        let Some(topo) = self.topology.as_mut() else {
+            return vec![EngineEvent::Error {
+                message: "no lab loaded".into(),
+            }];
+        };
+        match f(topo, &mut self.world) {
+            Ok(()) => {
+                self.history.clear();
+                for d in &topo.devices {
+                    self.kinds.insert(d.id.0, shell_kind(d.kind));
+                }
+                vec![EngineEvent::Lab {
+                    view: Self::view_of(topo, vec![]),
+                }]
+            }
+            Err(message) => vec![EngineEvent::Error { message }],
+        }
+    }
+
+    /// Delete by rebuilding from the lab without the thing deleted.
+    fn rebuild_without(
+        &mut self,
+        f: impl FnOnce(&Topology, &World) -> Result<labfile::LabFile, crate::lab::EditError>,
+    ) -> Vec<EngineEvent> {
+        let Some(topo) = self.topology.as_ref() else {
+            return vec![EngineEvent::Error {
+                message: "no lab loaded".into(),
+            }];
+        };
+        let err = |m: String| vec![EngineEvent::Error { message: m }];
+        let lab = match f(topo, &self.world) {
+            Ok(l) => l,
+            Err(e) => return err(e.to_string()),
+        };
+        match build(&lab, kernel::Trace::new()) {
+            Ok(b) => vec![EngineEvent::Lab {
+                view: self.install(b),
+            }],
+            Err(e) => err(e.to_string()),
         }
     }
 
@@ -173,6 +364,38 @@ impl Engine {
             }]
         };
         match cmd {
+            EngineCmd::Load { lab } => match load_and_build(&lab, kernel::Trace::new()) {
+                Ok(b) => vec![EngineEvent::Lab {
+                    view: self.install(b),
+                }],
+                Err(message) => vec![EngineEvent::Error { message }],
+            },
+            EngineCmd::AddDevice { kind, pos } => self.edit(|t, w| {
+                t.add_device(w, lab_kind(kind), pos)
+                    .map(drop)
+                    .map_err(|e| e.to_string())
+            }),
+            EngineCmd::MoveDevice { device, pos } => self.edit(|t, _| {
+                t.move_device(device, pos);
+                Ok(())
+            }),
+            EngineCmd::AddLink { a, b } => {
+                self.edit(|t, w| t.add_link(w, a, b).map(drop).map_err(|e| e.to_string()))
+            }
+            EngineCmd::RemoveDevice { device } => {
+                self.rebuild_without(|t, w| t.without_device(w, device))
+            }
+            EngineCmd::RemoveLink { link } => self.rebuild_without(|t, w| t.without_link(w, link)),
+            EngineCmd::Now => vec![EngineEvent::Time {
+                ns: self.world.kernel.now().0,
+                background: self.world.kernel.has_background(),
+            }],
+            EngineCmd::Snapshot => match &self.topology {
+                Some(t) => vec![EngineEvent::LabText {
+                    text: labfile::save(&t.snapshot(&self.world)),
+                }],
+                None => err("no lab loaded"),
+            },
             EngineCmd::OpenTerminal { device } => {
                 let id = DeviceId(device);
                 let mut shell = match self.kinds.get(&device) {
@@ -239,6 +462,7 @@ impl Engine {
                     });
                 vec![EngineEvent::Time {
                     ns: self.world.kernel.now().0,
+                    background: self.world.kernel.has_background(),
                 }]
             }
             EngineCmd::StepBack => match self.history.pop() {
@@ -268,6 +492,7 @@ impl Engine {
                 self.world.run_to_idle();
                 vec![EngineEvent::Time {
                     ns: self.world.kernel.now().0,
+                    background: self.world.kernel.has_background(),
                 }]
             }
             EngineCmd::Advance { ns } => {
@@ -276,6 +501,7 @@ impl Engine {
                 self.world.run_until(to);
                 vec![EngineEvent::Time {
                     ns: self.world.kernel.now().0,
+                    background: self.world.kernel.has_background(),
                 }]
             }
         }
