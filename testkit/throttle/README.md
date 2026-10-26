@@ -69,3 +69,6 @@ machine this was written on). The first version of the worker did not: every ans
 which sent the next round of the live clock at once, a loop at full speed that doubled the page's
 work (median 49 ms). Rounds are now one message each, at most every 0.1 s and one at a time, and an
 answer to the live clock does not ask for a frame.
+
+`check.mjs [rate=8] [url]` runs both and exits non-zero if the worker did not start or its frame
+gaps are more than twice the inline run's. CI runs it (job `worker-browser`).

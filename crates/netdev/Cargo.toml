@@ -1,6 +1,6 @@
 [package]
 name = "netdev"
-description = "Device model: Device trait, ports, hosts and L2 switch"
+description = "Device model: hosts, routers and VLAN/spanning-tree switches, DHCP, management plane"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

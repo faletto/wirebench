@@ -20,7 +20,7 @@ Chromebook measurement exists yet.
 | Idle CPU | ~0%, no repaint when nothing changes | **~1.2% of a core** from a 120 Hz animation-frame poll, see below | **Not met** as written |
 | Keystroke to echo | < 1 frame | not instrumented; typing "feels good" (tester report) | Open |
 | Kernel throughput | native >= 2.0 M events/s, wasm >= 0.7 M | **native 1.54 / 1.67 / 1.65 M**; **wasm (wasmtime) 1.58 M** | **Native is ~20% below target**; wasm passes |
-| OSPF / RSTP convergence | various | n/a, not implemented | n/a |
+| OSPF / RSTP convergence | various | RSTP implemented in M2: converges in about 6 s of *virtual* time (classic STP about 30 to 50 s); wall-clock cost not benchmarked. OSPF not implemented | RSTP: see `provenance/spanning-tree.md` |
 | Memory, 100-node lab | native < 150 MB, wasm tab < 250 MB | engine alone: **3.9 MB** peak RSS. UI and wasm tab unmeasured | Engine passes |
 
 ## Browser trace (M3 MacBook Pro, low-power mode, Vivaldi, cold cache)
@@ -85,3 +85,19 @@ wasmtime target/wasm32-wasip1/release/wirebench.wasm bench
 For a cold-start number in the browser: open DevTools, Network tab, tick "Disable cache",
 reload, and read the "ready in N ms" figure in the status bar (it counts from navigation
 start) or record a trace in the Performance panel.
+
+
+## M2 browser measurements (2026-10-26)
+
+Headless Chromium on an Apple Silicon Mac, software GL, `testkit/throttle`, CPU throttled 4x.
+Frame gaps are `requestAnimationFrame` intervals, so they show pacing, not paint cost.
+
+| Run | Result |
+|---|---|
+| Lab with 84 devices (12 switches on rapid spanning tree, 72 PCs) running live, engine in the page | median gap 8.3 ms, p99 16 ms; frame cost 6 to 7 ms |
+| Same lab, engine in a Web Worker | median 8.4 ms, p99 16 ms (after the pacing fixes; **49 ms median before them**) |
+| Small spanning-tree lab, idle with the live clock | the page repaints about ten times a second while a background timer is pending; gaps 7 to 9 ms |
+
+Not measured: a 100-node lab on a native build, the 4 ms engine budget, 8x throttle for the
+load run, any Chromebook. The "idle CPU" and "UI frame time, 100 nodes" rows above are unchanged
+in status; spanning tree adds a ten-per-second repaint to labs that use it.

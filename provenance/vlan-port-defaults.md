@@ -1,7 +1,8 @@
 # Default switch port mode
 
 **Update 2026-10-26:** DTP is now modelled (see `dtp.md`) and the default is `dynamic auto`. The
-text below is the earlier simplification, kept for the record.
+text below is the earlier simplification, kept for the record. `show running-config` now prints
+`switchport mode access` for a port set that way, since access is no longer the default.
 
 **Date:** 2026-10-25
 **Source category:** own decision (a deliberate simplification).

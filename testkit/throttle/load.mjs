@@ -7,6 +7,8 @@ const rate = Number(process.argv[2] ?? 4);
 const outdir = process.argv[4] ?? 'out-load';
 mkdirSync(outdir, { recursive: true });
 const { browser, page, url } = await launch({ rate, url: process.argv[3] ?? 'http://localhost:8765/' });
+let inWorker = false;
+page.on('console', m => { if (m.text().includes('engine in a Web Worker')) inWorker = true; });
 const settle = ms => page.waitForTimeout(ms);
 await page.goto(url);
 await page.waitForFunction(() => !document.getElementById('loading'), null, { timeout: 120000 });
@@ -30,3 +32,5 @@ console.log('  typed a command at', Date.now() - typed, 'ms; see 2-console.png')
 const after = await frameStats(page, 3000);
 console.log('  frames after:', JSON.stringify(after));
 await browser.close();
+// Last line, for check.mjs.
+console.log('RESULT ' + JSON.stringify({ inWorker, live, after }));

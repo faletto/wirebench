@@ -1,9 +1,9 @@
 # Moving the engine into a Web Worker
 
 **Status 2026-10-26:** the engine runs in a Web Worker on the web build, and the app talks to it
-only through serialisable messages that may be answered late. What is left is moving pacing off
-the page's thread and testing under load (see "To do"). Native builds still run the engine in the
-app's thread through the same link.
+only through serialisable messages that may be answered late. Pacing (step 4) is done as far as it
+can be without a worker-owned clock. The 8x load proof is done and a CI check of the worker
+exists (step 5). Native builds still run the engine in the app's thread through the same link.
 
 ## Done in step 1: the app talks to the engine only by message
 
@@ -48,8 +48,8 @@ app's thread through the same link.
   failure to start a worker (the console says why).
 - Checked in Chromium (`testkit/throttle`): `demo.mjs` (build from scratch, configure, ping,
   save, reload, open, step, animate) and `m2.mjs` (spanning tree live clock, settings panel,
-  Step/Back, field tree) give the same results with the worker as without. There is no test of
-  the worker in CI; the harness is run by hand.
+  Step/Back, field tree) give the same results with the worker as without. CI runs only the load check (step 5);
+  `demo.mjs` and `m2.mjs` are run by hand.
 
 ## Done in step 4: pacing
 
@@ -67,13 +67,22 @@ app's thread through the same link.
   two changes the worker made them six times worse.
 - Not moved: the clock is still driven by the page's frames, so a hidden tab stops simulated time.
 
-## To do, in order
+## Done in step 5: proof under load, and a check in CI
 
-1. **Prove it in a browser, under load.** The throttled-browser harness (`testkit/throttle`: `demo.mjs` and
-   `m2.mjs`) is the way, at 8x and with a lab big enough that the engine is busy; and put a check of the worker in CI. The plan's per-frame budget is easiest to meet once this is true.
+- `load.mjs` at 8x CPU throttling on the 84-device lab (2026-10-26): frame gaps with the engine in
+  the worker, median 8.2 ms and 99th percentile 22.8 ms (23.4 after typing a command); in the page,
+  8.2 and 25 (8.3 and 20.5). Equal within noise. The console answered the typed command.
+- `testkit/throttle/check.mjs` runs both and fails if the worker did not start, or if its median
+  or 99th percentile gap is more than twice the inline run's (plus a little slack). Relative to
+  the inline run on the same machine, so a slow CI runner does not matter. CI job `worker-browser`
+  runs it on the `web` job's bundle. It has not yet run on a GitHub runner; the first run may need
+  its thresholds looked at.
+- Still not moved: the clock is driven by the page's frames, so a hidden tab stops simulated time.
 
 ## Why this order
 
 Steps 1 and 2 could be finished and checked without a browser, and were (step 2 against a
-simulated slow engine, and both harness runs unchanged in Chromium). What is left changes where
-the engine runs, which only a browser can check.
+simulated slow engine). Steps 3 and 4 change where the engine runs and when it is asked, which
+only a browser can check, and the browser found what the unit tests could not (a clock loop that
+doubled the page's work). The last step was the same kind of check at a harder setting, plus keeping
+it from regressing.

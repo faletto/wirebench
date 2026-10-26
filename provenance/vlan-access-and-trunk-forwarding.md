@@ -26,5 +26,6 @@ Vendor-specific choices in `crates/netdev/src/switch.rs`:
 - Priority bits of a tag are preserved across trunks; an untagged frame gets priority 0 when it is
   tagged.
 
-Not implemented: DTP (`dynamic auto/desirable`, `nonegotiate`), pruning, private VLANs, 802.1Q
-tunnelling, per-VLAN spanning tree.
+Not implemented: pruning, private VLANs, 802.1Q tunnelling. Trunk negotiation is in `dtp.md` and
+per-VLAN spanning tree in `spanning-tree.md` (both added after this note was written; a port's
+mode here is its *operational* mode, which negotiation can change).
