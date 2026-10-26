@@ -10,6 +10,7 @@ use crate::files::{self, Inbox, Incoming};
 use crate::history::History;
 use crate::inspector::Filter;
 use crate::link::EngineLink;
+use crate::settings::Panel;
 use crate::sim::{parse_ipv4, HopRow, Sim};
 use crate::term::TermModel;
 use crate::widget::{self, TermAction};
@@ -71,6 +72,9 @@ enum Drag {
     Recorded,
 }
 
+#[path = "settings_panel.rs"]
+mod settings_panel;
+
 #[derive(Debug)]
 pub struct App {
     engine: EngineLink,
@@ -89,6 +93,7 @@ pub struct App {
     /// Set when a tab becomes active so its terminal grabs keyboard focus.
     focus_pending: bool,
     sim: Sim,
+    panel: Panel,
     anim: Anim,
     changes: Changes,
     history: History,
@@ -174,6 +179,7 @@ impl App {
                 dst: "10.0.2.2".into(),
                 ..Sim::default()
             },
+            panel: Panel::default(),
             anim: Anim::default(),
             changes: Changes::default(),
             history: History::default(),
@@ -1265,6 +1271,7 @@ impl App {
                     t.model.push_output(&format!("{}{line}", t.prompt));
                 }
                 self.sim.marks.clear();
+                self.panel.stale = true;
                 let reply = self.engine.send(EngineCmd::Exec { terminal, line }).pop();
                 // A command may have started spanning tree, which keeps its own time.
                 if let Some(EngineEvent::Time { ns, background }) =
@@ -1498,6 +1505,10 @@ impl App {
                 );
                 self.handle_canvas(events);
             });
+        egui::Panel::left("settings")
+            .resizable(true)
+            .default_size(250.0)
+            .show(ui, |ui| self.settings_panel(ui));
         egui::Panel::right("sim")
             .resizable(true)
             .default_size(300.0)

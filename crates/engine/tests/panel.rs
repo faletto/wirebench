@@ -86,7 +86,10 @@ fn a_pc_panel_sets_address_gateway_and_dhcp() {
     );
     // Starting DHCP prints what it is doing, which the panel passes on as a note.
     let said = r.configure("pc1", &["ipconfig dhcp"]);
-    assert!(said.iter().all(|l| l.starts_with("ipconfig dhcp: ")), "{said:?}");
+    assert!(
+        said.iter().all(|l| l.starts_with("ipconfig dhcp: ")),
+        "{said:?}"
+    );
     let DeviceState::Host(h) = r.state("pc1") else {
         panic!()
     };
