@@ -1,9 +1,9 @@
 use crate::vlan::{all_vlans, DEFAULT_VLAN};
-use crate::{Ctx, Device, DeviceEvent};
+use crate::{Ctx, Device, DeviceEvent, Router};
 use kernel::{PortId, SimTime};
 use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
-use wire::MacAddr;
+use wire::{EthernetFrame, MacAddr};
 
 const DOT1Q: [u8; 2] = [0x81, 0x00];
 
@@ -54,6 +54,11 @@ pub struct L2Switch {
     table: BTreeMap<(u16, MacAddr), (PortId, SimTime)>,
     /// Entries unseen for this long are ignored (and replaced on next sight).
     pub aging: SimTime,
+    /// The switch's layer 3 half: its interfaces are the SVIs. Routing between them is off until
+    /// `ip routing`; until then it only answers for its own addresses.
+    l3: Router,
+    /// Makes SVI MAC addresses unique across switches in a lab.
+    unit: u8,
 }
 
 impl L2Switch {
@@ -64,6 +69,60 @@ impl L2Switch {
             vlans: BTreeMap::from([(DEFAULT_VLAN, "default".to_string())]),
             table: BTreeMap::new(),
             aging: SimTime::from_secs(300),
+            l3: {
+                let mut r = Router::new("switch", 0, 0);
+                r.set_routing(false);
+                r
+            },
+            unit: 0,
+        }
+    }
+
+    /// Set before creating SVIs; their MACs are `02:bb:00:<unit>:<vlan>`.
+    pub fn set_unit(&mut self, unit: u8) {
+        self.unit = unit;
+    }
+
+    // ---- layer 3 (SVIs) ----
+
+    pub fn l3(&self) -> &Router {
+        &self.l3
+    }
+
+    /// For addresses, shutdown, routes and `ip routing` on the SVIs. Create and delete SVIs with
+    /// [`L2Switch::add_svi`] and [`L2Switch::remove_svi`] so their line state stays right.
+    pub fn l3_mut(&mut self) -> &mut Router {
+        &mut self.l3
+    }
+
+    /// Find or create the SVI for `vlan` and return its interface index.
+    pub fn add_svi(&mut self, vlan: u16) -> usize {
+        let mac = MacAddr([2, 0xbb, 0, self.unit, (vlan >> 8) as u8, vlan as u8]);
+        let i = self.l3.add_svi(vlan, mac);
+        self.refresh_svis();
+        i
+    }
+
+    pub fn remove_svi(&mut self, vlan: u16) -> bool {
+        self.l3.remove_svi(vlan)
+    }
+
+    /// An SVI is up while its VLAN exists and some port carries it. (Cable and link state are not
+    /// modelled at the switch.)
+    fn vlan_active(&self, vlan: u16) -> bool {
+        (0..self.n_ports()).any(|p| self.carries(PortId(p), vlan))
+    }
+
+    fn refresh_svis(&mut self) {
+        let wanted: Vec<(usize, bool)> = self
+            .l3
+            .interfaces()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, ifc)| ifc.svi.map(|v| (i, !self.vlan_active(v))))
+            .collect();
+        for (i, down) in wanted {
+            self.l3.set_line_down(i, down);
         }
     }
 
@@ -107,6 +166,7 @@ impl L2Switch {
         self.vlans
             .entry(id)
             .or_insert_with(|| format!("VLAN{id:04}"));
+        self.refresh_svis();
     }
 
     /// Rename a VLAN, creating it first if need be.
@@ -123,6 +183,7 @@ impl L2Switch {
         let gone = self.vlans.remove(&id).is_some();
         if gone {
             self.table.retain(|(v, _), _| *v != id);
+            self.refresh_svis();
         }
         gone
     }
@@ -139,6 +200,7 @@ impl L2Switch {
         if let Some(cfg) = self.ports.get_mut(p.0 as usize) {
             f(cfg);
             self.table.retain(|_, (port, _)| *port != p);
+            self.refresh_svis();
         }
     }
 
@@ -196,10 +258,70 @@ impl L2Switch {
     }
 }
 
+impl L2Switch {
+    /// Send a frame into VLAN `vlan`: to its learned port, else to every port that carries the
+    /// VLAN. `ingress` is where it came from (never sent back out of), or `None` when the switch
+    /// itself originated it.
+    fn bridge(
+        &mut self,
+        ctx: &mut Ctx,
+        ingress: Option<PortId>,
+        vlan: u16,
+        prio: u8,
+        plain: &[u8],
+    ) {
+        let dst = MacAddr(plain[0..6].try_into().unwrap());
+        let known = self
+            .table
+            .get(&(vlan, dst))
+            .filter(|(_, seen)| *seen + self.aging > ctx.now())
+            .map(|(p, _)| *p)
+            .filter(|p| self.carries(*p, vlan));
+        match known {
+            Some(out) if !dst.is_multicast() => {
+                // Destination is behind the ingress port: filter.
+                if Some(out) != ingress {
+                    ctx.transmit(out, self.egress(out, vlan, prio, plain));
+                }
+            }
+            _ => {
+                for p in (0..self.n_ports())
+                    .map(PortId)
+                    .filter(|p| Some(*p) != ingress && self.carries(*p, vlan))
+                {
+                    ctx.transmit(p, self.egress(p, vlan, prio, plain));
+                }
+            }
+        }
+    }
+
+    /// Send what the layer 3 half queued into the VLANs of the SVIs that produced it.
+    fn drain_l3(&mut self, ctx: &mut Ctx) {
+        for o in self.l3.take_outbox() {
+            let ifc = &self.l3.interfaces()[o.iface];
+            let Some(vlan) = ifc.svi else { continue };
+            let bytes = EthernetFrame {
+                dst: o.dst,
+                src: ifc.mac,
+                vlan: None,
+                ethertype: o.ethertype,
+                payload: o.payload,
+            }
+            .emit();
+            self.bridge(ctx, None, vlan, 0, &bytes);
+        }
+    }
+}
+
 impl Device for L2Switch {
     fn handle(&mut self, ctx: &mut Ctx, ev: DeviceEvent) {
-        let DeviceEvent::FrameRx { port, frame } = ev else {
-            return;
+        let (port, frame) = match ev {
+            DeviceEvent::FrameRx { port, frame } => (port, frame),
+            DeviceEvent::Timer { token, .. } => {
+                self.l3.on_timer(ctx, token);
+                self.drain_l3(ctx);
+                return;
+            }
         };
         if frame.len() < 14 {
             return;
@@ -209,32 +331,24 @@ impl Device for L2Switch {
         };
         let dst = MacAddr(plain[0..6].try_into().unwrap());
         let src = MacAddr(plain[6..12].try_into().unwrap());
-        let now = ctx.now();
         if !src.is_multicast() {
-            self.table.insert((vlan, src), (port, now));
+            self.table.insert((vlan, src), (port, ctx.now()));
         }
-        let known = self
-            .table
-            .get(&(vlan, dst))
-            .filter(|(_, seen)| *seen + self.aging > now)
-            .map(|(p, _)| *p)
-            .filter(|p| self.carries(*p, vlan));
-        match known {
-            Some(out) if !dst.is_multicast() => {
-                // Destination is behind the ingress port: filter.
-                if out != port {
-                    ctx.transmit(out, self.egress(out, vlan, prio, &plain));
+        // The SVI for this VLAN gets frames sent to it and broadcasts. Frames sent to it are not
+        // bridged on: its address belongs to the switch, not to a port.
+        if let Some(i) = self.l3.svi_index(vlan) {
+            let mac = self.l3.interfaces()[i].mac;
+            if dst == mac || dst.is_broadcast() {
+                if let Ok(f) = EthernetFrame::parse(&plain) {
+                    self.l3.receive(ctx, i, f);
+                    self.drain_l3(ctx);
                 }
-            }
-            _ => {
-                for p in (0..self.n_ports())
-                    .map(PortId)
-                    .filter(|p| *p != port && self.carries(*p, vlan))
-                {
-                    ctx.transmit(p, self.egress(p, vlan, prio, &plain));
+                if dst == mac {
+                    return;
                 }
             }
         }
+        self.bridge(ctx, Some(port), vlan, prio, &plain);
     }
 
     fn as_any(&self) -> &dyn Any {

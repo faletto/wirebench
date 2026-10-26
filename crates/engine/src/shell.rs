@@ -23,6 +23,9 @@ const NEEDS_ENCAP: &str =
     "% Set an encapsulation (encapsulation dot1q <vlan>) before addressing a subinterface.";
 const ENCAP_IN_USE: &str = "% That VLAN is already used by another subinterface of this port.";
 const ENCAP_NOT_SUB: &str = "% Encapsulation can only be set on a subinterface.";
+const NO_SUCH_INTERFACE: &str = "% No such interface.";
+const SVI_ONLY: &str = "% Addresses go on VLAN interfaces (interface vlan N), not on switch ports.";
+const PORT_ONLY: &str = "% switchport commands apply to switch ports, not VLAN interfaces.";
 const NAME_TOO_LONG: &str = "% VLAN name may be at most 32 characters.";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -85,6 +88,12 @@ const ENCAP: u32 = 60;
 const ENCAP_NATIVE: u32 = 61;
 const NO_ENCAP: u32 = 62;
 const NO_INTERFACE: u32 = 63;
+const SVI_ENTER: u32 = 70;
+const NO_SVI: u32 = 71;
+const IP_ROUTING: u32 = 72;
+const NO_IP_ROUTING: u32 = 73;
+const DEFAULT_GW: u32 = 74;
+const NO_DEFAULT_GW: u32 = 75;
 
 fn router_grammar() -> (Grammar, Modes) {
     let mut g = Grammar::new();
@@ -479,6 +488,108 @@ fn switch_grammar() -> (Grammar, Modes) {
         h(SW_ALLOWED_ALL),
     );
     g.cmd(
+        &[config],
+        "interface vlan <id:int(1..4094)>",
+        &["Configure an interface", "VLAN interface", "VLAN id"],
+        h(SVI_ENTER),
+    );
+    g.cmd(
+        &[config],
+        "no interface vlan <id:int(1..4094)>",
+        &["Negate", "Delete an interface", "VLAN interface", "VLAN id"],
+        h(NO_SVI),
+    );
+    g.cmd(
+        &[config],
+        "ip routing",
+        &["IP", "Route between VLAN interfaces"],
+        h(IP_ROUTING),
+    );
+    g.cmd(
+        &[config],
+        "no ip routing",
+        &["Negate", "IP", "Stop routing between VLAN interfaces"],
+        h(NO_IP_ROUTING),
+    );
+    g.cmd(
+        &[config],
+        "ip default-gateway <gw:ipv4>",
+        &["IP", "Gateway used while not routing", "Gateway address"],
+        h(DEFAULT_GW),
+    );
+    g.cmd(
+        &[config],
+        "no ip default-gateway",
+        &["Negate", "IP", "Gateway used while not routing"],
+        h(NO_DEFAULT_GW),
+    );
+    g.cmd(
+        &[config],
+        "ip route <net:ipv4> <mask:mask> <via:ipv4>",
+        &[
+            "IP",
+            "Static route",
+            "Destination network",
+            "Network mask",
+            "Next hop",
+        ],
+        h(IP_ROUTE),
+    );
+    g.cmd(
+        &[config],
+        "no ip route <net:ipv4> <mask:mask> <via:ipv4>",
+        &[
+            "Negate",
+            "IP",
+            "Static route",
+            "Destination network",
+            "Network mask",
+            "Next hop",
+        ],
+        h(NO_IP_ROUTE),
+    );
+    g.cmd(
+        &[config_if],
+        "ip address <addr:ipv4> <mask:mask>",
+        &["IP", "Set address", "Address", "Network mask"],
+        h(IP_ADDRESS),
+    );
+    g.cmd(
+        &[config_if],
+        "no ip address",
+        &["Negate", "IP", "Remove the address"],
+        h(NO_IP_ADDRESS),
+    );
+    g.cmd(
+        &[config_if],
+        "shutdown",
+        &["Disable the interface"],
+        h(SHUTDOWN),
+    );
+    g.cmd(
+        &[config_if],
+        "no shutdown",
+        &["Negate", "Enable the interface"],
+        h(NO_SHUTDOWN),
+    );
+    g.cmd(
+        &[privileged],
+        "show ip route",
+        &["Show", "IP information", "Routing table"],
+        h(SHOW_ROUTE),
+    );
+    g.cmd(
+        &[privileged],
+        "show ip interface brief",
+        &[
+            "Show",
+            "IP information",
+            "Interface information",
+            "One line per interface",
+        ],
+        h(SHOW_BRIEF),
+    );
+    g.cmd(
         &[config, config_if, config_vlan],
         "end",
         &["Back to privileged"],
@@ -513,9 +624,11 @@ fn if_name(port: usize) -> String {
 /// Name of logical interface `i`: `GigabitEthernet0/1`, or `GigabitEthernet0/1.10` for a
 /// subinterface.
 fn iface_name(r: &Router, i: usize) -> String {
-    match r.interfaces()[i].sub {
-        Some(s) => format!("{}.{}", if_name(s.parent.0 as usize), s.number),
-        None => if_name(i),
+    let ifc = &r.interfaces()[i];
+    match (ifc.svi, ifc.sub) {
+        (Some(v), _) => format!("Vlan{v}"),
+        (None, Some(s)) => format!("{}.{}", if_name(s.parent.0 as usize), s.number),
+        (None, None) => if_name(i),
     }
 }
 
@@ -696,6 +809,28 @@ impl Shell {
                     Err(EncapError::InUse) => return ENCAP_IN_USE.to_string(),
                 }
             }
+            IP_ADDRESS | NO_IP_ADDRESS | SHUTDOWN | NO_SHUTDOWN if self.kind == Kind::Switch => {
+                return self.svi_interface_cmd(w, handler, a);
+            }
+            SVI_ENTER => {
+                let vlan = a.int("id").unwrap() as u16;
+                w.with_device::<L2Switch, _>(id, |s, _| s.add_svi(vlan));
+                self.session.enter(m.config_if, Some(format!("vlan{vlan}")));
+            }
+            NO_SVI => {
+                let vlan = a.int("id").unwrap() as u16;
+                if !w.with_device::<L2Switch, _>(id, |s, _| s.remove_svi(vlan)) {
+                    return NO_SUCH_INTERFACE.to_string();
+                }
+            }
+            IP_ROUTING | NO_IP_ROUTING => {
+                let on = handler == IP_ROUTING;
+                w.with_device::<L2Switch, _>(id, |s, _| s.l3_mut().set_routing(on));
+            }
+            DEFAULT_GW | NO_DEFAULT_GW => {
+                let gw = a.ipv4("gw").map(Ipv4Addr);
+                w.with_device::<L2Switch, _>(id, |s, _| s.l3_mut().set_default_gateway(gw));
+            }
             IP_ADDRESS | NO_IP_ADDRESS | SHUTDOWN | NO_SHUTDOWN => {
                 let port = PortId(
                     self.session
@@ -730,15 +865,21 @@ impl Shell {
                     via: Ipv4Addr(a.ipv4("via").unwrap()),
                 };
                 if handler == IP_ROUTE {
-                    w.with_device::<Router, _>(id, |r, _| r.add_static(route));
-                } else if w.device::<Router>(id).statics().contains(&route) {
-                    w.with_device::<Router, _>(id, |r, _| r.remove_static(route));
+                    self.with_l3(w, |r| r.add_static(route));
+                } else if self.l3(w).statics().contains(&route) {
+                    self.with_l3(w, |r| r.remove_static(route));
                 } else {
                     return NO_ROUTE_ENTRY.to_string();
                 }
             }
             SW_INTERFACE => {
                 let name = a.word("name").unwrap();
+                // `Vlan10`, the form the running config prints, is the same as `vlan 10`.
+                if let Some(vlan) = parse_vlan_name(name) {
+                    w.with_device::<L2Switch, _>(id, |s, _| s.add_svi(vlan));
+                    self.session.enter(m.config_if, Some(format!("vlan{vlan}")));
+                    return String::new();
+                }
                 let n = w.device::<L2Switch>(id).n_ports() as usize;
                 match parse_switch_ifname(name, n) {
                     Some(p) => self.session.enter(m.config_if, Some(p.to_string())),
@@ -778,8 +919,8 @@ impl Shell {
             SHOW_VLAN => return show_vlan_brief(w.device::<L2Switch>(id)),
             SHOW_TRUNK => return show_trunks(w.device::<L2Switch>(id)),
             SHOW_RUN => return running_config(w.device::<Router>(id)),
-            SHOW_ROUTE => return show_routes(w.device::<Router>(id)),
-            SHOW_BRIEF => return show_brief(w.device::<Router>(id)),
+            SHOW_ROUTE => return show_routes(self.l3(w)),
+            SHOW_BRIEF => return show_brief(self.l3(w)),
             COPY_RUN_START => {
                 self.startup = Some(running_config(w.device::<Router>(id)));
                 return SAVED.to_string();
@@ -804,15 +945,55 @@ impl Shell {
 }
 
 impl Shell {
+    /// The layer 3 half of this device: the router itself, or a switch's SVIs.
+    fn l3<'a>(&self, w: &'a World) -> &'a Router {
+        match self.kind {
+            Kind::Switch => w.device::<L2Switch>(self.device).l3(),
+            _ => w.device::<Router>(self.device),
+        }
+    }
+
+    fn with_l3<R>(&self, w: &mut World, f: impl FnOnce(&mut Router) -> R) -> R {
+        match self.kind {
+            Kind::Switch => w.with_device::<L2Switch, _>(self.device, |s, _| f(s.l3_mut())),
+            _ => w.with_device::<Router, _>(self.device, |r, _| f(r)),
+        }
+    }
+
+    /// `ip address` and `shutdown` inside `interface vlan N` on a switch.
+    fn svi_interface_cmd(&mut self, w: &mut World, handler: u32, a: &Args) -> String {
+        let Some(vlan) = self
+            .session
+            .context()
+            .and_then(|c| c.strip_prefix("vlan"))
+            .and_then(|v| v.parse::<u16>().ok())
+        else {
+            return SVI_ONLY.to_string();
+        };
+        let Some(i) = self.l3(w).svi_index(vlan) else {
+            return NO_SUCH_INTERFACE.to_string();
+        };
+        let port = PortId(i as u16);
+        self.with_l3(w, |r| match handler {
+            IP_ADDRESS => r.set_address(
+                port,
+                Some((Ipv4Addr(a.ipv4("addr").unwrap()), a.mask("mask").unwrap())),
+            ),
+            NO_IP_ADDRESS => r.set_address(port, None),
+            SHUTDOWN => r.set_shutdown(port, true),
+            _ => r.set_shutdown(port, false),
+        });
+        String::new()
+    }
+
     /// The `switchport ...` family, for the interface the session is in.
     fn switchport(&mut self, w: &mut World, handler: u32, a: &Args) -> String {
         let id = self.device;
-        let port = PortId(
-            self.session
-                .context()
-                .and_then(|c| c.parse().ok())
-                .unwrap_or(0),
-        );
+        // Inside `interface vlan N` the context is not a port number.
+        let Some(port) = self.session.context().and_then(|c| c.parse().ok()) else {
+            return PORT_ONLY.to_string();
+        };
+        let port = PortId(port);
         let mut notice = String::new();
         // Parse the VLAN list first so a bad one changes nothing.
         let list = match handler {
@@ -845,6 +1026,13 @@ impl Shell {
         });
         notice
     }
+}
+
+/// `vlan10` or `Vlan10`: the one-word spelling of an SVI name.
+fn parse_vlan_name(s: &str) -> Option<u16> {
+    let rest = s.to_ascii_lowercase();
+    let n: u16 = rest.strip_prefix("vlan")?.parse().ok()?;
+    (1..=4094).contains(&n).then_some(n)
 }
 
 /// Switch ports are named FastEthernet0/1 up; accepts `fa0/1`, `fastethernet0/1` and any prefix
@@ -909,6 +1097,9 @@ pub fn switch_config(s: &L2Switch) -> String {
         }
         o += "!\n";
     }
+    if s.l3().routing() {
+        o += "ip routing\n!\n";
+    }
     let default = netdev::PortConfig::default();
     for p in 0..s.n_ports() {
         let c = s.port(kernel::PortId(p)).expect("port in range");
@@ -932,6 +1123,25 @@ pub fn switch_config(s: &L2Switch) -> String {
             );
         }
         o += "!\n";
+    }
+    let l3 = s.l3();
+    for ifc in l3.interfaces() {
+        let Some(v) = ifc.svi else { continue };
+        o += &format!("interface Vlan{v}\n");
+        match ifc.addr {
+            Some((ip, len)) => o += &format!(" ip address {ip} {}\n", dotted(len)),
+            None => o += " no ip address\n",
+        }
+        if ifc.shutdown {
+            o += " shutdown\n";
+        }
+        o += "!\n";
+    }
+    if let Some(gw) = l3.default_gateway() {
+        o += &format!("ip default-gateway {gw}\n");
+    }
+    for r in l3.statics() {
+        o += &format!("ip route {} {} {}\n", r.net, dotted(r.len), r.via);
     }
     o + "end"
 }
@@ -1050,7 +1260,15 @@ fn show_brief(r: &Router) -> String {
         let addr = ifc
             .addr
             .map_or("unassigned".to_string(), |(ip, _)| ip.to_string());
-        let st = if r.is_up(i) { "up" } else { "admin down" };
+        // Down for lack of a working link layer (an SVI with no port in its VLAN), as opposed to
+        // being shut down.
+        let st = if r.is_up(i) {
+            "up"
+        } else if ifc.line_down && !ifc.shutdown {
+            "down"
+        } else {
+            "admin down"
+        };
         o += &format!("\n{:<22}{:<18}{}", iface_name(r, i), addr, st);
     }
     o

@@ -21,6 +21,11 @@ pub struct Interface {
     pub shutdown: bool,
     /// Set on subinterfaces (`interface g0/0.10`).
     pub sub: Option<SubInterface>,
+    /// Set on a switch virtual interface: the VLAN it routes for (`interface vlan 10`).
+    pub svi: Option<u16>,
+    /// The link layer is down although the interface is not shut down. A switch sets this on an
+    /// SVI whose VLAN has no port in it.
+    pub line_down: bool,
 }
 
 /// An 802.1Q subinterface: traffic for one VLAN on a physical port, sharing the port's MAC.
@@ -33,6 +38,15 @@ pub struct SubInterface {
     pub vlan: Option<u16>,
     /// Untagged frames belong to this subinterface instead of the physical one.
     pub native: bool,
+}
+
+/// A frame the router wants sent on logical interface `iface`; the owner puts it on a wire.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Outgoing {
+    pub iface: usize,
+    pub dst: MacAddr,
+    pub ethertype: EtherType,
+    pub payload: Vec<u8>,
 }
 
 /// Why an `encapsulation dot1q` was refused.
@@ -61,6 +75,12 @@ pub struct Router {
     fib: Fib,
     arp: Resolver,
     ident: u16,
+    /// Forward packets that are not for the router itself. A layer 3 switch starts with this off
+    /// (`ip routing` turns it on); it then only answers for its own addresses.
+    routing: bool,
+    /// With routing off, where traffic for other networks goes (`ip default-gateway`).
+    default_gateway: Option<Ipv4Addr>,
+    outbox: Vec<Outgoing>,
 }
 
 impl Router {
@@ -72,6 +92,8 @@ impl Router {
                 addr: None,
                 shutdown: true,
                 sub: None,
+                svi: None,
+                line_down: false,
             })
             .collect();
         Router {
@@ -82,6 +104,9 @@ impl Router {
             fib: Fib::default(),
             arp: Resolver::default(),
             ident: 1,
+            routing: true,
+            default_gateway: None,
+            outbox: Vec::new(),
         }
     }
 
@@ -102,7 +127,7 @@ impl Router {
         let parent_down = ifc
             .sub
             .is_some_and(|s| self.ifaces[s.parent.0 as usize].shutdown);
-        if ifc.shutdown || parent_down {
+        if ifc.shutdown || ifc.line_down || parent_down {
             None
         } else {
             ifc.addr
@@ -113,6 +138,7 @@ impl Router {
     pub fn is_up(&self, i: usize) -> bool {
         self.ifaces.get(i).is_some_and(|ifc| {
             !ifc.shutdown
+                && !ifc.line_down
                 && ifc
                     .sub
                     .is_none_or(|s| !self.ifaces[s.parent.0 as usize].shutdown)
@@ -135,6 +161,8 @@ impl Router {
             mac: self.ifaces[parent.0 as usize].mac,
             addr: None,
             shutdown: false,
+            svi: None,
+            line_down: false,
             sub: Some(SubInterface {
                 parent,
                 number,
@@ -154,6 +182,69 @@ impl Router {
         self.ifaces.remove(i);
         self.rebuild_fib();
         true
+    }
+
+    /// Find or create the switch virtual interface for `vlan`, with the given MAC address.
+    pub fn add_svi(&mut self, vlan: u16, mac: MacAddr) -> usize {
+        if let Some(i) = self.svi_index(vlan) {
+            return i;
+        }
+        self.ifaces.push(Interface {
+            mac,
+            addr: None,
+            shutdown: false,
+            sub: None,
+            svi: Some(vlan),
+            line_down: false,
+        });
+        self.ifaces.len() - 1
+    }
+
+    pub fn svi_index(&self, vlan: u16) -> Option<usize> {
+        self.ifaces.iter().position(|i| i.svi == Some(vlan))
+    }
+
+    /// Delete the SVI for `vlan`; interface indexes above it shift down by one.
+    pub fn remove_svi(&mut self, vlan: u16) -> bool {
+        let Some(i) = self.svi_index(vlan) else {
+            return false;
+        };
+        self.ifaces.remove(i);
+        self.rebuild_fib();
+        true
+    }
+
+    /// Mark interface `i` as having (or lacking) a working link layer.
+    pub fn set_line_down(&mut self, i: usize, down: bool) {
+        if let Some(ifc) = self.ifaces.get_mut(i) {
+            if ifc.line_down != down {
+                ifc.line_down = down;
+                self.rebuild_fib();
+            }
+        }
+    }
+
+    pub fn routing(&self) -> bool {
+        self.routing
+    }
+
+    pub fn set_routing(&mut self, on: bool) {
+        self.routing = on;
+        self.rebuild_fib();
+    }
+
+    pub fn default_gateway(&self) -> Option<Ipv4Addr> {
+        self.default_gateway
+    }
+
+    pub fn set_default_gateway(&mut self, gw: Option<Ipv4Addr>) {
+        self.default_gateway = gw;
+        self.rebuild_fib();
+    }
+
+    /// Frames queued for sending since the last call.
+    pub fn take_outbox(&mut self) -> Vec<Outgoing> {
+        std::mem::take(&mut self.outbox)
     }
 
     /// `encapsulation dot1q <vlan> [native]` on a subinterface, or `None` to remove it.
@@ -236,7 +327,23 @@ impl Router {
             }
         }
         let connected = fib.clone();
-        for s in &self.statics {
+        if !self.routing {
+            if let Some(gw) = self.default_gateway {
+                if let Some(c) = connected
+                    .lookup(gw)
+                    .filter(|c| c.kind == RouteKind::Connected)
+                {
+                    fib.insert(Route {
+                        net: Ipv4Addr::UNSPECIFIED,
+                        len: 0,
+                        via: Some(gw),
+                        port: c.port,
+                        kind: RouteKind::Static,
+                    });
+                }
+            }
+        }
+        for s in self.statics.iter().filter(|_| self.routing) {
             if let Some(c) = connected
                 .lookup(s.via)
                 .filter(|c| c.kind == RouteKind::Connected)
@@ -276,31 +383,44 @@ impl Router {
         (0..self.ifaces.len()).any(|i| self.live(i).is_some_and(|(a, _)| a == ip))
     }
 
-    fn emit(&self, ctx: &mut Ctx, port: PortId, dst: MacAddr, et: EtherType, mut payload: Vec<u8>) {
+    fn emit(&mut self, port: PortId, dst: MacAddr, ethertype: EtherType, mut payload: Vec<u8>) {
         if payload.len() < 46 {
             payload.resize(46, 0);
         }
-        let ifc = &self.ifaces[port.0 as usize];
-        // A subinterface sends on its parent port, tagged unless it is the native one.
-        let (phys, vlan) = match ifc.sub {
-            Some(s) => (
-                s.parent,
-                s.vlan.filter(|_| !s.native).map(|vid| VlanTag {
-                    pcp: 0,
-                    dei: false,
-                    vid,
-                }),
-            ),
-            None => (port, None),
-        };
-        let f = EthernetFrame {
+        self.outbox.push(Outgoing {
+            iface: port.0 as usize,
             dst,
-            src: ifc.mac,
-            vlan,
-            ethertype: et,
+            ethertype,
             payload,
-        };
-        ctx.transmit(phys, f.emit());
+        });
+    }
+
+    /// Put queued frames on the wire: a subinterface sends on its parent port, tagged unless it is
+    /// the native one. SVIs have no wire of their own, so a router drops anything queued for one.
+    fn flush(&mut self, ctx: &mut Ctx) {
+        for o in std::mem::take(&mut self.outbox) {
+            let ifc = &self.ifaces[o.iface];
+            let (phys, vlan) = match (ifc.sub, ifc.svi) {
+                (_, Some(_)) => continue,
+                (Some(s), _) => (
+                    s.parent,
+                    s.vlan.filter(|_| !s.native).map(|vid| VlanTag {
+                        pcp: 0,
+                        dei: false,
+                        vid,
+                    }),
+                ),
+                (None, None) => (PortId(o.iface as u16), None),
+            };
+            let f = EthernetFrame {
+                dst: o.dst,
+                src: ifc.mac,
+                vlan,
+                ethertype: o.ethertype,
+                payload: o.payload,
+            };
+            ctx.transmit(phys, f.emit());
+        }
     }
 
     /// Route and transmit an IP packet (forwarded or locally originated).
@@ -311,7 +431,7 @@ impl Router {
         };
         let hop = r.via.unwrap_or(pkt.dst);
         if let Some(mac) = self.arp.lookup(hop, ctx.now()) {
-            self.emit(ctx, r.port, mac, EtherType::IPV4, pkt.emit());
+            self.emit(r.port, mac, EtherType::IPV4, pkt.emit());
             return;
         }
         if self.arp.queue(hop, pkt) {
@@ -325,7 +445,7 @@ impl Router {
                 target_mac: MacAddr::default(),
                 target_ip: hop,
             };
-            self.emit(ctx, r.port, MacAddr::BROADCAST, EtherType::ARP, req.emit());
+            self.emit(r.port, MacAddr::BROADCAST, EtherType::ARP, req.emit());
             ctx.schedule(ARP_TIMEOUT, hop.to_u32() as u64);
         }
     }
@@ -386,7 +506,7 @@ impl Router {
                 target_mac: p.sender_mac,
                 target_ip: p.sender_ip,
             };
-            self.emit(ctx, port, p.sender_mac, EtherType::ARP, reply.emit());
+            self.emit(port, p.sender_mac, EtherType::ARP, reply.emit());
         }
         for pkt in self.arp.take_pending(p.sender_ip) {
             // Re-route rather than emit directly: the FIB may have changed while waiting.
@@ -422,7 +542,7 @@ impl Router {
             }
             return;
         }
-        if p.dst == Ipv4Addr::BROADCAST {
+        if !self.routing || p.dst == Ipv4Addr::BROADCAST {
             return;
         }
         if p.ttl <= 1 {
@@ -438,6 +558,40 @@ impl Router {
     }
 }
 
+impl Router {
+    /// A frame that arrived for logical interface `i`. Wrong address or interface down: ignored.
+    /// Anything the router wants to send is queued; collect it with [`Router::take_outbox`].
+    pub fn receive(&mut self, ctx: &mut Ctx, i: usize, f: EthernetFrame) {
+        if self.live(i).is_none() {
+            return;
+        }
+        if f.dst != self.ifaces[i].mac && !f.dst.is_broadcast() {
+            return;
+        }
+        let port = PortId(i as u16);
+        match f.ethertype {
+            EtherType::ARP => {
+                if let Ok(p) = ArpPacket::parse(&f.payload) {
+                    self.on_arp(ctx, port, p);
+                }
+            }
+            EtherType::IPV4 => {
+                if let Ok(p) = Ipv4Packet::parse(&f.payload) {
+                    self.on_ip(ctx, port, p);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// An ARP resolution timer fired (the token is the next hop's address).
+    pub fn on_timer(&mut self, ctx: &mut Ctx, token: u64) {
+        if self.arp.timeout(Ipv4Addr::from_u32(token as u32)) {
+            ctx.note("arp timeout");
+        }
+    }
+}
+
 impl Device for Router {
     fn handle(&mut self, ctx: &mut Ctx, ev: DeviceEvent) {
         match ev {
@@ -446,36 +600,14 @@ impl Device for Router {
                     return;
                 };
                 // Which logical interface the frame is for: by VLAN tag on this physical port.
-                let Some(port) = self.classify(port, f.vlan.map(|t| t.vid)) else {
+                let Some(i) = self.classify(port, f.vlan.map(|t| t.vid)) else {
                     return;
                 };
-                let i = port.0 as usize;
-                if self.live(i).is_none() {
-                    return;
-                }
-                if f.dst != self.ifaces[i].mac && !f.dst.is_broadcast() {
-                    return;
-                }
-                match f.ethertype {
-                    EtherType::ARP => {
-                        if let Ok(p) = ArpPacket::parse(&f.payload) {
-                            self.on_arp(ctx, port, p);
-                        }
-                    }
-                    EtherType::IPV4 => {
-                        if let Ok(p) = Ipv4Packet::parse(&f.payload) {
-                            self.on_ip(ctx, port, p);
-                        }
-                    }
-                    _ => {}
-                }
+                self.receive(ctx, i.0 as usize, f);
             }
-            DeviceEvent::Timer { token, .. } => {
-                if self.arp.timeout(Ipv4Addr::from_u32(token as u32)) {
-                    ctx.note("arp timeout");
-                }
-            }
+            DeviceEvent::Timer { token, .. } => self.on_timer(ctx, token),
         }
+        self.flush(ctx);
     }
 
     fn as_any(&self) -> &dyn Any {
