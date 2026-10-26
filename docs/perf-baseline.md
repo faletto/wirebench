@@ -16,7 +16,7 @@ Chromebook measurement exists yet.
 | Native cold start | < 300 ms | not measured (the app now shows a "ready in N ms" readout to make this easy) | Open |
 | Cold start, 100-node lab (engine only) | native < 800 ms | **parse 1.7 ms + build 9.9 ms**, whole process 10 ms, replaying about 3,100 config lines (2,450 static routes) through the CLI | Passes by ~80x. The UI side (canvas with 100 nodes) is unmeasured |
 | Wasm download size | < 4 MB compressed | **1.71 MB gzip** (4.40 MB raw) + 12 KB JS | Passes |
-| UI frame time, 100 nodes | native p99 < 8 ms, wasm p99 < 16 ms | not measured (no 100-node UI test, no `--bench-ui` mode yet) | Open |
+| UI frame time, 100 nodes | native p99 < 8 ms, wasm p99 < 16 ms | **native 0.47 ms p99** (CPU side only: building the UI and tessellating, no GPU; `crates/app/tests/ui_bench.rs`); **browser, 4x throttled: p99 15 to 18 ms, median 8.3 ms** (frame gaps, see the M2 table) | Native passes by 17x. Browser is at the budget with the CPU slowed 4x, so it passes at real speed by inference, not measurement |
 | Idle CPU | ~0%, no repaint when nothing changes | **~1.2% of a core** from a 120 Hz animation-frame poll, see below | **Not met** as written |
 | Keystroke to echo | < 1 frame | not instrumented; typing "feels good" (tester report) | Open |
 | Kernel throughput | native >= 2.0 M events/s, wasm >= 0.7 M | **native 1.54 / 1.67 / 1.65 M**; **wasm (wasmtime) 1.58 M** | **Native is ~20% below target**; wasm passes |
@@ -98,6 +98,9 @@ Frame gaps are `requestAnimationFrame` intervals, so they show pacing, not paint
 | Same lab, engine in a Web Worker | median 8.4 ms, p99 16 ms (after the pacing fixes; **49 ms median before them**) |
 | Small spanning-tree lab, idle with the live clock | the page repaints about ten times a second while a background timer is pending; gaps 7 to 9 ms |
 
-Not measured: a 100-node lab on a native build, the 4 ms engine budget, 8x throttle for the
-load run, any Chromebook. The "idle CPU" and "UI frame time, 100 nodes" rows above are unchanged
-in status; spanning tree adds a ten-per-second repaint to labs that use it.
+| 100 devices (14 switches on rapid spanning tree, 86 PCs, `hundred-lab.toml`), engine in a Web Worker, tab strip replaced by the picker | median 8.3 ms, p99 15.6 ms live and 15 to 16 ms after typing a command (one run in five had a single 247 ms frame that did not come back in three more runs) |
+| Same, engine in the page | median 8.4 ms, p99 18.3 ms live, 15.6 ms after |
+| Same lab at 8x (what CI runs, on a GitHub runner) | worker and in-page gaps equal within noise (`check.mjs`) |
+
+Not measured: the 4 ms engine budget, any Chromebook. The "idle CPU" row above is unchanged; spanning
+tree adds a ten-per-second repaint to labs that use it.

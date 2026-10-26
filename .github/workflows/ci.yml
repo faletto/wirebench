@@ -69,7 +69,7 @@ jobs:
           name: web-dist
           path: crates/app/dist
 
-  # The engine worker in a real browser: the 84-device lab at 8x CPU throttling, with the engine in
+  # The engine worker in a real browser: the 100-device lab at 8x CPU throttling, with the engine in
   # the worker and in the page; fails if the worker is not used or its frame gaps are worse than the
   # page's (testkit/throttle/check.mjs).
   worker-browser:

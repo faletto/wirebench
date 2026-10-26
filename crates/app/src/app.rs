@@ -29,6 +29,9 @@ const LIVE_MAX_GAP: f64 = 3600.0;
 
 /// Events asked for in one message when fast-forwarding.
 const RUN_BATCH: u32 = 5_000;
+/// Up to this many devices each get a tab along the top; a bigger lab gets one picker instead, so
+/// the strip stays one row however many devices there are.
+const TAB_LIMIT: usize = 12;
 
 /// The lab the app opens with until file loading exists.
 const DEFAULT_LAB: &str = include_str!("../../../labs/m1_static_routes.lab.toml");
@@ -153,6 +156,8 @@ pub struct App {
     live_debt: f64,
     /// Wall time the last round went out.
     live_sent: f64,
+    /// What the device picker is filtered by (a lab too big for a tab each).
+    picker_filter: String,
     frame_ms: f32,
     /// Milliseconds from the start of loading to the first drawn frame (see `clock`).
     ready_ms: Option<f64>,
@@ -269,6 +274,7 @@ impl App {
             live_in_flight: false,
             live_debt: 0.0,
             live_sent: f64::MIN,
+            picker_filter: String::new(),
             frame_ms: 0.0,
             ready_ms: None,
         };
@@ -402,8 +408,7 @@ impl App {
         self.pump();
     }
 
-    /// Remove a device and its cables. The world is rebuilt from the live configs, so
-    /// terminals, ARP caches, MAC tables and virtual time restart.
+    /// Remove a device and its cables from the running lab; the others carry on.
     pub fn delete_device(&mut self, node: usize) {
         let Some(name) = self.nodes.get(node).map(|n| n.name.clone()) else {
             return;
@@ -419,7 +424,7 @@ impl App {
         self.pump();
     }
 
-    /// Remove a cable (index into the cable list); rebuilds like [`App::delete_device`].
+    /// Remove a cable (index into the cable list).
     pub fn delete_link(&mut self, link: usize) {
         let before = self.snapshot_lab();
         self.post(
@@ -440,15 +445,16 @@ impl App {
         self.history.can_redo()
     }
 
-    /// Undo the latest edit. Like delete, this rebuilds the world, so consoles, ARP caches and
-    /// virtual time restart; configuration typed since the edit is kept.
+    /// Undo the latest edit. The engine changes the running lab to match (see
+    /// `Topology::reconcile`): what was there before and still is keeps its consoles, tables and
+    /// the clock; configuration typed since the edit is kept.
     pub fn undo(&mut self) {
         let current = self.snapshot_lab();
         let Some((label, lab)) = self.history.step_back(&current) else {
             self.notice = Some("nothing to undo".into());
             return;
         };
-        let note = format!("undid {label}; consoles restarted");
+        let note = format!("undid {label}");
         self.rebuild(&lab, note, Undo::Back { label, current });
     }
 
@@ -458,38 +464,20 @@ impl App {
             self.notice = Some("nothing to redo".into());
             return;
         };
-        let note = format!("redid {label}; consoles restarted");
+        let note = format!("redid {label}");
         self.rebuild(&lab, note, Undo::Forward { label, current });
     }
 
-    /// Ask the engine to replace the world with one built from `lab`. If it won't build, nothing
+    /// Ask the engine to change the running lab to `lab`'s structure. If it won't build, nothing
     /// changes and `undo` says what to put back in the history.
     fn rebuild(&mut self, lab: &labfile::LabFile, note: String, undo: Undo) {
         self.post(
-            EngineCmd::Load {
+            EngineCmd::Reconcile {
                 lab: labfile::save(lab),
             },
             Awaiting::Rebuild { note, undo },
         );
         self.pump();
-    }
-
-    /// The engine now holds a different world (a rebuild after a delete or undo): start the
-    /// screen over from `view`, keeping what belongs to the person, as the old rebuild did.
-    fn adopt(&mut self, view: LabView, note: String) {
-        let active = self.tabs.get(self.active).map(|t| t.name.clone());
-        let engine = std::mem::replace(&mut self.engine, EngineLink::detached());
-        let mut fresh = App::assemble(engine, view, self.lab_text.clone());
-        fresh.take_session(self);
-        fresh.canvas = std::mem::take(&mut self.canvas);
-        fresh.changes = std::mem::take(&mut self.changes);
-        fresh.history = std::mem::take(&mut self.history);
-        fresh.changes.mark_edited(self.wall);
-        fresh.notice = Some(note);
-        if let Some(i) = active.and_then(|n| fresh.tabs.iter().position(|t| t.name == n)) {
-            fresh.active = i;
-        }
-        *self = fresh;
     }
 
     /// Carry over what belongs to the person using the app rather than to the lab.
@@ -584,6 +572,61 @@ impl App {
             }
             Err(e) => format!("could not download: {e}"),
         });
+    }
+
+    /// One control in place of a tab per device: previous and next, and a list with a filter box
+    /// that only does any work while it is open.
+    fn device_picker(&mut self, ui: &mut Ui) {
+        let n = self.tabs.len();
+        if ui
+            .small_button("◀")
+            .on_hover_text("Previous device")
+            .clicked()
+        {
+            self.select((self.active + n - 1) % n);
+        }
+        let current = self
+            .tabs
+            .get(self.active)
+            .map(|t| format!("{} ({}/{n})", t.name, self.active + 1))
+            .unwrap_or_default();
+        egui::ComboBox::from_id_salt("device-picker")
+            .selected_text(current)
+            .width(180.0)
+            .show_ui(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.picker_filter)
+                        .hint_text("filter by name or number"),
+                );
+                let names: Vec<&str> = self.tabs.iter().map(|t| t.name.as_str()).collect();
+                let shown = matching_devices(&names, &self.picker_filter);
+                let row = ui.text_style_height(&egui::TextStyle::Button) + 4.0;
+                let mut chosen = None;
+                egui::ScrollArea::vertical().max_height(320.0).show_rows(
+                    ui,
+                    row,
+                    shown.len(),
+                    |ui, range| {
+                        for &i in &shown[range] {
+                            let label = format!("{} ({})", names[i], i + 1);
+                            if ui.selectable_label(self.active == i, label).clicked() {
+                                chosen = Some(i);
+                            }
+                        }
+                    },
+                );
+                if shown.is_empty() {
+                    ui.weak("no device matches");
+                }
+                if let Some(i) = chosen {
+                    self.select(i);
+                    self.picker_filter.clear();
+                    ui.close();
+                }
+            });
+        if ui.small_button("▶").on_hover_text("Next device").clicked() {
+            self.select((self.active + 1) % n);
+        }
     }
 
     fn file_controls(&mut self, ui: &mut Ui) {
@@ -1505,10 +1548,14 @@ impl App {
                 ui.separator();
                 self.file_controls(ui);
                 ui.separator();
-                for i in 0..self.tabs.len() {
-                    let label = format!("{} ({})", self.tabs[i].name, i + 1);
-                    if ui.selectable_label(self.active == i, label).clicked() {
-                        self.select(i);
+                if self.tabs.len() > TAB_LIMIT {
+                    self.device_picker(ui);
+                } else {
+                    for i in 0..self.tabs.len() {
+                        let label = format!("{} ({})", self.tabs[i].name, i + 1);
+                        if ui.selectable_label(self.active == i, label).clicked() {
+                            self.select(i);
+                        }
                     }
                 }
             });
@@ -1620,6 +1667,16 @@ impl App {
 }
 
 /// A tab for the device, and the number of the request that opens its console.
+/// Indices of the names that contain `filter` (any case), or that are numbered `filter`.
+fn matching_devices(names: &[&str], filter: &str) -> Vec<usize> {
+    let f = filter.trim().to_lowercase();
+    (0..names.len())
+        .filter(|&i| {
+            f.is_empty() || names[i].to_lowercase().contains(&f) || (i + 1).to_string() == f
+        })
+        .collect()
+}
+
 fn new_tab(engine: &EngineLink, d: &DeviceView, node: usize) -> (Tab, u64) {
     let id = engine.post(EngineCmd::OpenTerminal { device: d.device });
     let mut model = TermModel::default();
@@ -1740,5 +1797,24 @@ fn absorb(cache: &mut String, events: &[EngineEvent]) {
         if let EngineEvent::LabText { text } = e {
             cache.clone_from(text);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::matching_devices;
+
+    #[test]
+    fn the_picker_filters_by_name_or_number_in_any_case() {
+        let names = ["sw1", "SW2", "pc1", "pc10"];
+        assert_eq!(matching_devices(&names, ""), [0, 1, 2, 3]);
+        assert_eq!(matching_devices(&names, "sw"), [0, 1]);
+        assert_eq!(matching_devices(&names, " PC1 "), [2, 3]);
+        assert_eq!(
+            matching_devices(&names, "3"),
+            [2],
+            "the number shown beside the name"
+        );
+        assert!(matching_devices(&names, "zzz").is_empty());
     }
 }

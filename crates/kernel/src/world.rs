@@ -180,6 +180,42 @@ impl Kernel {
         l.up = up;
     }
 
+    /// Take a cable away. The link keeps its number (others hold it) but joins no ports any more:
+    /// frames in flight on it are lost and `port_up` is false at both ends.
+    pub fn remove_link(&mut self, id: LinkId) {
+        let l = &mut self.links[id.0 as usize];
+        if l.up {
+            l.epoch += 1;
+        }
+        l.up = false;
+        l.ends = [(DeviceId(u32::MAX), PortId(u16::MAX)); 2];
+    }
+
+    /// A device has been removed from the lab: nothing it had scheduled will run, and nothing in
+    /// flight towards it arrives. Its cables are removed separately.
+    pub fn retire_device(&mut self, device: DeviceId) {
+        let all = std::mem::take(&mut self.heap).into_vec();
+        for Reverse(s) in all {
+            let dead = match &s.payload {
+                Payload::Timer { device: d, .. } => *d == device,
+                Payload::Frame { to, .. } => to.0 == device,
+            };
+            if dead {
+                if !matches!(
+                    s.payload,
+                    Payload::Timer {
+                        background: true,
+                        ..
+                    }
+                ) {
+                    self.foreground -= 1;
+                }
+            } else {
+                self.heap.push(Reverse(s));
+            }
+        }
+    }
+
     fn push(&mut self, at: SimTime, payload: Payload) {
         let seq = self.next_seq;
         self.next_seq += 1;
@@ -411,6 +447,25 @@ mod tests {
             })
             .collect();
         assert_eq!(got, vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn a_retired_device_runs_nothing_and_a_removed_link_carries_nothing() {
+        let mut k = k();
+        let l = k.add_link((A, P), (B, P), LinkConfig::FAST_ETHERNET);
+        k.schedule_timer(A, SimTime::from_millis(1), 1);
+        k.schedule_background_timer(A, SimTime::from_millis(1), 2);
+        k.schedule_timer(B, SimTime::from_millis(2), 3);
+        k.transmit(B, P, vec![0; 64]);
+        k.remove_link(l);
+        assert!(!k.port_up(A, P) && !k.port_up(B, P));
+        k.retire_device(A);
+        let got: Vec<Event> = std::iter::from_fn(|| k.next_event()).collect();
+        assert_eq!(got.len(), 1, "only B's timer: {got:?}");
+        assert!(!k.has_background());
+        // The ports can be cabled again, and carry frames.
+        k.add_link((A, P), (B, P), LinkConfig::FAST_ETHERNET);
+        assert!(k.port_up(B, P));
     }
 
     #[test]

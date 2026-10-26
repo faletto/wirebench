@@ -54,7 +54,7 @@ pub(super) enum EditKind {
     RemoveLink,
 }
 
-/// What to put back if a rebuild for undo or redo is refused.
+/// What to put back if the engine refuses an undo or redo.
 #[derive(Debug)]
 pub(super) enum Undo {
     Back {
@@ -205,13 +205,13 @@ impl App {
             }
             Awaiting::Edit { what, before } => self.edit_answered(what, before, main),
             Awaiting::Rebuild { note, undo } => match main {
-                Some(EngineEvent::Lab { view }) => self.adopt(view, note),
+                Some(EngineEvent::Lab { view }) => self.sync_view(view, note),
                 other => {
                     let why = match other {
                         Some(EngineEvent::Error { message }) => message,
                         _ => "no answer".to_string(),
                     };
-                    self.notice = Some(format!("could not rebuild the lab: {why}"));
+                    self.notice = Some(format!("could not apply that to the lab: {why}"));
                     match undo {
                         Undo::Back { label, current } => self.history.cancel_back(label, current),
                         Undo::Forward { label, current } => {
@@ -413,14 +413,122 @@ impl App {
                 self.notice = None;
             }
             EditKind::RemoveDevice { name } => {
-                self.adopt(view, format!("removed {name}; consoles restarted"));
+                if let Some(i) = self.nodes.iter().position(|n| n.name == name) {
+                    self.forget_node(i);
+                }
+                self.links = view.links.iter().map(|l| (l.a, l.b)).collect();
                 self.history.record(format!("remove {name}"), before);
+                self.changes.mark_edited(self.wall);
+                self.notice = Some(format!("removed {name}"));
             }
             EditKind::RemoveLink => {
-                self.adopt(view, "removed a cable; consoles restarted".into());
+                self.links = view.links.iter().map(|l| (l.a, l.b)).collect();
                 self.history.record("remove a cable", before);
+                self.changes.mark_edited(self.wall);
+                self.notice = None;
             }
         }
+    }
+
+    /// The engine changed the lab's structure in place (undo, redo): drop what is gone, add what
+    /// is new with a console, and put everything in the engine's order. Devices that stayed keep
+    /// their tab, scrollback and console session.
+    fn sync_view(&mut self, view: LabView, note: String) {
+        for i in (0..self.nodes.len()).rev() {
+            if !view
+                .devices
+                .iter()
+                .any(|d| d.device == self.nodes[i].device)
+            {
+                self.forget_node(i);
+            }
+        }
+        for d in &view.devices {
+            if self.nodes.iter().any(|n| n.device == d.device) {
+                continue;
+            }
+            let (tab, id) = new_tab(&self.engine, d, self.nodes.len());
+            self.tabs.push(tab);
+            self.pending
+                .insert(id, Awaiting::OpenTerminal { device: d.device });
+            self.nodes.push(NodeInfo {
+                name: d.name.clone(),
+                kind: lab_kind(d.kind),
+                pos: d.pos,
+                tab: Some(self.tabs.len() - 1),
+                device: d.device,
+            });
+        }
+        let active = self.tabs.get(self.active).map(|t| t.device);
+        let mut old_nodes = std::mem::take(&mut self.nodes);
+        let mut old_tabs = std::mem::take(&mut self.tabs);
+        for d in &view.devices {
+            if let Some(i) = old_nodes.iter().position(|n| n.device == d.device) {
+                let mut n = old_nodes.remove(i);
+                n.pos = d.pos;
+                self.nodes.push(n);
+            }
+            if let Some(i) = old_tabs.iter().position(|t| t.device == d.device) {
+                self.tabs.push(old_tabs.remove(i));
+            }
+        }
+        for (k, t) in self.tabs.iter_mut().enumerate() {
+            t.node = self
+                .nodes
+                .iter()
+                .position(|n| n.device == t.device)
+                .unwrap_or(k);
+        }
+        for n in &mut self.nodes {
+            n.tab = self.tabs.iter().position(|t| t.device == n.device);
+        }
+        self.active = active
+            .and_then(|d| self.tabs.iter().position(|t| t.device == d))
+            .unwrap_or(0)
+            .min(self.tabs.len().saturating_sub(1));
+        self.links = view.links.iter().map(|l| (l.a, l.b)).collect();
+        self.title = view.title;
+        self.notes = view.notes;
+        self.canvas.last_centres.clear();
+        self.link_from = None;
+        self.focus_pending = true;
+        self.sim.marks.clear();
+        self.changes.mark_edited(self.wall);
+        self.notice = Some(note);
+    }
+
+    /// The engine removed node `i` in place: drop it and its console and shift everything that
+    /// is numbered by position. The other devices keep their consoles, tables and the clock.
+    fn forget_node(&mut self, i: usize) {
+        let device = self.nodes[i].device;
+        if let Some(t) = self.nodes[i].tab {
+            self.tabs.remove(t);
+            if t < self.active {
+                self.active -= 1;
+            }
+        }
+        self.nodes.remove(i);
+        for (k, t) in self.tabs.iter_mut().enumerate() {
+            t.node = self
+                .nodes
+                .iter()
+                .position(|n| n.device == t.device)
+                .unwrap_or(k);
+        }
+        for n in &mut self.nodes {
+            n.tab = self.tabs.iter().position(|t| t.device == n.device);
+        }
+        self.active = self.active.min(self.tabs.len().saturating_sub(1));
+        self.focus_pending = true;
+        self.link_from = None;
+        if i < self.canvas.last_centres.len() {
+            self.canvas.last_centres.remove(i);
+        }
+        if self.panel.device == Some(device) {
+            self.panel = Panel::default();
+        }
+        // The engine cannot step back over a removal.
+        self.sim.marks.clear();
     }
 
     /// The tab showing `device`'s console, if there is one.

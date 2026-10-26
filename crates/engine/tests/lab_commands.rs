@@ -132,30 +132,32 @@ fn a_cable_with_nowhere_to_go_is_refused_with_a_reason() {
 }
 
 #[test]
-fn removing_rebuilds_without_the_device_or_cable_and_closes_consoles() {
+fn removing_a_cable_or_device_happens_in_place_and_closes_only_that_devices_console() {
     let mut r = Rig::new();
     let v = r.view(EngineCmd::Load { lab: LAB.into() });
-    let t = match r
+    let open = |r: &mut Rig, i: usize| match r
         .send(EngineCmd::OpenTerminal {
-            device: v.devices[0].device,
+            device: v.devices[i].device,
         })
         .remove(0)
     {
         EngineEvent::TerminalOpened { terminal, .. } => terminal,
         other => panic!("{other:?}"),
     };
+    let (t0, t1) = (open(&mut r, 0), open(&mut r, 1));
     let links = v.links.len();
     let v2 = r.view(EngineCmd::RemoveLink { link: 0 });
     assert_eq!(v2.links.len(), links - 1);
     assert_eq!(v2.devices.len(), v.devices.len());
-    // The console that was open belonged to the old world.
-    let ev = r
-        .send(EngineCmd::Exec {
+    // Consoles are untouched by a cable going.
+    let exec = |r: &mut Rig, t: u32| {
+        r.send(EngineCmd::Exec {
             terminal: t,
-            line: "ipconfig".into(),
+            line: "".into(),
         })
-        .remove(0);
-    assert!(matches!(ev, EngineEvent::Error { .. }), "{ev:?}");
+        .remove(0)
+    };
+    assert!(matches!(exec(&mut r, t0), EngineEvent::Output { .. }));
     let first = v2.devices[0].name.clone();
     let v3 = r.view(EngineCmd::RemoveDevice { device: 0 });
     assert_eq!(v3.devices.len(), v.devices.len() - 1);
@@ -164,6 +166,9 @@ fn removing_rebuilds_without_the_device_or_cable_and_closes_consoles() {
         .links
         .iter()
         .all(|l| l.a < v3.devices.len() && l.b < v3.devices.len()));
+    // The removed device's console is gone; the other device's is the same session.
+    assert!(matches!(exec(&mut r, t0), EngineEvent::Error { .. }));
+    assert!(matches!(exec(&mut r, t1), EngineEvent::Output { .. }));
     assert!(!r.error(EngineCmd::RemoveDevice { device: 99 }).is_empty());
 }
 

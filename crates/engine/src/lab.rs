@@ -3,7 +3,7 @@
 
 use crate::shell::{parse_ifname, Shell};
 use crate::World;
-use kernel::{DeviceId, LinkConfig, Trace};
+use kernel::{DeviceId, LinkConfig, LinkId, Trace};
 use labfile::{Annotation, LabFile};
 use netdev::{Host, L2Switch, Router};
 use std::collections::BTreeMap;
@@ -23,6 +23,9 @@ pub struct LabDevice {
     pub kind: LabKind,
     pub pos: [i32; 2],
     pub ports: u16,
+    /// The number its MAC addresses are built from: unique among the devices of a lab, and kept
+    /// when others are removed.
+    pub unit: u8,
 }
 
 /// A cable between two entries of [`BuiltLab::devices`].
@@ -33,6 +36,8 @@ pub struct LabLink {
     /// Port index on each end (0-based, as in the engine; names differ per device kind).
     pub pa: u16,
     pub pb: u16,
+    /// The cable in the kernel.
+    pub id: LinkId,
 }
 
 #[derive(Debug)]
@@ -211,6 +216,7 @@ pub fn build(lab: &LabFile, trace: Trace) -> Result<BuiltLab, BuildError> {
             kind,
             pos: d.pos,
             ports,
+            unit: i as u8,
         });
         port_counts.push(ports);
     }
@@ -220,19 +226,7 @@ pub fn build(lab: &LabFile, trace: Trace) -> Result<BuiltLab, BuildError> {
     for l in &lab.links {
         let mut ends = [(0usize, 0u16); 2];
         for (slot, raw) in [&l.a, &l.b].into_iter().enumerate() {
-            let (dev, port) =
-                labfile::split_endpoint(raw).ok_or_else(|| BuildError::BadEndpoint(raw.clone()))?;
-            let idx = *by_name.get(dev).ok_or_else(|| BuildError::UnknownDevice {
-                link_end: raw.clone(),
-            })?;
-            let p = match devices[idx].kind {
-                LabKind::Host => (port.eq_ignore_ascii_case("eth0")).then_some(0),
-                LabKind::Router => parse_ifname(port, port_counts[idx] as usize).map(|p| p as u16),
-                LabKind::Switch => switch_port(port, port_counts[idx]),
-            }
-            .ok_or_else(|| BuildError::UnknownPort {
-                endpoint: raw.clone(),
-            })?;
+            let (idx, p) = resolve_endpoint(&devices, raw)?;
             if used.insert((idx, p), ()).is_some() {
                 return Err(BuildError::PortInUse {
                     endpoint: raw.clone(),
@@ -240,7 +234,7 @@ pub fn build(lab: &LabFile, trace: Trace) -> Result<BuiltLab, BuildError> {
             }
             ends[slot] = (idx, p);
         }
-        world.connect(
+        let id = world.connect(
             (devices[ends[0].0].id, ends[0].1),
             (devices[ends[1].0].id, ends[1].1),
             LinkConfig::FAST_ETHERNET,
@@ -250,27 +244,13 @@ pub fn build(lab: &LabFile, trace: Trace) -> Result<BuiltLab, BuildError> {
             b: ends[1].0,
             pa: ends[0].1,
             pb: ends[1].1,
+            id,
         });
     }
 
     let mut warnings = Vec::new();
     for (d, dev) in lab.devices.iter().zip(&devices) {
-        if dev.kind == LabKind::Host {
-            continue;
-        }
-        // The saved configuration is device state (`reload` restores it); the running one is
-        // replayed over a fresh device.
-        match dev.kind {
-            LabKind::Router => {
-                world.with_device::<Router, _>(dev.id, |r, _| r.startup = d.startup_config.clone())
-            }
-            LabKind::Switch => world
-                .with_device::<L2Switch, _>(dev.id, |s, _| s.startup = d.startup_config.clone()),
-            LabKind::Host => {}
-        }
-        if let Some(cfg) = d.running_config.as_ref().or(d.startup_config.as_ref()) {
-            apply_config(&mut world, dev, cfg, &mut warnings);
-        }
+        configure_device(&mut world, dev, d, &mut warnings);
     }
 
     // Hosts that take their address from DHCP start asking once everything is configured.
@@ -289,6 +269,53 @@ pub fn build(lab: &LabFile, trace: Trace) -> Result<BuiltLab, BuildError> {
         warnings,
         lab: lab.clone(),
     })
+}
+
+/// The device (index into `devices`) and 0-based port a lab-file endpoint such as `sw1:Fa0/2`
+/// names.
+fn resolve_endpoint(devices: &[LabDevice], raw: &str) -> Result<(usize, u16), BuildError> {
+    let (dev, port) =
+        labfile::split_endpoint(raw).ok_or_else(|| BuildError::BadEndpoint(raw.to_string()))?;
+    let idx =
+        devices
+            .iter()
+            .position(|d| d.name == dev)
+            .ok_or_else(|| BuildError::UnknownDevice {
+                link_end: raw.to_string(),
+            })?;
+    let ports = devices[idx].ports;
+    match devices[idx].kind {
+        LabKind::Host => (port.eq_ignore_ascii_case("eth0")).then_some(0),
+        LabKind::Router => parse_ifname(port, ports as usize).map(|p| p as u16),
+        LabKind::Switch => switch_port(port, ports),
+    }
+    .map(|p| (idx, p))
+    .ok_or_else(|| BuildError::UnknownPort {
+        endpoint: raw.to_string(),
+    })
+}
+
+/// Give a freshly made router or switch the saved and running configuration its lab entry carries.
+fn configure_device(
+    world: &mut World,
+    dev: &LabDevice,
+    d: &labfile::Device,
+    warnings: &mut Vec<String>,
+) {
+    match dev.kind {
+        LabKind::Router => {
+            world.with_device::<Router, _>(dev.id, |r, _| r.startup = d.startup_config.clone())
+        }
+        LabKind::Switch => {
+            world.with_device::<L2Switch, _>(dev.id, |s, _| s.startup = d.startup_config.clone())
+        }
+        LabKind::Host => return,
+    }
+    // The saved configuration is device state (`reload` restores it); the running one is
+    // replayed over a fresh device.
+    if let Some(cfg) = d.running_config.as_ref().or(d.startup_config.as_ref()) {
+        apply_config(world, dev, cfg, warnings);
+    }
 }
 
 /// Replay IOS-style config text through the device's CLI. Lines the CLI rejects become
@@ -340,9 +367,11 @@ impl std::error::Error for EditError {}
 
 /// Everything about a lab except the running world: names, kinds, positions, cabling, and the
 /// file it came from. Editing keeps the three in step: this struct, the `LabFile` it carries,
-/// and the `World` passed to each call. Adds and moves happen in place; removals go through
-/// [`Topology::without_device`] / [`Topology::without_link`] and a rebuild, because the kernel
-/// cannot delete a device or link.
+/// and the `World` passed to each call. Every edit happens in place: the kernel keeps the numbers of
+/// removed cables and devices (nothing else is renumbered), they just stop doing anything, and
+/// [`Topology::reconcile`] brings the lab to another lab's structure the same way (undo and redo).
+/// [`Topology::without_device`] / [`Topology::without_link`] write what a lab would be without
+/// something, for a caller that wants to build that afresh.
 #[derive(Debug)]
 pub struct Topology {
     pub title: String,
@@ -418,14 +447,18 @@ impl Topology {
             running_config: None,
             host: None,
         };
-        let (id, kind, ports) =
-            instantiate(world, &d, self.devices.len() as u8).expect("default templates are valid");
+        // The first unit nobody has, so a removed device's number can be reused but never shared.
+        let unit = (0..=255u8)
+            .find(|u| !self.devices.iter().any(|d| d.unit == *u))
+            .expect("fewer than 256 devices");
+        let (id, kind, ports) = instantiate(world, &d, unit).expect("default templates are valid");
         self.devices.push(LabDevice {
             name: d.name.clone(),
             id,
             kind,
             pos,
             ports,
+            unit,
         });
         self.lab.devices.push(d);
         Ok(self.devices.len() - 1)
@@ -451,7 +484,7 @@ impl Topology {
         };
         let pa = self.free_port(a).ok_or_else(|| no_port(a))?;
         let pb = self.free_port(b).ok_or_else(|| no_port(b))?;
-        world.connect(
+        let id = world.connect(
             (self.devices[a].id, pa),
             (self.devices[b].id, pb),
             LinkConfig::FAST_ETHERNET,
@@ -461,7 +494,7 @@ impl Topology {
             b: endpoint(&self.devices[b].name, self.devices[b].kind, pb),
             medium: None,
         });
-        self.links.push(LabLink { a, b, pa, pb });
+        self.links.push(LabLink { a, b, pa, pb, id });
         Ok(self.links.len() - 1)
     }
 
@@ -521,6 +554,186 @@ impl Topology {
             }
         }
         lab
+    }
+
+    /// Take cable `link` away in place: the world keeps running, the two ports go down.
+    pub fn remove_link(&mut self, world: &mut World, link: usize) -> Result<(), EditError> {
+        if link >= self.links.len() {
+            return Err(EditError::NoSuchLink);
+        }
+        let l = self.links.remove(link);
+        self.lab.links.remove(link);
+        world.kernel.remove_link(l.id);
+        Ok(())
+    }
+
+    /// Take device `dev` and its cables away in place. Later devices move up one place; the
+    /// device ids everything else uses do not change.
+    pub fn remove_device(&mut self, world: &mut World, dev: usize) -> Result<(), EditError> {
+        if dev >= self.devices.len() {
+            return Err(EditError::NoSuchDevice);
+        }
+        while let Some(i) = self.links.iter().position(|l| l.a == dev || l.b == dev) {
+            self.remove_link(world, i)?;
+        }
+        for l in &mut self.links {
+            if l.a > dev {
+                l.a -= 1;
+            }
+            if l.b > dev {
+                l.b -= 1;
+            }
+        }
+        let gone = self.devices.remove(dev);
+        self.lab.devices.remove(dev);
+        world.kernel.retire_device(gone.id);
+        Ok(())
+    }
+
+    /// Bring the running lab to the structure of `target` without starting over: devices and cables
+    /// that are not in it are removed, ones it has that are missing are added (with the
+    /// configuration it carries), positions follow it, and the order of devices and cables becomes
+    /// its order. Devices in both keep everything they have learned and been configured with, and the
+    /// clock does not move. This is what undo and redo do. A device with the same name but a
+    /// different template counts as a different device. Returns the ids of the devices removed. If
+    /// `target` would not build, nothing changes.
+    pub fn reconcile(
+        &mut self,
+        world: &mut World,
+        target: &LabFile,
+    ) -> Result<Vec<DeviceId>, String> {
+        build(target, Trace::new()).map_err(|e| e.to_string())?;
+        // The target's devices and cabling, by name and port, which is what identifies them.
+        let tdevs: Vec<LabDevice> = target
+            .devices
+            .iter()
+            .map(|d| {
+                let (kind, ports) = match template(&d.template) {
+                    Some(Template::Host) => (LabKind::Host, 1),
+                    Some(Template::Router(n)) => (LabKind::Router, n),
+                    Some(Template::Switch(n)) => (LabKind::Switch, n),
+                    None => unreachable!("the target built"),
+                };
+                LabDevice {
+                    name: d.name.clone(),
+                    id: DeviceId(0),
+                    kind,
+                    pos: d.pos,
+                    ports,
+                    unit: 0,
+                }
+            })
+            .collect();
+        let key = |na: &str, pa: u16, nb: &str, pb: u16| {
+            let (x, y) = ((na.to_string(), pa), (nb.to_string(), pb));
+            if x <= y {
+                (x, y)
+            } else {
+                (y, x)
+            }
+        };
+        let mut tkeys = Vec::new();
+        for l in &target.links {
+            let (a, pa) = resolve_endpoint(&tdevs, &l.a).map_err(|e| e.to_string())?;
+            let (b, pb) = resolve_endpoint(&tdevs, &l.b).map_err(|e| e.to_string())?;
+            tkeys.push(key(&tdevs[a].name, pa, &tdevs[b].name, pb));
+        }
+        let same_device = |i: usize, this: &Topology| {
+            target.devices.iter().any(|t| {
+                t.name == this.devices[i].name && t.template == this.lab.devices[i].template
+            })
+        };
+        let ckey = |this: &Topology, l: &LabLink| {
+            key(&this.devices[l.a].name, l.pa, &this.devices[l.b].name, l.pb)
+        };
+        // Out with the cables and devices the target does not have.
+        for i in (0..self.links.len()).rev() {
+            let k = ckey(self, &self.links[i]);
+            if !tkeys.contains(&k) {
+                self.remove_link(world, i).map_err(|e| e.to_string())?;
+            }
+        }
+        let mut removed = Vec::new();
+        for i in (0..self.devices.len()).rev() {
+            if !same_device(i, self) {
+                removed.push(self.devices[i].id);
+                self.remove_device(world, i).map_err(|e| e.to_string())?;
+            }
+        }
+        // In with the ones it adds.
+        let mut warnings = Vec::new();
+        for d in &target.devices {
+            if self.devices.iter().any(|x| x.name == d.name) {
+                continue;
+            }
+            let unit = (0..=255u8)
+                .find(|u| !self.devices.iter().any(|d| d.unit == *u))
+                .ok_or("a lab holds at most 255 devices")?;
+            let (id, kind, ports) = instantiate(world, d, unit).map_err(|e| e.to_string())?;
+            let dev = LabDevice {
+                name: d.name.clone(),
+                id,
+                kind,
+                pos: d.pos,
+                ports,
+                unit,
+            };
+            configure_device(world, &dev, d, &mut warnings);
+            if kind == LabKind::Host && world.device::<Host>(id).dhcp.enabled {
+                world.with_device::<Host, _>(id, |h, c| h.dhcp_start(c));
+            }
+            self.devices.push(dev);
+            self.lab.devices.push(d.clone());
+        }
+        let have: Vec<_> = self.links.iter().map(|l| ckey(self, l)).collect();
+        for (l, k) in target.links.iter().zip(&tkeys) {
+            if have.contains(k) {
+                continue;
+            }
+            let (a, pa) = resolve_endpoint(&self.devices, &l.a).map_err(|e| e.to_string())?;
+            let (b, pb) = resolve_endpoint(&self.devices, &l.b).map_err(|e| e.to_string())?;
+            let id = world.connect(
+                (self.devices[a].id, pa),
+                (self.devices[b].id, pb),
+                LinkConfig::FAST_ETHERNET,
+            );
+            self.links.push(LabLink { a, b, pa, pb, id });
+            self.lab.links.push(l.clone());
+        }
+        // The target's order, and its positions.
+        let order: Vec<usize> = target
+            .devices
+            .iter()
+            .map(|t| self.devices.iter().position(|d| d.name == t.name))
+            .collect::<Option<_>>()
+            .ok_or("device lists disagree")?;
+        let mut place = vec![0; order.len()];
+        for (new, old) in order.iter().enumerate() {
+            place[*old] = new;
+        }
+        let mut devices: Vec<LabDevice> = order.iter().map(|&i| self.devices[i].clone()).collect();
+        for (d, t) in devices.iter_mut().zip(&target.devices) {
+            d.pos = t.pos;
+        }
+        for l in &mut self.links {
+            l.a = place[l.a];
+            l.b = place[l.b];
+        }
+        self.devices = devices;
+        let mut links = Vec::new();
+        for k in &tkeys {
+            let i = self
+                .links
+                .iter()
+                .position(|l| ckey(self, l) == *k)
+                .ok_or("cable lists disagree")?;
+            links.push(self.links[i]);
+        }
+        self.links = links;
+        self.title = target.meta.title.clone();
+        self.annotations = target.annotations.clone();
+        self.lab = target.clone();
+        Ok(removed)
     }
 
     /// [`Topology::snapshot`] without device `dev` and every cable attached to it.

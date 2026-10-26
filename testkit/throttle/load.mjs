@@ -1,6 +1,6 @@
 // A big lab (12 switches on rapid spanning tree, 72 PCs) opened from a file: does the page stay
 // responsive while the engine works, with the engine in the worker and in the page?
-//   CHROMIUM=... node load.mjs [rate=4] [url=http://localhost:8765/] [outdir=out-load]
+//   CHROMIUM=... node load.mjs [rate=4] [url=http://localhost:8765/] [outdir=out-load] [lab=./big-lab.toml]
 import { mkdirSync } from 'fs';
 import { launch, tap, frameStats } from './lib.mjs';
 const rate = Number(process.argv[2] ?? 4);
@@ -15,7 +15,7 @@ await page.waitForFunction(() => !document.getElementById('loading'), null, { ti
 await settle(500);
 const t0 = Date.now();
 const [chooser] = await Promise.all([page.waitForEvent('filechooser'), tap(page, 258, 12)]);
-await chooser.setFiles(new URL('./big-lab.toml', import.meta.url).pathname);
+await chooser.setFiles(new URL(process.argv[5] ?? './big-lab.toml', import.meta.url).pathname);
 // How long until the page shows the lab (a tab per device in the top bar)?
 await settle(1500);
 console.log(`  open + 1.5 s: ${Date.now() - t0} ms wall`);

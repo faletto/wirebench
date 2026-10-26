@@ -2,7 +2,7 @@
 //! [`Engine::handle`] directly; on the web the same messages cross a Web Worker boundary
 //! as postcard bytes ([`Engine::handle_bytes`]). Either way the UI never touches a `World`.
 
-use crate::lab::{build, load_and_build, BuiltLab, LabKind, Topology};
+use crate::lab::{load_and_build, BuiltLab, LabKind, Topology};
 use crate::shell::Shell;
 use crate::World;
 use kernel::{DeviceId, SimTime};
@@ -66,12 +66,18 @@ pub enum EngineCmd {
         a: usize,
         b: usize,
     },
-    /// Delete a device and its cables. The world is rebuilt, so consoles close.
+    /// Delete a device and its cables, in place: its console closes, the others carry on.
     RemoveDevice {
         device: usize,
     },
     RemoveLink {
         link: usize,
+    },
+    /// Make the running lab match the structure of the lab in this text (devices, cabling,
+    /// positions, order) in place: what is in both keeps its state, its console and the clock.
+    /// What undo and redo send. If the text does not build, nothing changes.
+    Reconcile {
+        lab: String,
     },
     /// The lab as it stands, configurations included, as lab file text.
     Snapshot,
@@ -355,29 +361,6 @@ impl Engine {
         }
     }
 
-    /// Delete by rebuilding from the lab without the thing deleted.
-    fn rebuild_without(
-        &mut self,
-        f: impl FnOnce(&Topology, &World) -> Result<labfile::LabFile, crate::lab::EditError>,
-    ) -> Vec<EngineEvent> {
-        let Some(topo) = self.topology.as_ref() else {
-            return vec![EngineEvent::Error {
-                message: "no lab loaded".into(),
-            }];
-        };
-        let err = |m: String| vec![EngineEvent::Error { message: m }];
-        let lab = match f(topo, &self.world) {
-            Ok(l) => l,
-            Err(e) => return err(e.to_string()),
-        };
-        match build(&lab, kernel::Trace::new()) {
-            Ok(b) => vec![EngineEvent::Lab {
-                view: self.install(b),
-            }],
-            Err(e) => err(e.to_string()),
-        }
-    }
-
     fn remember(&mut self) {
         match self.world.snapshot() {
             Some(w) => {
@@ -412,6 +395,7 @@ impl Engine {
                 | EngineCmd::AddLink { .. }
                 | EngineCmd::RemoveDevice { .. }
                 | EngineCmd::RemoveLink { .. }
+                | EngineCmd::Reconcile { .. }
                 | EngineCmd::Exec { .. }
                 | EngineCmd::Configure { .. }
         );
@@ -453,10 +437,50 @@ impl Engine {
             EngineCmd::AddLink { a, b } => {
                 self.edit(|t, w| t.add_link(w, a, b).map(drop).map_err(|e| e.to_string()))
             }
+            // Removal happens in place: the rest of the lab keeps its consoles, tables and clock.
             EngineCmd::RemoveDevice { device } => {
-                self.rebuild_without(|t, w| t.without_device(w, device))
+                let id = self
+                    .topology
+                    .as_ref()
+                    .and_then(|t| t.devices.get(device))
+                    .map(|d| d.id);
+                let events =
+                    self.edit(|t, w| t.remove_device(w, device).map_err(|e| e.to_string()));
+                if let (Some(id), Some(EngineEvent::Lab { .. })) = (id, events.first()) {
+                    self.kinds.remove(&id.0);
+                    for t in &mut self.terminals {
+                        if t.as_ref().is_some_and(|sh| sh.device == id) {
+                            *t = None;
+                        }
+                    }
+                }
+                events
             }
-            EngineCmd::RemoveLink { link } => self.rebuild_without(|t, w| t.without_link(w, link)),
+            EngineCmd::Reconcile { lab } => {
+                let loaded = match labfile::load(&lab) {
+                    Ok(l) => l,
+                    Err(e) => return err(&e.to_string()),
+                };
+                let mut gone = Vec::new();
+                let events = self.edit(|t, w| {
+                    gone = t.reconcile(w, &loaded.lab)?;
+                    Ok(())
+                });
+                if matches!(events.first(), Some(EngineEvent::Lab { .. })) {
+                    for id in gone {
+                        self.kinds.remove(&id.0);
+                        for t in &mut self.terminals {
+                            if t.as_ref().is_some_and(|sh| sh.device == id) {
+                                *t = None;
+                            }
+                        }
+                    }
+                }
+                events
+            }
+            EngineCmd::RemoveLink { link } => {
+                self.edit(|t, w| t.remove_link(w, link).map_err(|e| e.to_string()))
+            }
             EngineCmd::Now => vec![EngineEvent::Time {
                 ns: self.world.kernel.now().0,
                 background: self.world.kernel.has_background(),
