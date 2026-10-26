@@ -28,6 +28,10 @@ pub enum Delivered {
     },
 }
 
+/// How far ahead the simulation looks to decide it is idle. Anything scheduled later (a DHCP lease
+/// renewal) stays queued without keeping `run_to_idle` or Play going.
+pub const IDLE_HORIZON: SimTime = SimTime::from_secs(30);
+
 pub struct World {
     pub kernel: Kernel,
     devices: Vec<Box<dyn Device>>,
@@ -98,9 +102,10 @@ impl World {
         self.devices[id.0 as usize].as_any().is::<T>()
     }
 
-    /// Dispatch exactly one event and report what was delivered, or `None` when idle.
+    /// Dispatch exactly one event and report what was delivered, or `None` when idle (see
+    /// [`IDLE_HORIZON`]).
     pub fn step(&mut self) -> Option<Delivered> {
-        let ev = self.kernel.next_event()?;
+        let ev = self.kernel.next_event_within(IDLE_HORIZON)?;
         let at = self.kernel.now();
         let d = match &ev {
             Event::FrameRx {
@@ -133,10 +138,23 @@ impl World {
         }
     }
 
-    /// Run until the queue is empty.
+    /// Run until nothing is due within [`IDLE_HORIZON`]. Packets in flight and short timers keep
+    /// it going; a timer further away (a lease renewal hours from now) is left queued and fires
+    /// when time is advanced past it.
     pub fn run_to_idle(&mut self) {
-        while let Some(ev) = self.kernel.next_event() {
+        while let Some(ev) = self.kernel.next_event_within(IDLE_HORIZON) {
             self.dispatch(ev);
+        }
+    }
+
+    /// Run events up to `t`, stopping early as soon as `done` holds. If `t` is reached the clock
+    /// is left at `t`; if `done` ends it, the clock is at the last event.
+    pub fn run_until_or(&mut self, t: SimTime, mut done: impl FnMut(&World) -> bool) {
+        while !done(self) {
+            match self.kernel.next_event_until(t) {
+                Some(ev) => self.dispatch(ev),
+                None => break,
+            }
         }
     }
 

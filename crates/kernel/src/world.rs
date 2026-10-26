@@ -227,11 +227,23 @@ impl Kernel {
     /// Like [`next_event`](Self::next_event) but leaves events after `limit` queued and
     /// advances the clock to `limit` when none remain at or before it.
     pub fn next_event_until(&mut self, limit: SimTime) -> Option<Event> {
+        self.pop_event(limit, true)
+    }
+
+    /// The next live event if it is due within `horizon` of now; otherwise `None` with the clock
+    /// left where it is. This is what "idle" means for a simulation with long timers (a DHCP
+    /// lease renewal hours away must not keep it running).
+    pub fn next_event_within(&mut self, horizon: SimTime) -> Option<Event> {
+        let limit = self.now + horizon;
+        self.pop_event(limit, false)
+    }
+
+    fn pop_event(&mut self, limit: SimTime, advance_when_empty: bool) -> Option<Event> {
         loop {
             match self.heap.peek() {
                 Some(Reverse(s)) if s.at <= limit => {}
                 _ => {
-                    if limit.0 != u64::MAX && limit > self.now {
+                    if advance_when_empty && limit.0 != u64::MAX && limit > self.now {
                         self.now = limit;
                     }
                     return None;

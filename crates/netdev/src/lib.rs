@@ -3,6 +3,7 @@
 
 mod arp;
 mod device;
+mod dhcp_server;
 mod fib;
 mod host;
 mod mgmt;
@@ -12,8 +13,9 @@ mod vlan;
 
 pub use arp::Resolver;
 pub use device::{Ctx, Device, DeviceEvent};
+pub use dhcp_server::{client_key, Binding, BindingState, DhcpServer, Pool};
 pub use fib::{mask, Fib, Route, RouteKind};
-pub use host::{Host, PingResult};
+pub use host::{DhcpClient, DhcpState, Host, PingResult};
 pub use mgmt::{
     banner_delimiter, check_secret, hash_secret, is_hashed, obscure, password_text, plain_password,
     reveal, stored_secret, Line, Mgmt,
