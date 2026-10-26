@@ -173,11 +173,16 @@ fn instantiate(
                     device: d.name.clone(),
                     value: v.to_string(),
                 };
-                let (ip, len) = parse_cidr(&cfg.ipv4).ok_or_else(|| bad(&cfg.ipv4))?;
-                h.ip = ip;
-                h.prefix_len = len;
-                if let Some(g) = &cfg.gateway {
-                    h.gateway = Some(parse_cidr(&format!("{g}/32")).ok_or_else(|| bad(g))?.0);
+                if cfg.ipv4.trim().eq_ignore_ascii_case("dhcp") {
+                    // The address comes from a server; the client starts when the lab first runs.
+                    h.dhcp.enabled = true;
+                } else {
+                    let (ip, len) = parse_cidr(&cfg.ipv4).ok_or_else(|| bad(&cfg.ipv4))?;
+                    h.ip = ip;
+                    h.prefix_len = len;
+                    if let Some(g) = &cfg.gateway {
+                        h.gateway = Some(parse_cidr(&format!("{g}/32")).ok_or_else(|| bad(g))?.0);
+                    }
                 }
             }
             (world.add_device(h), LabKind::Host, 1)
@@ -265,6 +270,13 @@ pub fn build(lab: &LabFile, trace: Trace) -> Result<BuiltLab, BuildError> {
         }
         if let Some(cfg) = d.running_config.as_ref().or(d.startup_config.as_ref()) {
             apply_config(&mut world, dev, cfg, &mut warnings);
+        }
+    }
+
+    // Hosts that take their address from DHCP start asking once everything is configured.
+    for dev in devices.iter().filter(|d| d.kind == LabKind::Host) {
+        if world.device::<Host>(dev.id).dhcp.enabled {
+            world.with_device::<Host, _>(dev.id, |h, c| h.dhcp_start(c));
         }
     }
 
@@ -487,7 +499,14 @@ impl Topology {
             }
             if d.kind == LabKind::Host {
                 let h = world.device::<Host>(d.id);
-                if h.ip != Ipv4Addr::UNSPECIFIED {
+                if h.dhcp.enabled {
+                    // The lease is not saved, only the fact that this PC asks for one.
+                    entry.host = Some(labfile::HostConfig {
+                        ipv4: "dhcp".to_string(),
+                        gateway: None,
+                        dns: Vec::new(),
+                    });
+                } else if h.ip != Ipv4Addr::UNSPECIFIED {
                     let dns = entry
                         .host
                         .as_ref()

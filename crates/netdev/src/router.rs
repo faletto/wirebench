@@ -1,11 +1,12 @@
 use crate::fib::{mask, Fib, Route, RouteKind};
-use crate::{Ctx, Device, DeviceEvent, Mgmt, Resolver};
+use crate::{Ctx, Device, DeviceEvent, DhcpServer, Mgmt, Resolver};
 use kernel::{PortId, SimTime};
 use std::any::Any;
 use wire::{
     ArpOp, ArpPacket, EtherType, EthernetFrame, IcmpEcho, IcmpError, IcmpErrorKind, IpProto,
-    Ipv4Addr, Ipv4Packet, MacAddr, VlanTag,
+    Ipv4Addr, Ipv4Packet, MacAddr, UdpDatagram, VlanTag,
 };
+use wire::{DhcpMessage, DhcpOp, DhcpType};
 
 const ARP_TIMEOUT: SimTime = SimTime::from_secs(1);
 const ARP_TTL: SimTime = SimTime::from_secs(4 * 3600);
@@ -23,6 +24,8 @@ pub struct Interface {
     pub sub: Option<SubInterface>,
     /// Set on a switch virtual interface: the VLAN it routes for (`interface vlan 10`).
     pub svi: Option<u16>,
+    /// `ip helper-address`: where DHCP requests heard on this interface are relayed.
+    pub helpers: Vec<Ipv4Addr>,
     /// The link layer is down although the interface is not shut down. A switch sets this on an
     /// SVI whose VLAN has no port in it.
     pub line_down: bool,
@@ -85,7 +88,15 @@ pub struct Router {
     pub mgmt: Mgmt,
     /// The saved configuration: what `copy running-config startup-config` stored.
     pub startup: Option<String>,
+    /// The DHCP server: pools, exclusions and leases. Answers clients on interfaces without a
+    /// `helper-address`.
+    pub dhcp: DhcpServer,
 }
+
+const DHCP_SERVER_PORT: u16 = 67;
+const DHCP_CLIENT_PORT: u16 = 68;
+/// A relayed request that has already been through this many relays is dropped (RFC 1542).
+const MAX_RELAY_HOPS: u8 = 16;
 
 impl Router {
     /// `unit` makes interface MACs unique across routers in a lab (02:aa:00:00:<unit>:<port>).
@@ -97,6 +108,7 @@ impl Router {
                 shutdown: true,
                 sub: None,
                 svi: None,
+                helpers: Vec::new(),
                 line_down: false,
             })
             .collect();
@@ -113,6 +125,7 @@ impl Router {
             outbox: Vec::new(),
             mgmt: Mgmt::default(),
             startup: None,
+            dhcp: DhcpServer::default(),
         }
     }
 
@@ -133,6 +146,10 @@ impl Router {
         self.routing = true;
         self.default_gateway = None;
         self.mgmt = Mgmt::default();
+        self.dhcp = DhcpServer::default();
+        for ifc in &mut self.ifaces {
+            ifc.helpers.clear();
+        }
         self.rebuild_fib();
     }
 
@@ -188,6 +205,7 @@ impl Router {
             addr: None,
             shutdown: false,
             svi: None,
+            helpers: Vec::new(),
             line_down: false,
             sub: Some(SubInterface {
                 parent,
@@ -210,6 +228,23 @@ impl Router {
         true
     }
 
+    /// `ip helper-address` on interface `i`.
+    pub fn add_helper(&mut self, i: usize, server: Ipv4Addr) {
+        if let Some(ifc) = self.ifaces.get_mut(i) {
+            if !ifc.helpers.contains(&server) {
+                ifc.helpers.push(server);
+            }
+        }
+    }
+
+    pub fn remove_helper(&mut self, i: usize, server: Ipv4Addr) -> bool {
+        self.ifaces.get_mut(i).is_some_and(|ifc| {
+            let before = ifc.helpers.len();
+            ifc.helpers.retain(|h| *h != server);
+            ifc.helpers.len() != before
+        })
+    }
+
     /// Find or create the switch virtual interface for `vlan`, with the given MAC address.
     pub fn add_svi(&mut self, vlan: u16, mac: MacAddr) -> usize {
         if let Some(i) = self.svi_index(vlan) {
@@ -221,6 +256,7 @@ impl Router {
             shutdown: false,
             sub: None,
             svi: Some(vlan),
+            helpers: Vec::new(),
             line_down: false,
         });
         self.ifaces.len() - 1
@@ -541,6 +577,12 @@ impl Router {
     }
 
     fn on_ip(&mut self, ctx: &mut Ctx, ingress: PortId, mut p: Ipv4Packet) {
+        if p.proto == IpProto::UDP
+            && (p.dst == Ipv4Addr::BROADCAST || self.owns(p.dst))
+            && self.on_dhcp(ctx, ingress, &p)
+        {
+            return;
+        }
         if self.owns(p.dst) {
             if p.proto != IpProto::ICMP {
                 return;
@@ -581,6 +623,161 @@ impl Router {
         }
         p.ttl -= 1;
         self.route(ctx, p);
+    }
+}
+
+// ---- DHCP: server and relay ----
+
+impl Router {
+    /// A UDP packet to this router or to the broadcast address. Returns true if it was DHCP
+    /// (port 67), handled or deliberately dropped.
+    fn on_dhcp(&mut self, ctx: &mut Ctx, ingress: PortId, p: &Ipv4Packet) -> bool {
+        let Ok(u) = UdpDatagram::parse(&p.payload) else {
+            return false;
+        };
+        if u.dst_port != DHCP_SERVER_PORT {
+            return false;
+        }
+        let Ok(msg) = DhcpMessage::parse(&u.payload) else {
+            return true;
+        };
+        let i = ingress.0 as usize;
+        let Some((iface_ip, _)) = self.live(i) else {
+            return true;
+        };
+        match msg.op {
+            DhcpOp::Request => {
+                // A relayed request is addressed to us; answer from the address it was sent to.
+                let server_ip = if self.owns(p.dst) { p.dst } else { iface_ip };
+                self.dhcp_from_client(ctx, i, iface_ip, server_ip, msg)
+            }
+            DhcpOp::Reply => self.dhcp_from_server(ctx, msg),
+        }
+        true
+    }
+
+    fn dhcp_from_client(
+        &mut self,
+        ctx: &mut Ctx,
+        i: usize,
+        iface_ip: Ipv4Addr,
+        server_ip: Ipv4Addr,
+        mut msg: DhcpMessage,
+    ) {
+        if msg.hops >= MAX_RELAY_HOPS {
+            return;
+        }
+        let helpers = self.ifaces[i].helpers.clone();
+        if !helpers.is_empty() {
+            // Relay: stamp where it came from and pass it on. A request that already has a relay
+            // address was relayed once; this router does not relay it again.
+            if msg.giaddr != Ipv4Addr::UNSPECIFIED {
+                return;
+            }
+            msg.giaddr = iface_ip;
+            msg.hops += 1;
+            let bytes = msg.emit();
+            for h in helpers {
+                self.send_udp(ctx, iface_ip, h, DHCP_SERVER_PORT, DHCP_SERVER_PORT, &bytes);
+            }
+            return;
+        }
+        let link = if msg.giaddr != Ipv4Addr::UNSPECIFIED {
+            msg.giaddr
+        } else {
+            iface_ip
+        };
+        let own: Vec<Ipv4Addr> = (0..self.ifaces.len())
+            .filter_map(|k| self.live(k).map(|a| a.0))
+            .collect();
+        let Some(reply) = self.dhcp.serve(ctx.now(), &msg, server_ip, link, &own) else {
+            return;
+        };
+        if reply.giaddr != Ipv4Addr::UNSPECIFIED {
+            // Back to the relay, which delivers it to the client.
+            self.send_udp(
+                ctx,
+                server_ip,
+                reply.giaddr,
+                DHCP_SERVER_PORT,
+                DHCP_SERVER_PORT,
+                &reply.emit(),
+            );
+        } else {
+            self.dhcp_to_client(i, server_ip, &reply);
+        }
+    }
+
+    /// A server's reply reached us because we relayed the request: hand it to the client on the
+    /// interface that carries the relay address.
+    fn dhcp_from_server(&mut self, _ctx: &mut Ctx, msg: DhcpMessage) {
+        let Some(k) =
+            (0..self.ifaces.len()).find(|k| self.live(*k).map(|a| a.0) == Some(msg.giaddr))
+        else {
+            return;
+        };
+        let src = msg.giaddr;
+        self.dhcp_to_client(k, src, &msg);
+    }
+
+    /// Put a reply on the client's link, addressed as RFC 2131 section 4.1 says: a NAK is
+    /// broadcast, a renewing client is answered at its own address, a client that asked for
+    /// broadcast gets one, anyone else gets the offered address by unicast to its hardware address
+    /// (it cannot ARP before it has an address).
+    fn dhcp_to_client(&mut self, i: usize, src: Ipv4Addr, reply: &DhcpMessage) {
+        let (dst_ip, dst_mac) = if reply.msg_type == Some(DhcpType::Nak) {
+            (Ipv4Addr::BROADCAST, MacAddr::BROADCAST)
+        } else if reply.ciaddr != Ipv4Addr::UNSPECIFIED {
+            (reply.ciaddr, reply.chaddr)
+        } else if reply.broadcast() || reply.yiaddr == Ipv4Addr::UNSPECIFIED {
+            (Ipv4Addr::BROADCAST, MacAddr::BROADCAST)
+        } else {
+            (reply.yiaddr, reply.chaddr)
+        };
+        let udp = UdpDatagram {
+            src_port: DHCP_SERVER_PORT,
+            dst_port: DHCP_CLIENT_PORT,
+            payload: reply.emit(),
+        };
+        let pkt = Ipv4Packet {
+            dscp_ecn: 0,
+            ident: self.next_ident(),
+            flags_frag: 0,
+            ttl: 64,
+            proto: IpProto::UDP,
+            src,
+            dst: dst_ip,
+            payload: udp.emit(src, dst_ip),
+        };
+        self.emit(PortId(i as u16), dst_mac, EtherType::IPV4, pkt.emit());
+    }
+
+    /// Originate a UDP packet and route it like any other.
+    fn send_udp(
+        &mut self,
+        ctx: &mut Ctx,
+        src: Ipv4Addr,
+        dst: Ipv4Addr,
+        sport: u16,
+        dport: u16,
+        payload: &[u8],
+    ) {
+        let udp = UdpDatagram {
+            src_port: sport,
+            dst_port: dport,
+            payload: payload.to_vec(),
+        };
+        let pkt = Ipv4Packet {
+            dscp_ecn: 0,
+            ident: self.next_ident(),
+            flags_frag: 0,
+            ttl: 255,
+            proto: IpProto::UDP,
+            src,
+            dst,
+            payload: udp.emit(src, dst),
+        };
+        self.route(ctx, pkt);
     }
 }
 

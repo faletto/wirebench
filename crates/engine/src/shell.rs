@@ -37,6 +37,11 @@ const ASK_RELOAD: &str = "Proceed with reload? [confirm]";
 const ASK_ERASE: &str = "Erasing the saved configuration. [confirm]";
 const ERASED: &str = "Erase of the saved configuration complete.";
 const ANSWER_YES_NO: &str = "% Please answer 'yes' or 'no'.";
+const BAD_RANGE: &str = "% The last address is below the first.";
+const NO_SUCH_EXCLUSION: &str = "% That range is not excluded.";
+const NO_SUCH_POOL: &str = "% No such pool.";
+const NO_SUCH_HELPER: &str = "% That helper address is not configured.";
+const DHCP_NO_ANSWER: &str = "No DHCP server answered; it keeps trying for a few more seconds.";
 const NAME_TOO_LONG: &str = "% VLAN name may be at most 32 characters.";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -56,6 +61,8 @@ struct Modes {
     config_vlan: ModeId,
     /// `line console` / `line vty` configuration. Hosts point it at their only mode.
     config_line: ModeId,
+    /// `ip dhcp pool` configuration. Hosts point it at their only mode.
+    config_dhcp: ModeId,
 }
 
 // Handler ids.
@@ -124,6 +131,29 @@ const NO_BANNER: u32 = 96;
 const SHOW_START: u32 = 97;
 const RELOAD: u32 = 98;
 const ERASE_START: u32 = 99;
+const IPCONFIG_DHCP: u32 = 110;
+const IPCONFIG_RELEASE: u32 = 111;
+const IPCONFIG_RENEW: u32 = 112;
+const SERVICE_DHCP: u32 = 120;
+const NO_SERVICE_DHCP: u32 = 121;
+const EXCLUDE: u32 = 122;
+const NO_EXCLUDE: u32 = 123;
+const DHCP_POOL: u32 = 124;
+const NO_DHCP_POOL: u32 = 125;
+const POOL_NETWORK: u32 = 126;
+const POOL_ROUTER: u32 = 127;
+const POOL_DNS: u32 = 128;
+const POOL_LEASE: u32 = 129;
+const NO_POOL_NETWORK: u32 = 130;
+const NO_POOL_ROUTER: u32 = 131;
+const NO_POOL_DNS: u32 = 132;
+const HELPER: u32 = 133;
+const NO_HELPER: u32 = 134;
+const SHOW_DHCP_BINDING: u32 = 135;
+const SHOW_DHCP_POOL: u32 = 136;
+const SHOW_DHCP_CONFLICT: u32 = 137;
+const CLEAR_DHCP: u32 = 138;
+const CLEAR_DHCP_ADDR: u32 = 139;
 
 fn router_grammar() -> (Grammar, Modes) {
     let mut g = Grammar::new();
@@ -139,6 +169,12 @@ fn router_grammar() -> (Grammar, Modes) {
     let config_line = g.mode(
         "config-line",
         "{host}(config-line)#",
+        Some(config),
+        Some(config),
+    );
+    let config_dhcp = g.mode(
+        "config-dhcp",
+        "{host}(dhcp-config)#",
         Some(config),
         Some(config),
     );
@@ -289,6 +325,7 @@ fn router_grammar() -> (Grammar, Modes) {
         h(NO_SHUTDOWN),
     );
     mgmt_commands(&mut g, privileged, config, config_line);
+    dhcp_commands(&mut g, privileged, config, config_if, config_dhcp);
     (
         g,
         Modes {
@@ -298,6 +335,7 @@ fn router_grammar() -> (Grammar, Modes) {
             config_if,
             config_vlan: config,
             config_line,
+            config_dhcp,
         },
     )
 }
@@ -313,6 +351,24 @@ fn host_grammar() -> (Grammar, Modes) {
         "ipconfig set <addr:ipv4> <mask:mask>",
         &["Addressing", "Set the address", "Address", "Network mask"],
         h(IPCONFIG_SET),
+    );
+    g.cmd(
+        &[m],
+        "ipconfig dhcp",
+        &["Addressing", "Get the address from a DHCP server"],
+        h(IPCONFIG_DHCP),
+    );
+    g.cmd(
+        &[m],
+        "ipconfig release",
+        &["Addressing", "Give the DHCP address back"],
+        h(IPCONFIG_RELEASE),
+    );
+    g.cmd(
+        &[m],
+        "ipconfig renew",
+        &["Addressing", "Renew the DHCP lease"],
+        h(IPCONFIG_RENEW),
     );
     g.cmd(
         &[m],
@@ -335,6 +391,7 @@ fn host_grammar() -> (Grammar, Modes) {
             config_if: m,
             config_vlan: m,
             config_line: m,
+            config_dhcp: m,
         },
     )
 }
@@ -359,6 +416,12 @@ fn switch_grammar() -> (Grammar, Modes) {
     let config_line = g.mode(
         "config-line",
         "{host}(config-line)#",
+        Some(config),
+        Some(config),
+    );
+    let config_dhcp = g.mode(
+        "config-dhcp",
+        "{host}(dhcp-config)#",
         Some(config),
         Some(config),
     );
@@ -641,6 +704,7 @@ fn switch_grammar() -> (Grammar, Modes) {
         Action::Exit,
     );
     mgmt_commands(&mut g, privileged, config, config_line);
+    dhcp_commands(&mut g, privileged, config, config_if, config_dhcp);
     (
         g,
         Modes {
@@ -650,8 +714,225 @@ fn switch_grammar() -> (Grammar, Modes) {
             config_if,
             config_vlan,
             config_line,
+            config_dhcp,
         },
     )
+}
+
+/// DHCP server configuration, relay and show commands, the same on routers and switches.
+fn dhcp_commands(
+    g: &mut Grammar,
+    privileged: ModeId,
+    config: ModeId,
+    config_if: ModeId,
+    pool: ModeId,
+) {
+    let h = Action::Handler;
+    for (pattern, help, id) in [
+        (
+            "service dhcp",
+            &["Service settings", "The DHCP server and relay"][..],
+            SERVICE_DHCP,
+        ),
+        (
+            "no service dhcp",
+            &[
+                "Negate",
+                "Service settings",
+                "Turn the DHCP server and relay off",
+            ][..],
+            NO_SERVICE_DHCP,
+        ),
+        (
+            "ip dhcp excluded-address <low:ipv4>",
+            &["IP", "DHCP server", "Never hand out", "Address"][..],
+            EXCLUDE,
+        ),
+        (
+            "ip dhcp excluded-address <low:ipv4> <high:ipv4>",
+            &[
+                "IP",
+                "DHCP server",
+                "Never hand out",
+                "First address",
+                "Last address",
+            ][..],
+            EXCLUDE,
+        ),
+        (
+            "no ip dhcp excluded-address <low:ipv4>",
+            &["Negate", "IP", "DHCP server", "Never hand out", "Address"][..],
+            NO_EXCLUDE,
+        ),
+        (
+            "no ip dhcp excluded-address <low:ipv4> <high:ipv4>",
+            &[
+                "Negate",
+                "IP",
+                "DHCP server",
+                "Never hand out",
+                "First address",
+                "Last address",
+            ][..],
+            NO_EXCLUDE,
+        ),
+        (
+            "ip dhcp pool <name:word>",
+            &[
+                "IP",
+                "DHCP server",
+                "Configure an address pool",
+                "Pool name",
+            ][..],
+            DHCP_POOL,
+        ),
+        (
+            "no ip dhcp pool <name:word>",
+            &[
+                "Negate",
+                "IP",
+                "DHCP server",
+                "Delete an address pool",
+                "Pool name",
+            ][..],
+            NO_DHCP_POOL,
+        ),
+        (
+            "ip helper-address <server:ipv4>",
+            &["IP", "Forward DHCP requests", "Server address"][..],
+            HELPER,
+        ),
+        (
+            "no ip helper-address <server:ipv4>",
+            &[
+                "Negate",
+                "IP",
+                "Stop forwarding DHCP requests",
+                "Server address",
+            ][..],
+            NO_HELPER,
+        ),
+    ] {
+        let modes: &[ModeId] = if id == HELPER || id == NO_HELPER {
+            &[config_if]
+        } else {
+            &[config]
+        };
+        g.cmd(modes, pattern, help, h(id));
+    }
+    for (pattern, help, id) in [
+        (
+            "network <net:ipv4> <mask:mask>",
+            &["Addresses to hand out", "Network", "Network mask"][..],
+            POOL_NETWORK,
+        ),
+        (
+            "default-router <a:ipv4>",
+            &["Gateway for clients", "Address"][..],
+            POOL_ROUTER,
+        ),
+        (
+            "dns-server <a:ipv4>",
+            &["DNS servers for clients", "Address"][..],
+            POOL_DNS,
+        ),
+        (
+            "dns-server <a:ipv4> <b:ipv4>",
+            &["DNS servers for clients", "Address", "Address"][..],
+            POOL_DNS,
+        ),
+        (
+            "dns-server <a:ipv4> <b:ipv4> <c:ipv4>",
+            &["DNS servers for clients", "Address", "Address", "Address"][..],
+            POOL_DNS,
+        ),
+        (
+            "lease <days:int(0..365)>",
+            &["Lease time", "Days"][..],
+            POOL_LEASE,
+        ),
+        (
+            "lease <days:int(0..365)> <hours:int(0..23)>",
+            &["Lease time", "Days", "Hours"][..],
+            POOL_LEASE,
+        ),
+        (
+            "lease <days:int(0..365)> <hours:int(0..23)> <minutes:int(0..59)>",
+            &["Lease time", "Days", "Hours", "Minutes"][..],
+            POOL_LEASE,
+        ),
+        (
+            "no network",
+            &["Negate", "Addresses to hand out"][..],
+            NO_POOL_NETWORK,
+        ),
+        (
+            "no default-router",
+            &["Negate", "Gateway for clients"][..],
+            NO_POOL_ROUTER,
+        ),
+        (
+            "no dns-server",
+            &["Negate", "DNS servers for clients"][..],
+            NO_POOL_DNS,
+        ),
+    ] {
+        g.cmd(&[pool], pattern, help, h(id));
+    }
+    g.cmd(
+        &[config, pool],
+        "end",
+        &["Back to privileged"],
+        Action::End(privileged),
+    );
+    g.cmd(&[pool], "exit", &["Up one level"], Action::Exit);
+    g.cmd(
+        &[privileged],
+        "show ip dhcp binding",
+        &["Show", "IP information", "DHCP server", "Leases"][..],
+        h(SHOW_DHCP_BINDING),
+    );
+    g.cmd(
+        &[privileged],
+        "show ip dhcp pool",
+        &["Show", "IP information", "DHCP server", "Address pools"][..],
+        h(SHOW_DHCP_POOL),
+    );
+    g.cmd(
+        &[privileged],
+        "show ip dhcp conflict",
+        &[
+            "Show",
+            "IP information",
+            "DHCP server",
+            "Addresses clients reported in use",
+        ][..],
+        h(SHOW_DHCP_CONFLICT),
+    );
+    g.cmd(
+        &[privileged],
+        "clear ip dhcp binding *",
+        &[
+            "Clear",
+            "IP information",
+            "DHCP server",
+            "Leases",
+            "All of them",
+        ][..],
+        h(CLEAR_DHCP),
+    );
+    g.cmd(
+        &[privileged],
+        "clear ip dhcp binding <addr:ipv4>",
+        &[
+            "Clear",
+            "IP information",
+            "DHCP server",
+            "Leases",
+            "Address",
+        ][..],
+        h(CLEAR_DHCP_ADDR),
+    );
 }
 
 /// Management-plane commands, the same on routers and switches.
@@ -1188,6 +1469,125 @@ impl Shell {
         let id = self.device;
         let m = self.modes;
         match handler {
+            SERVICE_DHCP | NO_SERVICE_DHCP => {
+                let on = handler == SERVICE_DHCP;
+                self.with_l3(w, |r| r.dhcp.enabled = on);
+            }
+            EXCLUDE | NO_EXCLUDE => {
+                let low = Ipv4Addr(a.ipv4("low").unwrap());
+                let high = a.ipv4("high").map_or(low, Ipv4Addr);
+                if high.to_u32() < low.to_u32() {
+                    return BAD_RANGE.to_string();
+                }
+                if handler == EXCLUDE {
+                    self.with_l3(w, |r| r.dhcp.exclude(low, high));
+                } else if !self.with_l3(w, |r| r.dhcp.include(low, high)) {
+                    return NO_SUCH_EXCLUSION.to_string();
+                }
+            }
+            DHCP_POOL => {
+                let name = a.word("name").unwrap().to_string();
+                self.with_l3(w, |r| r.dhcp.pool_mut(&name).lease);
+                self.session.enter(m.config_dhcp, Some(name));
+            }
+            NO_DHCP_POOL => {
+                let name = a.word("name").unwrap().to_string();
+                if !self.with_l3(w, |r| r.dhcp.remove_pool(&name)) {
+                    return NO_SUCH_POOL.to_string();
+                }
+            }
+            POOL_NETWORK | POOL_ROUTER | POOL_DNS | POOL_LEASE | NO_POOL_NETWORK
+            | NO_POOL_ROUTER | NO_POOL_DNS => {
+                let Some(name) = self.session.context().map(str::to_string) else {
+                    return NO_SUCH_POOL.to_string();
+                };
+                let ip = |n: &str| a.ipv4(n).map(Ipv4Addr);
+                let dns: Vec<Ipv4Addr> = ["a", "b", "c"].iter().filter_map(|n| ip(n)).collect();
+                let network = a.ipv4("net").zip(a.mask("mask"));
+                let lease = a.int("days").map(|d| {
+                    let h = a.int("hours").unwrap_or(0);
+                    let mi = a.int("minutes").unwrap_or(0);
+                    SimTime::from_secs(((d * 24 + h) * 60 + mi) as u64 * 60)
+                });
+                self.with_l3(w, |r| {
+                    let p = r.dhcp.pool_mut(&name);
+                    match handler {
+                        POOL_NETWORK => {
+                            let (net, len) = network.expect("parsed");
+                            p.network =
+                                Some((Ipv4Addr::from_u32(Ipv4Addr(net).to_u32() & mask(len)), len));
+                        }
+                        POOL_ROUTER => p.default_router = ip("a"),
+                        POOL_DNS => p.dns = dns,
+                        POOL_LEASE => p.lease = lease.expect("parsed"),
+                        NO_POOL_NETWORK => p.network = None,
+                        NO_POOL_ROUTER => p.default_router = None,
+                        _ => p.dns.clear(),
+                    }
+                });
+            }
+            HELPER | NO_HELPER => {
+                let server = Ipv4Addr(a.ipv4("server").unwrap());
+                let Some(i) = self.current_iface(w) else {
+                    return NO_SUCH_INTERFACE.to_string();
+                };
+                if handler == HELPER {
+                    self.with_l3(w, |r| r.add_helper(i, server));
+                } else if !self.with_l3(w, |r| r.remove_helper(i, server)) {
+                    return NO_SUCH_HELPER.to_string();
+                }
+            }
+            SHOW_DHCP_BINDING => {
+                let now = w.kernel.now();
+                let rows = self.with_l3(w, |r| r.dhcp.bindings(now));
+                return show_dhcp_bindings(&rows, now);
+            }
+            SHOW_DHCP_POOL => {
+                let now = w.kernel.now();
+                let used = self.with_l3(w, |r| r.dhcp.bindings(now));
+                return show_dhcp_pools(self.l3(w), &used);
+            }
+            SHOW_DHCP_CONFLICT => {
+                let c = self.l3(w).dhcp.conflicts();
+                return if c.is_empty() {
+                    "No conflicts.".to_string()
+                } else {
+                    c.iter()
+                        .map(Ipv4Addr::to_string)
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+            }
+            CLEAR_DHCP | CLEAR_DHCP_ADDR => {
+                let addr = a.ipv4("addr").map(Ipv4Addr);
+                self.with_l3(w, |r| r.dhcp.clear(addr));
+            }
+            IPCONFIG_DHCP | IPCONFIG_RENEW => {
+                w.with_device::<Host, _>(id, |h, c| {
+                    if handler == IPCONFIG_DHCP {
+                        h.dhcp_start(c)
+                    } else {
+                        h.dhcp_renew(c)
+                    }
+                });
+                // Give the exchange time to finish; stop as soon as it has.
+                let deadline = w.kernel.now() + SimTime::from_secs(8);
+                w.run_until_or(deadline, |w| {
+                    w.device::<Host>(id).dhcp.state == netdev::DhcpState::Bound
+                });
+                let h = w.device::<Host>(id);
+                return if h.dhcp.state == netdev::DhcpState::Bound {
+                    show_ipconfig(h, w.kernel.now())
+                } else {
+                    DHCP_NO_ANSWER.to_string()
+                };
+            }
+            IPCONFIG_RELEASE => {
+                w.with_device::<Host, _>(id, |h, c| h.dhcp_release(c));
+                let t = w.kernel.now() + SimTime::from_millis(100);
+                w.run_until(t);
+                return "Address released.".to_string();
+            }
             ENABLE => {
                 if self.mgmt(w).is_some_and(Mgmt::enable_protected) {
                     self.pending = Some(Pending::Enable { tries: 0 });
@@ -1443,10 +1843,11 @@ impl Shell {
                 self.set_startup(w, Some(text));
                 return SAVED.to_string();
             }
-            IPCONFIG => return show_ipconfig(w.device::<Host>(id)),
+            IPCONFIG => return show_ipconfig(w.device::<Host>(id), w.kernel.now()),
             IPCONFIG_SET => {
                 let (ip, len) = (Ipv4Addr(a.ipv4("addr").unwrap()), a.mask("mask").unwrap());
                 w.with_device::<Host, _>(id, |h, _| {
+                    h.dhcp_disable();
                     h.ip = ip;
                     h.prefix_len = len;
                 });
@@ -1475,6 +1876,19 @@ impl Shell {
         match self.kind {
             Kind::Switch => w.with_device::<L2Switch, _>(self.device, |s, _| f(s.l3_mut())),
             _ => w.with_device::<Router, _>(self.device, |r, _| f(r)),
+        }
+    }
+
+    /// The logical interface the session is configuring: a router interface by number, a
+    /// switch's SVI by VLAN.
+    fn current_iface(&self, w: &World) -> Option<usize> {
+        let ctx = self.session.context()?;
+        match self.kind {
+            Kind::Switch => {
+                let vlan = ctx.strip_prefix("vlan")?.parse().ok()?;
+                self.l3(w).svi_index(vlan)
+            }
+            _ => ctx.parse().ok(),
         }
     }
 
@@ -1623,6 +2037,7 @@ fn mgmt_tail(m: &Mgmt) -> String {
 
 pub fn running_config(r: &Router) -> String {
     let mut o = mgmt_head(&r.mgmt, &r.name);
+    o += &dhcp_config(r);
     for (i, ifc) in r.interfaces().iter().enumerate() {
         o += &format!("interface {}\n", iface_name(r, i));
         if let Some(s) = ifc.sub {
@@ -1636,6 +2051,9 @@ pub fn running_config(r: &Router) -> String {
         match ifc.addr {
             Some((ip, len)) => o += &format!(" ip address {ip} {}\n", dotted(len)),
             None => o += " no ip address\n",
+        }
+        for h in &ifc.helpers {
+            o += &format!(" ip helper-address {h}\n");
         }
         // A subinterface is up unless told otherwise, so only a shut one needs a line.
         if ifc.sub.is_none() {
@@ -1670,6 +2088,7 @@ pub fn switch_config(s: &L2Switch) -> String {
     if s.l3().routing() {
         o += "ip routing\n!\n";
     }
+    o += &dhcp_config(s.l3());
     let default = netdev::PortConfig::default();
     for p in 0..s.n_ports() {
         let c = s.port(kernel::PortId(p)).expect("port in range");
@@ -1701,6 +2120,9 @@ pub fn switch_config(s: &L2Switch) -> String {
         match ifc.addr {
             Some((ip, len)) => o += &format!(" ip address {ip} {}\n", dotted(len)),
             None => o += " no ip address\n",
+        }
+        for h in &ifc.helpers {
+            o += &format!(" ip helper-address {h}\n");
         }
         if ifc.shutdown {
             o += " shutdown\n";
@@ -1845,10 +2267,151 @@ fn show_brief(r: &Router) -> String {
     o
 }
 
-fn show_ipconfig(h: &Host) -> String {
+fn show_ipconfig(h: &Host, now: SimTime) -> String {
     let mut o = format!("Address : {}\nMask    : {}", h.ip, dotted(h.prefix_len));
     if let Some(g) = h.gateway {
         o += &format!("\nGateway : {g}");
+    }
+    if !h.dns.is_empty() {
+        let dns: Vec<String> = h.dns.iter().map(Ipv4Addr::to_string).collect();
+        o += &format!("\nDNS     : {}", dns.join(" "));
+    }
+    if h.dhcp.enabled {
+        use netdev::DhcpState::*;
+        o += "\nDHCP    : ";
+        o += match h.dhcp.state {
+            Off => "released",
+            Selecting => "looking for a server",
+            Requesting => "requesting an address",
+            Bound => "bound",
+            Renewing => "renewing",
+            Rebinding => "rebinding",
+        };
+        if let Some((server, _)) = h.dhcp.server.filter(|_| h.ip != Ipv4Addr::UNSPECIFIED) {
+            o += &format!(", server {server}");
+        }
+        if let Some(left) = h
+            .dhcp_lease_left(now)
+            .filter(|_| h.ip != Ipv4Addr::UNSPECIFIED)
+        {
+            o += &format!(", lease {} left", hms(left));
+        }
+    }
+    o
+}
+
+/// `HH:MM:SS`; hours may pass 24.
+fn hms(secs: u64) -> String {
+    format!("{:02}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60)
+}
+
+/// Client identifier bytes as the real command groups them: `0100.0000.0101`.
+fn client_text(id: &[u8]) -> String {
+    id.chunks(2)
+        .map(|c| c.iter().map(|b| format!("{b:02x}")).collect::<String>())
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+fn show_dhcp_bindings(rows: &[netdev::Binding], now: SimTime) -> String {
+    let mut o = format!(
+        "{:<16}{:<20}{:<20}{}",
+        "IP address", "Client-ID", "Lease expires in", "Type"
+    );
+    for b in rows {
+        let left = b.expires.0.saturating_sub(now.0) / 1_000_000_000;
+        let kind = match b.state {
+            netdev::BindingState::Offered => "Offered",
+            netdev::BindingState::Bound => "Automatic",
+        };
+        o += &format!(
+            "\n{:<16}{:<20}{:<20}{kind}",
+            b.ip.to_string(),
+            client_text(&b.client),
+            hms(left)
+        );
+    }
+    if rows.is_empty() {
+        o += "\n(no bindings)";
+    }
+    o
+}
+
+fn lease_text(lease: SimTime) -> (u64, u64, u64) {
+    let mins = lease.0 / 60_000_000_000;
+    (mins / 1440, mins / 60 % 24, mins % 60)
+}
+
+fn show_dhcp_pools(r: &Router, used: &[netdev::Binding]) -> String {
+    let mut out = Vec::new();
+    for p in r.dhcp.pools() {
+        let mut o = format!("Pool {} :", p.name);
+        match p.network {
+            Some((n, len)) => {
+                let in_use = used
+                    .iter()
+                    .filter(|b| b.ip.to_u32() & mask(len) == n.to_u32())
+                    .count();
+                o += &format!("\n Network          : {n}/{len}");
+                o += &format!("\n Addresses in use : {in_use}");
+            }
+            None => o += "\n Network          : (not set)",
+        }
+        if let Some(g) = p.default_router {
+            o += &format!("\n Default router   : {g}");
+        }
+        if !p.dns.is_empty() {
+            let dns: Vec<String> = p.dns.iter().map(Ipv4Addr::to_string).collect();
+            o += &format!("\n DNS servers      : {}", dns.join(" "));
+        }
+        let (d, h, m) = lease_text(p.lease);
+        o += &format!("\n Lease            : {d} days {h} hours {m} minutes");
+        out.push(o);
+    }
+    if out.is_empty() {
+        "(no pools)".to_string()
+    } else {
+        out.join("\n\n")
+    }
+}
+
+/// The DHCP server's part of a config: `no service dhcp`, excluded ranges, then pools.
+fn dhcp_config(r: &Router) -> String {
+    let mut o = String::new();
+    if !r.dhcp.enabled {
+        o += "no service dhcp\n!\n";
+    }
+    for (lo, hi) in r.dhcp.excluded() {
+        if lo == hi {
+            o += &format!("ip dhcp excluded-address {lo}\n");
+        } else {
+            o += &format!("ip dhcp excluded-address {lo} {hi}\n");
+        }
+    }
+    if !r.dhcp.excluded().is_empty() {
+        o += "!\n";
+    }
+    for p in r.dhcp.pools() {
+        o += &format!("ip dhcp pool {}\n", p.name);
+        if let Some((n, len)) = p.network {
+            o += &format!(" network {n} {}\n", dotted(len));
+        }
+        if let Some(g) = p.default_router {
+            o += &format!(" default-router {g}\n");
+        }
+        if !p.dns.is_empty() {
+            let dns: Vec<String> = p.dns.iter().take(3).map(Ipv4Addr::to_string).collect();
+            o += &format!(" dns-server {}\n", dns.join(" "));
+        }
+        let (d, h, m) = lease_text(p.lease);
+        if (d, h, m) != (1, 0, 0) {
+            o += &match (h, m) {
+                (0, 0) => format!(" lease {d}\n"),
+                (h, 0) => format!(" lease {d} {h}\n"),
+                (h, m) => format!(" lease {d} {h} {m}\n"),
+            };
+        }
+        o += "!\n";
     }
     o
 }

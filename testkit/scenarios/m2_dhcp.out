@@ -1,0 +1,205 @@
+
+== r1
+r1>enable
+r1#configure terminal
+r1(config)#interface g0/0
+r1(config-if)#ip address 10.0.1.1 255.255.255.0
+r1(config-if)#no shutdown
+r1(config-if)#exit
+r1(config)#interface g0/1
+r1(config-if)#ip address 10.0.12.1 255.255.255.252
+r1(config-if)#no shutdown
+r1(config-if)#exit
+r1(config)#ip route 10.0.2.0 255.255.255.0 10.0.12.2
+r1(config)#ip dhcp excluded-address 10.0.1.1 10.0.1.9
+r1(config)#ip dhcp excluded-address 10.0.2.1 10.0.2.9
+r1(config)#ip dhcp pool lan1
+r1(dhcp-config)#network 10.0.1.0 255.255.255.0
+r1(dhcp-config)#default-router 10.0.1.1
+r1(dhcp-config)#dns-server 8.8.8.8
+r1(dhcp-config)#lease 0 8
+r1(dhcp-config)#exit
+r1(config)#ip dhcp pool lan2
+r1(dhcp-config)#network 10.0.2.0 255.255.255.0
+r1(dhcp-config)#default-router 10.0.2.1
+r1(dhcp-config)#dns-server 8.8.8.8 8.8.4.4
+r1(dhcp-config)#end
+r1#show ip dhcp pool
+Pool lan1 :
+ Network          : 10.0.1.0/24
+ Addresses in use : 0
+ Default router   : 10.0.1.1
+ DNS servers      : 8.8.8.8
+ Lease            : 0 days 8 hours 0 minutes
+
+Pool lan2 :
+ Network          : 10.0.2.0/24
+ Addresses in use : 0
+ Default router   : 10.0.2.1
+ DNS servers      : 8.8.8.8 8.8.4.4
+ Lease            : 1 days 0 hours 0 minutes
+
+== r2
+r2>enable
+r2#configure terminal
+r2(config)#interface g0/0
+r2(config-if)#ip address 10.0.12.2 255.255.255.252
+r2(config-if)#no shutdown
+r2(config-if)#exit
+r2(config)#interface g0/1
+r2(config-if)#ip address 10.0.2.1 255.255.255.0
+r2(config-if)#ip helper-address 10.0.12.1
+r2(config-if)#no shutdown
+r2(config-if)#exit
+r2(config)#ip route 10.0.1.0 255.255.255.0 10.0.12.1
+r2(config)#end
+r2#show running-config
+hostname r2
+!
+interface GigabitEthernet0/0
+ ip address 10.0.12.2 255.255.255.252
+ no shutdown
+!
+interface GigabitEthernet0/1
+ ip address 10.0.2.1 255.255.255.0
+ ip helper-address 10.0.12.1
+ no shutdown
+!
+ip route 10.0.1.0 255.255.255.0 10.0.12.1
+end
+
+== pc1
+pc1>ipconfig dhcp
+Address : 10.0.1.10
+Mask    : 255.255.255.0
+Gateway : 10.0.1.1
+DNS     : 8.8.8.8
+DHCP    : bound, server 10.0.1.1, lease 08:00:00 left
+
+== pc2
+pc2>ipconfig dhcp
+Address : 10.0.1.11
+Mask    : 255.255.255.0
+Gateway : 10.0.1.1
+DNS     : 8.8.8.8
+DHCP    : bound, server 10.0.1.1, lease 08:00:00 left
+
+== pc3
+pc3>ipconfig dhcp
+Address : 10.0.2.10
+Mask    : 255.255.255.0
+Gateway : 10.0.2.1
+DNS     : 8.8.8.8 8.8.4.4
+DHCP    : bound, server 10.0.12.1, lease 24:00:00 left
+
+== pc1
+pc1>ping 10.0.2.10
+Reply from 10.0.2.10: time=90us
+Reply from 10.0.2.10: time=55us
+Reply from 10.0.2.10: time=55us
+Reply from 10.0.2.10: time=55us
+Sent 4, received 4
+
+== pc3
+pc3>ping 10.0.1.10
+Reply from 10.0.1.10: time=55us
+Reply from 10.0.1.10: time=55us
+Reply from 10.0.1.10: time=55us
+Reply from 10.0.1.10: time=55us
+Sent 4, received 4
+
+== r1
+r1#show ip dhcp binding
+IP address      Client-ID           Lease expires in    Type
+10.0.1.10       0102.0000.0000.01   07:59:51            Automatic
+10.0.1.11       0102.0000.0001.01   07:59:51            Automatic
+10.0.2.10       0102.0000.0005.01   23:59:51            Automatic
+r1#show ip dhcp pool
+Pool lan1 :
+ Network          : 10.0.1.0/24
+ Addresses in use : 2
+ Default router   : 10.0.1.1
+ DNS servers      : 8.8.8.8
+ Lease            : 0 days 8 hours 0 minutes
+
+Pool lan2 :
+ Network          : 10.0.2.0/24
+ Addresses in use : 1
+ Default router   : 10.0.2.1
+ DNS servers      : 8.8.8.8 8.8.4.4
+ Lease            : 1 days 0 hours 0 minutes
+
+== pc2
+pc2>ipconfig release
+Address released.
+pc2>ipconfig
+Address : 0.0.0.0
+Mask    : 0.0.0.0
+DHCP    : released
+
+== r1
+r1#show ip dhcp binding
+IP address      Client-ID           Lease expires in    Type
+10.0.1.10       0102.0000.0000.01   07:59:51            Automatic
+10.0.2.10       0102.0000.0005.01   23:59:51            Automatic
+
+== pc2
+pc2>ipconfig renew
+Address : 10.0.1.11
+Mask    : 255.255.255.0
+Gateway : 10.0.1.1
+DNS     : 8.8.8.8
+DHCP    : bound, server 10.0.1.1, lease 08:00:00 left
+
+== r1
+r1#configure terminal
+r1(config)#no service dhcp
+r1(config)#end
+
+== pc2
+pc2>ipconfig release
+Address released.
+pc2>ipconfig dhcp
+No DHCP server answered; it keeps trying for a few more seconds.
+
+== r1
+r1#configure terminal
+r1(config)#service dhcp
+r1(config)#end
+
+== pc2
+pc2>ipconfig renew
+Address : 10.0.1.11
+Mask    : 255.255.255.0
+Gateway : 10.0.1.1
+DNS     : 8.8.8.8
+DHCP    : bound, server 10.0.1.1, lease 08:00:00 left
+
+== r1
+r1#show running-config
+hostname r1
+!
+ip dhcp excluded-address 10.0.1.1 10.0.1.9
+ip dhcp excluded-address 10.0.2.1 10.0.2.9
+!
+ip dhcp pool lan1
+ network 10.0.1.0 255.255.255.0
+ default-router 10.0.1.1
+ dns-server 8.8.8.8
+ lease 0 8
+!
+ip dhcp pool lan2
+ network 10.0.2.0 255.255.255.0
+ default-router 10.0.2.1
+ dns-server 8.8.8.8 8.8.4.4
+!
+interface GigabitEthernet0/0
+ ip address 10.0.1.1 255.255.255.0
+ no shutdown
+!
+interface GigabitEthernet0/1
+ ip address 10.0.12.1 255.255.255.252
+ no shutdown
+!
+ip route 10.0.2.0 255.255.255.0 10.0.12.2
+end
