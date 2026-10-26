@@ -145,3 +145,71 @@ fn a_change_made_by_a_late_answer_still_dirties_the_lab() {
     assert!(app.is_dirty());
     assert!(app.export_lab().contains("10.0.1.55"));
 }
+
+#[test]
+fn stepping_waits_for_the_engine_and_the_hops_arrive_in_order() {
+    let mut app = App::from_lab_text_delayed(LAB, 3).unwrap();
+    let mut d = Driver::new();
+    d.frames(&mut app, 8);
+    app.sim_queue_ping("pc1", [10, 0, 1, 1]);
+    app.sim_step_hop();
+    assert_eq!(app.sim_hops().len(), 0, "nothing yet");
+    d.frames(&mut app, 8);
+    assert_eq!(app.sim_hops().len(), 1);
+    // A second request while one is out is not started on top of it.
+    app.sim_step_hop();
+    app.sim_step_hop();
+    d.frames(&mut app, 8);
+    assert_eq!(app.sim_hops().len(), 2);
+    assert!(app.sim_hops()[0].ns <= app.sim_hops()[1].ns);
+}
+
+#[test]
+fn run_goes_to_the_end_by_itself_and_back_then_undoes_it_step_by_step() {
+    let mut app = App::from_lab_text_delayed(LAB, 2).unwrap();
+    let mut d = Driver::new();
+    d.frames(&mut app, 6);
+    app.sim_queue_ping("pc1", [10, 0, 1, 1]);
+    app.sim_run();
+    d.frames(&mut app, 60);
+    let all = app.sim_hops().len();
+    assert!(all >= 4, "{all}");
+    assert!(app.sim_can_back());
+    // Each Back undoes one step, which may be a timer with no frame in it; frames only go away.
+    let mut last = all;
+    for _ in 0..all + 6 {
+        app.sim_back();
+        d.frames(&mut app, 6);
+        assert!(app.sim_hops().len() <= last);
+        last = app.sim_hops().len();
+    }
+    assert!(last < all, "stepping back removed frames from the log");
+}
+
+#[test]
+fn play_steps_through_a_ping_at_its_own_pace_and_stops_when_idle() {
+    let mut app = App::from_lab_text_delayed(LAB, 2).unwrap();
+    let mut d = Driver::new();
+    d.frames(&mut app, 6);
+    app.sim_queue_ping("pc1", [10, 0, 1, 1]);
+    app.set_playing(true);
+    d.frames(&mut app, 400);
+    assert!(!app.is_playing(), "it ran out of things to show");
+    assert!(app.sim_hops().len() >= 4);
+}
+
+#[test]
+fn the_live_clock_keeps_running_with_a_slow_engine() {
+    let lab = include_str!("../../../testkit/throttle/m2-lab.toml");
+    let mut app = App::from_lab_text_delayed(lab, 3).unwrap();
+    let mut d = Driver::new();
+    d.frames(&mut app, 40);
+    let at = app.sim_time_ns();
+    d.frames(&mut app, 100);
+    assert!(
+        app.sim_time_ns() > at + 3_000_000_000,
+        "{} then {}",
+        at,
+        app.sim_time_ns()
+    );
+}

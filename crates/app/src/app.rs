@@ -77,7 +77,7 @@ enum Drag {
 mod responses;
 #[path = "settings_panel.rs"]
 mod settings_panel;
-use responses::Awaiting;
+use responses::{Awaiting, StepKind};
 
 #[derive(Debug)]
 pub struct App {
@@ -964,24 +964,43 @@ impl App {
         let device = n.device;
         self.push_mark();
         self.busy = true;
-        let ev = self.engine.send(EngineCmd::PingOnce { device, dst });
-        self.apply_sim(ev, false);
+        self.post(EngineCmd::PingOnce { device, dst }, Awaiting::Ping);
+        self.pump();
     }
 
-    /// Dispatch one event. Returns false once nothing is left to do.
+    /// Dispatch one event. Returns false once nothing is left to do (as far as is known when it
+    /// returns: with an engine that answers late the answer may not have come).
     pub fn sim_step(&mut self) -> bool {
-        self.step_inner(false)
+        self.sim_start(false, StepKind::One, false)
     }
 
-    fn step_inner(&mut self, animate: bool) -> bool {
-        self.push_mark();
-        let ev = self.engine.send(EngineCmd::Step);
-        let more = !matches!(ev.first(), Some(EngineEvent::Idle { .. }));
-        if !more {
-            self.sim.marks.pop();
+    /// Begin a stepping run: `kind` says when it stops. It goes on as answers arrive.
+    fn sim_start(&mut self, animate: bool, kind: StepKind, play: bool) -> bool {
+        if self.sim.in_flight {
+            return true;
         }
-        self.apply_sim(ev, animate);
-        more
+        self.sim.in_flight = true;
+        self.sim.outcome = None;
+        self.sim.budget = match kind {
+            StepKind::One => 1,
+            StepKind::Hop => 10_000,
+            StepKind::Run => 100_000,
+        };
+        self.sim_post_step(animate, kind, play);
+        self.pump();
+        self.sim.outcome.unwrap_or(true)
+    }
+
+    fn sim_post_step(&mut self, animate: bool, kind: StepKind, play: bool) {
+        self.push_mark();
+        self.post(
+            EngineCmd::Step,
+            Awaiting::Step {
+                animate,
+                kind,
+                play,
+            },
+        );
     }
 
     /// Note how long the log is before something the engine can undo. The engine keeps a limited
@@ -997,21 +1016,13 @@ impl App {
     /// false when there is nothing to go back to.
     pub fn sim_back(&mut self) -> bool {
         self.anim.playing = false;
-        let ev = self.engine.send(EngineCmd::StepBack);
-        self.note_clock(&ev);
-        if !matches!(ev.first(), Some(EngineEvent::Rewound { .. })) {
+        if self.sim.marks.is_empty() {
             return false;
         }
-        self.refresh_clock();
-        let keep = self.sim.marks.pop().unwrap_or(0);
-        self.sim.hops.truncate(keep);
-        self.busy = !self.sim.marks.is_empty();
-        self.anim.flights.clear();
-        if self.sim.selected.is_some_and(|i| i >= keep) {
-            self.sim.selected = None;
-            self.sim.field = None;
-        }
-        true
+        self.sim.rewound = false;
+        self.post(EngineCmd::StepBack, Awaiting::Back);
+        self.pump();
+        self.sim.rewound
     }
 
     pub fn sim_can_back(&self) -> bool {
@@ -1043,29 +1054,14 @@ impl App {
     /// Step to the next frame delivery (skipping bare timer events) and animate it.
     /// Returns false when the simulation is idle.
     pub fn sim_step_hop(&mut self) -> bool {
-        for _ in 0..10_000 {
-            let before = self.sim.hops.len();
-            let more = self.step_inner(true);
-            if self.sim.hops.len() > before {
-                return true;
-            }
-            if !more {
-                return false;
-            }
-        }
-        true
+        self.sim_start(true, StepKind::Hop, false)
     }
 
     /// Step to idle, logging every hop but not animating: this is fast-forward. Capped so a
     /// runaway lab cannot hang the UI.
     pub fn sim_run(&mut self) {
         self.anim.playing = false;
-        for _ in 0..100_000 {
-            if !self.sim_step() {
-                return;
-            }
-        }
-        self.notice = Some("stopped after 100000 events; Run again to continue".into());
+        self.sim_start(false, StepKind::Run, false);
     }
 
     // ---- animation ----
@@ -1203,7 +1199,7 @@ impl App {
                 self.busy = false;
                 self.sim.selected = None;
                 self.sim.field = None;
-                self.engine.send(EngineCmd::ForgetHistory);
+                self.post(EngineCmd::ForgetHistory, Awaiting::Nothing);
                 self.anim.flights.clear();
             }
         });
@@ -1350,13 +1346,15 @@ impl App {
         if let Some(last) = self.live_at.replace(self.wall) {
             // A long gap (a hidden tab) is not made up for.
             let dt = (self.wall - last).clamp(0.0, 0.25);
-            let ev = self.engine.send(EngineCmd::Advance {
-                ns: (dt * 1e9) as u64,
-            });
-            self.note_clock(&ev);
+            self.post(
+                EngineCmd::Advance {
+                    ns: (dt * 1e9) as u64,
+                },
+                Awaiting::Nothing,
+            );
             // Time has moved on behind the engine's saved states: they are stale.
             self.sim.marks.clear();
-            self.engine.send(EngineCmd::ForgetHistory);
+            self.post(EngineCmd::ForgetHistory, Awaiting::Nothing);
         }
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(100));
@@ -1387,8 +1385,8 @@ impl App {
 
     /// Ask the engine for the time (after a console command, which may have started spanning tree).
     fn refresh_clock(&mut self) {
-        let ev = self.engine.send(EngineCmd::Now);
-        self.note_clock(&ev);
+        self.post(EngineCmd::Now, Awaiting::Nothing);
+        self.pump();
     }
 
     pub fn ui(&mut self, ui: &mut Ui) {
@@ -1431,13 +1429,8 @@ impl App {
         }
         self.run_live_time(ui);
         // Playing: one hop per `hop_secs`, then stop when the simulation goes idle.
-        if self.anim.playing && self.wall >= self.anim.next_step {
-            if self.sim_step_hop() {
-                self.anim.next_step = self.wall + self.anim.hop_secs();
-            } else {
-                self.anim.playing = false;
-                self.notice = Some("simulation is idle".into());
-            }
+        if self.anim.playing && self.wall >= self.anim.next_step && !self.sim.in_flight {
+            self.sim_start(true, StepKind::Hop, true);
         }
         // Ask for frames only while something moves or a step is due: an idle app repaints
         // nothing, which keeps idle CPU near zero.
