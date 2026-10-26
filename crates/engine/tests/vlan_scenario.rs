@@ -36,6 +36,12 @@ const DHCP: Scenario = Scenario {
     golden: "../../testkit/scenarios/m2_dhcp.out",
 };
 
+const TRACE: Scenario = Scenario {
+    lab: include_str!("../../../testkit/scenarios/m2_traceroute.lab.toml"),
+    script: include_str!("../../../testkit/scenarios/m2_traceroute.script"),
+    golden: "../../testkit/scenarios/m2_traceroute.out",
+};
+
 const SVI: Scenario = Scenario {
     lab: include_str!("../../../testkit/scenarios/m2_svi.lab.toml"),
     script: include_str!("../../../testkit/scenarios/m2_svi.script"),
@@ -140,6 +146,11 @@ fn the_management_lab_matches_its_golden_transcript() {
 #[test]
 fn the_dhcp_lab_matches_its_golden_transcript() {
     check_golden(&DHCP);
+}
+
+#[test]
+fn the_traceroute_lab_matches_its_golden_transcript() {
+    check_golden(&TRACE);
 }
 
 #[test]

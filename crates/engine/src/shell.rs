@@ -1,6 +1,7 @@
 //! Binds `clish` command grammars to devices. Each [`Shell`] is one terminal attached to
 //! one device; the grammar is shared per device kind.
 
+use crate::trace::{self, Origin};
 use crate::World;
 use clish::{render_error, render_help, Action, Args, Exec, Grammar, ModeId, Session};
 use kernel::{DeviceId, PortId, SimTime};
@@ -154,6 +155,9 @@ const SHOW_DHCP_POOL: u32 = 136;
 const SHOW_DHCP_CONFLICT: u32 = 137;
 const CLEAR_DHCP: u32 = 138;
 const CLEAR_DHCP_ADDR: u32 = 139;
+const TRACERT: u32 = 150;
+const ROUTER_PING: u32 = 151;
+const TRACEROUTE: u32 = 152;
 
 fn router_grammar() -> (Grammar, Modes) {
     let mut g = Grammar::new();
@@ -326,6 +330,7 @@ fn router_grammar() -> (Grammar, Modes) {
     );
     mgmt_commands(&mut g, privileged, config, config_line);
     dhcp_commands(&mut g, privileged, config, config_if, config_dhcp);
+    probe_commands(&mut g, privileged);
     (
         g,
         Modes {
@@ -381,6 +386,23 @@ fn host_grammar() -> (Grammar, Modes) {
         "ping <dst:ipv4>",
         &["Send echo requests", "Destination"],
         h(PING),
+    );
+    g.cmd(
+        &[m],
+        "tracert <dst:ipv4>",
+        &["Trace the route to a destination", "Destination"],
+        h(TRACERT),
+    );
+    g.cmd(
+        &[m],
+        "tracert -h <max:int(1..255)> <dst:ipv4>",
+        &[
+            "Trace the route to a destination",
+            "Maximum number of hops",
+            "Hops",
+            "Destination",
+        ],
+        h(TRACERT),
     );
     (
         g,
@@ -705,6 +727,7 @@ fn switch_grammar() -> (Grammar, Modes) {
     );
     mgmt_commands(&mut g, privileged, config, config_line);
     dhcp_commands(&mut g, privileged, config, config_if, config_dhcp);
+    probe_commands(&mut g, privileged);
     (
         g,
         Modes {
@@ -717,6 +740,35 @@ fn switch_grammar() -> (Grammar, Modes) {
             config_dhcp,
         },
     )
+}
+
+/// `ping` and `traceroute` on routers and layer 3 switches.
+fn probe_commands(g: &mut Grammar, privileged: ModeId) {
+    let h = Action::Handler;
+    g.cmd(
+        &[privileged],
+        "ping <dst:ipv4>",
+        &["Send echo requests", "Destination"],
+        h(ROUTER_PING),
+    );
+    g.cmd(
+        &[privileged],
+        "traceroute <dst:ipv4>",
+        &["Trace the route to a destination", "Destination"],
+        h(TRACEROUTE),
+    );
+    g.cmd(
+        &[privileged],
+        "traceroute <dst:ipv4> ttl <min:int(1..255)> <max:int(1..255)>",
+        &[
+            "Trace the route to a destination",
+            "Destination",
+            "Set the TTL range",
+            "First TTL",
+            "Last TTL",
+        ],
+        h(TRACEROUTE),
+    );
 }
 
 /// DHCP server configuration, relay and show commands, the same on routers and switches.
@@ -1857,6 +1909,25 @@ impl Shell {
                 w.with_device::<Host, _>(id, |h, _| h.gateway = Some(gw));
             }
             PING => return ping(w, id, Ipv4Addr(a.ipv4("dst").unwrap())),
+            TRACERT => {
+                let max = a.int("max").map_or(30, |m| m as u8);
+                return trace::tracert(w, id, Ipv4Addr(a.ipv4("dst").unwrap()), max);
+            }
+            ROUTER_PING | TRACEROUTE => {
+                let origin = if self.kind == Kind::Switch {
+                    Origin::Switch
+                } else {
+                    Origin::Router
+                };
+                let dst = Ipv4Addr(a.ipv4("dst").unwrap());
+                return if handler == ROUTER_PING {
+                    trace::router_ping(w, origin, id, dst)
+                } else {
+                    let first = a.int("min").map_or(1, |m| m as u8);
+                    let last = a.int("max").map_or(30, |m| m as u8);
+                    trace::traceroute(w, origin, id, dst, first, last.max(first))
+                };
+            }
             _ => {}
         }
         String::new()

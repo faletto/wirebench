@@ -1,0 +1,127 @@
+
+== r1
+r1>enable
+r1#configure terminal
+r1(config)#interface g0/0
+r1(config-if)#ip address 10.0.1.1 255.255.255.0
+r1(config-if)#no shutdown
+r1(config-if)#exit
+r1(config)#interface g0/1
+r1(config-if)#ip address 10.0.12.1 255.255.255.252
+r1(config-if)#no shutdown
+r1(config-if)#exit
+r1(config)#ip route 10.0.23.0 255.255.255.252 10.0.12.2
+r1(config)#ip route 10.0.2.0 255.255.255.0 10.0.12.2
+r1(config)#ip route 10.77.0.0 255.255.0.0 10.0.12.2
+r1(config)#end
+
+== r2
+r2>enable
+r2#configure terminal
+r2(config)#interface g0/0
+r2(config-if)#ip address 10.0.12.2 255.255.255.252
+r2(config-if)#no shutdown
+r2(config-if)#exit
+r2(config)#interface g0/1
+r2(config-if)#ip address 10.0.23.1 255.255.255.252
+r2(config-if)#no shutdown
+r2(config-if)#exit
+r2(config)#ip route 10.0.1.0 255.255.255.0 10.0.12.1
+r2(config)#ip route 10.0.2.0 255.255.255.0 10.0.23.2
+r2(config)#end
+
+== r3
+r3>enable
+r3#configure terminal
+r3(config)#interface g0/0
+r3(config-if)#ip address 10.0.23.2 255.255.255.252
+r3(config-if)#no shutdown
+r3(config-if)#exit
+r3(config)#interface g0/1
+r3(config-if)#ip address 10.0.2.1 255.255.255.0
+r3(config-if)#no shutdown
+r3(config-if)#exit
+r3(config)#ip route 10.0.12.0 255.255.255.252 10.0.23.1
+r3(config)#ip route 10.0.1.0 255.255.255.0 10.0.23.1
+r3(config)#end
+
+== pc1
+pc1>ipconfig set 10.0.1.2 255.255.255.0
+pc1>ipconfig gateway 10.0.1.1
+
+== pc2
+pc2>ipconfig set 10.0.2.2 255.255.255.0
+pc2>ipconfig gateway 10.0.2.1
+
+== pc1
+pc1>tracert 10.0.2.2
+Tracing route to 10.0.2.2 over a maximum of 30 hops
+
+  1     25 us     13 us     13 us  10.0.1.1
+  2     38 us     27 us     27 us  10.0.12.2
+  3     52 us     40 us     40 us  10.0.23.2
+  4     66 us     55 us     55 us  10.0.2.2
+
+Trace complete.
+pc1>tracert -h 2 10.0.2.2
+Tracing route to 10.0.2.2 over a maximum of 2 hops
+
+  1     13 us     13 us     13 us  10.0.1.1
+  2     27 us     27 us     27 us  10.0.12.2
+
+Trace complete.
+pc1>tracert 10.0.9.9
+Tracing route to 10.0.9.9 over a maximum of 30 hops
+
+  1     13 us     13 us     13 us  10.0.1.1
+  2  10.0.1.1  reports: Destination net unreachable.
+
+Trace complete.
+
+== r1
+r1#ping 10.0.2.2
+Type escape sequence to abort.
+Sending 5, 100-byte ICMP Echos to 10.0.2.2, timeout is 2 seconds:
+!!!!!
+Success rate is 100 percent (5/5), round-trip min/avg/max = 41/41/41 usec
+r1#traceroute 10.0.2.2
+Type escape sequence to abort.
+Tracing the route to 10.0.2.2
+  1 10.0.12.2 12 usec 12 usec 12 usec
+  2 10.0.23.2 24 usec 24 usec 24 usec
+  3 10.0.2.2 37 usec 37 usec 37 usec
+r1#traceroute 10.0.23.2
+Type escape sequence to abort.
+Tracing the route to 10.0.23.2
+  1 10.0.12.2 12 usec 12 usec 12 usec
+  2 10.0.23.2 24 usec 24 usec 24 usec
+r1#traceroute 10.0.2.1
+Type escape sequence to abort.
+Tracing the route to 10.0.2.1
+  1 10.0.12.2 12 usec 12 usec 12 usec
+  2 10.0.2.1 24 usec 24 usec 24 usec
+r1#traceroute 10.0.2.2 ttl 2 3
+Type escape sequence to abort.
+Tracing the route to 10.0.2.2
+  2 10.0.23.2 24 usec 24 usec 24 usec
+  3 10.0.2.2 37 usec 37 usec 37 usec
+r1#traceroute 9.9.9.9
+% No route to 9.9.9.9
+r1#traceroute 10.77.0.1
+Type escape sequence to abort.
+Tracing the route to 10.77.0.1
+  1 10.0.12.2 12 usec 12 usec 12 usec
+  2 10.0.12.2 !N
+r1#ping 10.0.2.99
+Type escape sequence to abort.
+Sending 5, 100-byte ICMP Echos to 10.0.2.99, timeout is 2 seconds:
+.....
+Success rate is 0 percent (0/5)
+r1#traceroute 10.0.2.99 ttl 1 5
+Type escape sequence to abort.
+Tracing the route to 10.0.2.99
+  1 10.0.12.2 12 usec 12 usec 12 usec
+  2 10.0.23.2 24 usec 24 usec 24 usec
+  3 * * *
+  4 * * *
+  5 * * *

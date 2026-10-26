@@ -6,6 +6,7 @@ pub mod protocol;
 pub mod scenarios;
 pub mod script;
 pub mod shell;
+mod trace;
 
 use kernel::{DeviceId, Event, Kernel, LinkConfig, LinkId, PortId, SimTime, Trace};
 use netdev::{Ctx, Device, DeviceEvent};

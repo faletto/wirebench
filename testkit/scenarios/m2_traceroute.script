@@ -1,0 +1,76 @@
+# pc1 - r1 - r2 - r3 - pc2, static routes both ways. Every hop shows up in a trace, from the
+# address of the interface the probe came in on.
+@r1
+enable
+configure terminal
+interface g0/0
+ip address 10.0.1.1 255.255.255.0
+no shutdown
+exit
+interface g0/1
+ip address 10.0.12.1 255.255.255.252
+no shutdown
+exit
+ip route 10.0.23.0 255.255.255.252 10.0.12.2
+ip route 10.0.2.0 255.255.255.0 10.0.12.2
+ip route 10.77.0.0 255.255.0.0 10.0.12.2
+end
+
+@r2
+enable
+configure terminal
+interface g0/0
+ip address 10.0.12.2 255.255.255.252
+no shutdown
+exit
+interface g0/1
+ip address 10.0.23.1 255.255.255.252
+no shutdown
+exit
+ip route 10.0.1.0 255.255.255.0 10.0.12.1
+ip route 10.0.2.0 255.255.255.0 10.0.23.2
+end
+
+@r3
+enable
+configure terminal
+interface g0/0
+ip address 10.0.23.2 255.255.255.252
+no shutdown
+exit
+interface g0/1
+ip address 10.0.2.1 255.255.255.0
+no shutdown
+exit
+ip route 10.0.12.0 255.255.255.252 10.0.23.1
+ip route 10.0.1.0 255.255.255.0 10.0.23.1
+end
+
+@pc1
+ipconfig set 10.0.1.2 255.255.255.0
+ipconfig gateway 10.0.1.1
+@pc2
+ipconfig set 10.0.2.2 255.255.255.0
+ipconfig gateway 10.0.2.1
+
+# A PC's tracert: three echo requests per hop.
+@pc1
+tracert 10.0.2.2
+tracert -h 2 10.0.2.2
+tracert 10.0.9.9
+
+# A router's ping and traceroute (UDP probes to high ports).
+@r1
+ping 10.0.2.2
+traceroute 10.0.2.2
+traceroute 10.0.23.2
+traceroute 10.0.2.1
+traceroute 10.0.2.2 ttl 2 3
+traceroute 9.9.9.9
+
+# r1 sends 10.77.0.0/16 to r2, which has no route for it: r2 says so, and the trace ends there.
+traceroute 10.77.0.1
+
+# The last router cannot find a host that is not there: its ARP goes unanswered and the probes die.
+ping 10.0.2.99
+traceroute 10.0.2.99 ttl 1 5
