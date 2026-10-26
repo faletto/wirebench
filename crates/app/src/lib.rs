@@ -15,6 +15,8 @@ mod settings;
 mod sim;
 mod term;
 pub mod widget;
+#[cfg(target_arch = "wasm32")]
+mod worker;
 
 pub use app::{App, Choice, Pending};
 pub use canvas::Tool;
@@ -26,6 +28,10 @@ pub use term::TermModel;
 #[cfg(target_arch = "wasm32")]
 pub fn start_web(canvas_id: &str) {
     use eframe::wasm_bindgen::JsCast as _;
+    // The same wasm module is started inside the engine's worker; there is no page to draw.
+    if worker::in_worker() {
+        return;
+    }
     let canvas = web_sys::window()
         .and_then(|w| w.document())
         .and_then(|d| d.get_element_by_id(canvas_id))
@@ -38,7 +44,7 @@ pub fn start_web(canvas_id: &str) {
                 canvas,
                 eframe::WebOptions::default(),
                 Box::new(|_cc| {
-                    let mut app = App::new();
+                    let mut app = web_app();
                     app.set_store(Box::new(autosave::LocalStorageStore));
                     Ok(Box::new(app))
                 }),
@@ -56,3 +62,31 @@ pub fn start_web(canvas_id: &str) {
         }
     });
 }
+
+/// The app for the page: its engine in a worker unless the address asks for `?engine=inline` or a
+/// worker cannot be started, in which case it runs in the page as before.
+#[cfg(target_arch = "wasm32")]
+fn web_app() -> App {
+    let inline = web_sys::window()
+        .and_then(|w| w.location().search().ok())
+        .is_some_and(|q| q.contains("engine=inline"));
+    if inline {
+        return App::new();
+    }
+    match worker::WorkerTransport::spawn() {
+        Ok(t) => {
+            web_sys::console::log_1(&"wirebench: engine in a Web Worker".into());
+            App::with_transport(t)
+        }
+        Err(why) => {
+            web_sys::console::warn_1(
+                &format!("wirebench: no worker ({why}); engine in the page").into(),
+            );
+            App::new()
+        }
+    }
+}
+
+/// Keeps the worker's entry point in the bundle.
+#[cfg(target_arch = "wasm32")]
+pub use worker::worker_start;

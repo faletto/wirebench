@@ -132,6 +132,8 @@ pub struct App {
     busy: bool,
     /// Whether the latest lab to be opened loaded.
     open_ok: bool,
+    /// The link has been given a way to ask for a frame when an answer arrives.
+    waker_set: bool,
     frame_ms: f32,
     /// Milliseconds from the start of loading to the first drawn frame (see `clock`).
     ready_ms: Option<f64>,
@@ -157,6 +159,21 @@ impl App {
         let (engine, view) = EngineLink::from_built(built);
         // The engine is in this thread, so it can be asked outright for the first copy.
         let text = engine.snapshot();
+        Self::assemble(engine, view, text)
+    }
+
+    /// The bundled lab with its engine behind `transport` (a Web Worker): the screen is built from
+    /// a copy of the lab made here, and the engine is told to load the same one before anything
+    /// else is asked of it, so the two agree about every device number.
+    pub fn with_transport(transport: impl crate::link::Transport + 'static) -> Self {
+        let built = engine::lab::load_and_build(DEFAULT_LAB, kernel::Trace::new())
+            .expect("the bundled lab is valid");
+        let (local, view) = EngineLink::from_built(built);
+        let text = local.snapshot();
+        let engine = EngineLink::new(transport);
+        engine.post(EngineCmd::Load {
+            lab: DEFAULT_LAB.to_string(),
+        });
         Self::assemble(engine, view, text)
     }
 
@@ -228,6 +245,7 @@ impl App {
             background: false,
             busy: false,
             open_ok: false,
+            waker_set: false,
             frame_ms: 0.0,
             ready_ms: None,
         };
@@ -1361,6 +1379,13 @@ impl App {
         self.ctx = Some(ui.ctx().clone());
         self.drain_inbox();
         self.pump();
+        if !self.waker_set {
+            if let Some(ctx) = self.ctx.clone() {
+                self.engine
+                    .set_waker(Box::new(move || ctx.request_repaint()));
+                self.waker_set = true;
+            }
+        }
         // Ctrl/Cmd+S saves and Ctrl/Cmd+O opens, taken before any widget can see them (the web
         // build also stops the browser's own Save Page / Open File dialogs).
         if self.confirm.is_none() {
