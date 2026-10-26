@@ -1,0 +1,46 @@
+format = "labsim-lab"
+version = 1
+
+[meta]
+title = "Tracing a route through three routers"
+
+[[device]]
+name = "pc1"
+template = "host-pc"
+pos = [0, 0]
+
+[[device]]
+name = "r1"
+template = "router-2g"
+pos = [150, 0]
+
+[[device]]
+name = "r2"
+template = "router-2g"
+pos = [300, 0]
+
+[[device]]
+name = "r3"
+template = "router-2g"
+pos = [450, 0]
+
+[[device]]
+name = "pc2"
+template = "host-pc"
+pos = [600, 0]
+
+[[link]]
+a = "pc1:eth0"
+b = "r1:Gi0/0"
+
+[[link]]
+a = "r1:Gi0/1"
+b = "r2:Gi0/0"
+
+[[link]]
+a = "r2:Gi0/1"
+b = "r3:Gi0/0"
+
+[[link]]
+a = "r3:Gi0/1"
+b = "pc2:eth0"

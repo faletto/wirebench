@@ -1,5 +1,7 @@
 use crate::fib::{mask, Fib, Route, RouteKind};
-use crate::{Ctx, Device, DeviceEvent, DhcpServer, Mgmt, Resolver};
+use crate::{
+    record_probe, Ctx, Device, DeviceEvent, DhcpServer, Mgmt, ProbeBody, ProbeReply, Resolver,
+};
 use kernel::{PortId, SimTime};
 use std::any::Any;
 use wire::{
@@ -9,6 +11,9 @@ use wire::{
 use wire::{DhcpMessage, DhcpOp, DhcpType};
 
 const ARP_TIMEOUT: SimTime = SimTime::from_secs(1);
+/// At most one ICMP destination-unreachable per this long for traffic the router forwards
+/// (`ip icmp rate-limit unreachable`'s default of 500 ms). Time-exceeded is not limited.
+const UNREACHABLE_GAP: SimTime = SimTime::from_millis(500);
 const ARP_TTL: SimTime = SimTime::from_secs(4 * 3600);
 
 /// A logical interface. The first `n_ports` are the physical ports, in port order; subinterfaces
@@ -91,12 +96,18 @@ pub struct Router {
     /// The DHCP server: pools, exclusions and leases. Answers clients on interfaces without a
     /// `helper-address`.
     pub dhcp: DhcpServer,
+    /// Replies to probes this router sent (pings, traceroutes), oldest first.
+    pub probes: Vec<ProbeReply>,
+    /// No forwarding-plane unreachable is sent before this time.
+    unreachable_after: SimTime,
 }
 
 const DHCP_SERVER_PORT: u16 = 67;
 const DHCP_CLIENT_PORT: u16 = 68;
 /// A relayed request that has already been through this many relays is dropped (RFC 1542).
 const MAX_RELAY_HOPS: u8 = 16;
+/// Source port of the UDP packets traceroute sends.
+const PROBE_SPORT: u16 = 49_152;
 
 impl Router {
     /// `unit` makes interface MACs unique across routers in a lab (02:aa:00:00:<unit>:<port>).
@@ -126,6 +137,8 @@ impl Router {
             mgmt: Mgmt::default(),
             startup: None,
             dhcp: DhcpServer::default(),
+            probes: Vec::new(),
+            unreachable_after: SimTime::ZERO,
         }
     }
 
@@ -147,6 +160,8 @@ impl Router {
         self.default_gateway = None;
         self.mgmt = Mgmt::default();
         self.dhcp = DhcpServer::default();
+        self.probes.clear();
+        self.unreachable_after = SimTime::ZERO;
         for ifc in &mut self.ifaces {
             ifc.helpers.clear();
         }
@@ -226,6 +241,111 @@ impl Router {
         self.ifaces.remove(i);
         self.rebuild_fib();
         true
+    }
+
+    /// The address a probe to `dst` leaves from: the interface the route to it uses.
+    fn source_for(&self, dst: Ipv4Addr) -> Option<Ipv4Addr> {
+        let r = self.fib.lookup(dst)?;
+        self.live(r.port.0 as usize).map(|(a, _)| a)
+    }
+
+    fn log_reply(&mut self, now: SimTime, from: Ipv4Addr, body: ProbeBody) {
+        record_probe(
+            &mut self.probes,
+            ProbeReply {
+                at: now,
+                from,
+                body,
+            },
+        );
+    }
+
+    /// Send a UDP packet with the given TTL to `dst`:`dport` (a traceroute probe). False if
+    /// there is no route; to one of this router's own addresses the answer is immediate.
+    pub fn send_udp_probe(&mut self, ctx: &mut Ctx, dst: Ipv4Addr, ttl: u8, dport: u16) -> bool {
+        if self.owns(dst) {
+            let probe = Ipv4Packet {
+                dscp_ecn: 0,
+                ident: 0,
+                flags_frag: 0,
+                ttl,
+                proto: IpProto::UDP,
+                src: dst,
+                dst,
+                payload: UdpDatagram {
+                    src_port: PROBE_SPORT,
+                    dst_port: dport,
+                    payload: vec![0; 12],
+                }
+                .emit(dst, dst),
+            };
+            let original = IcmpError::quote(&probe.emit());
+            let kind = IcmpErrorKind::DestUnreachable(3);
+            self.log_reply(ctx.now(), dst, ProbeBody::Error { kind, original });
+            return true;
+        }
+        let Some(src) = self.source_for(dst) else {
+            return false;
+        };
+        let payload = vec![0u8; 12];
+        let udp = UdpDatagram {
+            src_port: PROBE_SPORT,
+            dst_port: dport,
+            payload,
+        };
+        let pkt = Ipv4Packet {
+            dscp_ecn: 0,
+            ident: self.next_ident(),
+            flags_frag: 0,
+            ttl,
+            proto: IpProto::UDP,
+            src,
+            dst,
+            payload: udp.emit(src, dst),
+        };
+        self.route(ctx, pkt);
+        true
+    }
+
+    /// Send an ICMP echo request with the given TTL. Same conventions as [`Router::send_udp_probe`].
+    pub fn send_echo_probe(
+        &mut self,
+        ctx: &mut Ctx,
+        dst: Ipv4Addr,
+        ttl: u8,
+        ident: u16,
+        seq: u16,
+    ) -> bool {
+        if self.owns(dst) {
+            self.log_reply(ctx.now(), dst, ProbeBody::EchoReply { ident, seq });
+            return true;
+        }
+        let Some(src) = self.source_for(dst) else {
+            return false;
+        };
+        let echo = IcmpEcho {
+            reply: false,
+            ident,
+            seq,
+            data: vec![0x61; 32],
+        };
+        let pkt = Ipv4Packet {
+            dscp_ecn: 0,
+            ident: self.next_ident(),
+            flags_frag: 0,
+            ttl,
+            proto: IpProto::ICMP,
+            src,
+            dst,
+            payload: echo.emit(),
+        };
+        self.route(ctx, pkt);
+        true
+    }
+
+    /// Put frames queued by the probe functions on the wire. (A switch sends its own.)
+    pub fn flush_outbox(&mut self, ctx: &mut Ctx) {
+        self.flush(ctx);
     }
 
     /// `ip helper-address` on interface `i`.
@@ -519,15 +639,26 @@ impl Router {
         offending: &Ipv4Packet,
         kind: IcmpErrorKind,
     ) {
+        let Some((src, _)) = self.live(ingress.0 as usize) else {
+            return;
+        };
+        self.send_icmp_error_from(ctx, src, offending, kind);
+    }
+
+    /// Send an ICMP error about `offending` from address `src`.
+    fn send_icmp_error_from(
+        &mut self,
+        ctx: &mut Ctx,
+        src: Ipv4Addr,
+        offending: &Ipv4Packet,
+        kind: IcmpErrorKind,
+    ) {
         // Never answer an ICMP error with another error.
         if offending.proto == IpProto::ICMP
             && !matches!(offending.payload.first(), Some(0) | Some(8))
         {
             return;
         }
-        let Some((src, _)) = self.live(ingress.0 as usize) else {
-            return;
-        };
         let err = IcmpError {
             kind,
             original: IcmpError::quote(&offending.emit()),
@@ -543,6 +674,59 @@ impl Router {
             payload: err.emit(),
         };
         self.route(ctx, pkt);
+    }
+
+    /// An ICMP packet addressed to this router: answer an echo request, remember anything that
+    /// looks like an answer to something it sent.
+    fn on_icmp_to_me(&mut self, ctx: &mut Ctx, p: &Ipv4Packet) {
+        let now = ctx.now();
+        if let Ok(echo) = IcmpEcho::parse(&p.payload) {
+            if echo.reply {
+                self.log_reply(
+                    now,
+                    p.src,
+                    ProbeBody::EchoReply {
+                        ident: echo.ident,
+                        seq: echo.seq,
+                    },
+                );
+            } else {
+                let reply = IcmpEcho {
+                    reply: true,
+                    ..echo
+                };
+                let out = Ipv4Packet {
+                    dscp_ecn: 0,
+                    ident: self.next_ident(),
+                    flags_frag: 0,
+                    ttl: 255,
+                    proto: IpProto::ICMP,
+                    // Reply from the address that was pinged.
+                    src: p.dst,
+                    dst: p.src,
+                    payload: reply.emit(),
+                };
+                self.route(ctx, out);
+            }
+        } else if let Ok(e) = IcmpError::parse(&p.payload) {
+            self.log_reply(
+                now,
+                p.src,
+                ProbeBody::Error {
+                    kind: e.kind,
+                    original: e.original,
+                },
+            );
+        }
+    }
+
+    /// Whether a forwarding-plane unreachable may be sent now (and if so, start the gap).
+    fn unreachable_allowed(&mut self, now: SimTime) -> bool {
+        if now < self.unreachable_after {
+            return false;
+        }
+        self.unreachable_after = now + UNREACHABLE_GAP;
+        true
     }
 
     fn next_ident(&mut self) -> u16 {
@@ -584,29 +768,16 @@ impl Router {
             return;
         }
         if self.owns(p.dst) {
-            if p.proto != IpProto::ICMP {
-                return;
-            }
-            let Ok(echo) = IcmpEcho::parse(&p.payload) else {
-                return;
-            };
-            if !echo.reply {
-                let reply = IcmpEcho {
-                    reply: true,
-                    ..echo
-                };
-                let out = Ipv4Packet {
-                    dscp_ecn: 0,
-                    ident: self.next_ident(),
-                    flags_frag: 0,
-                    ttl: 255,
-                    proto: IpProto::ICMP,
-                    // Reply from the address that was pinged.
-                    src: p.dst,
-                    dst: p.src,
-                    payload: reply.emit(),
-                };
-                self.route(ctx, out);
+            match p.proto {
+                IpProto::ICMP => self.on_icmp_to_me(ctx, &p),
+                // A UDP packet for a port nothing listens on: tell the sender. (DHCP was taken
+                // above.) This is what ends a UDP traceroute at its destination.
+                IpProto::UDP => {
+                    // From the address that was probed, as RFC 1122 asks.
+                    let src = p.dst;
+                    self.send_icmp_error_from(ctx, src, &p, IcmpErrorKind::DestUnreachable(3));
+                }
+                _ => {}
             }
             return;
         }
@@ -618,7 +789,9 @@ impl Router {
             return;
         }
         if self.fib.lookup(p.dst).is_none() {
-            self.send_icmp_error(ctx, ingress, &p, IcmpErrorKind::DestUnreachable(0));
+            if self.unreachable_allowed(ctx.now()) {
+                self.send_icmp_error(ctx, ingress, &p, IcmpErrorKind::DestUnreachable(0));
+            }
             return;
         }
         p.ttl -= 1;
