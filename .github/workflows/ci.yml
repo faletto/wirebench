@@ -69,6 +69,29 @@ jobs:
           name: web-dist
           path: crates/app/dist
 
+  # The engine worker in a real browser: the 84-device lab at 8x CPU throttling, with the engine in
+  # the worker and in the page; fails if the worker is not used or its frame gaps are worse than the
+  # page's (testkit/throttle/check.mjs).
+  worker-browser:
+    needs: web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web-dist
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+        working-directory: testkit/throttle
+      - run: npx playwright install --with-deps chromium
+        working-directory: testkit/throttle
+      - run: python3 -m http.server 8765 --directory web-dist &
+      - run: node check.mjs 8 http://localhost:8765/
+        working-directory: testkit/throttle
+
   # Short fuzz smoke run of every target (a longer run belongs in a scheduled job).
   # Each target also asserts parse -> emit -> parse round-trips, so this is a property test too.
   fuzz:
