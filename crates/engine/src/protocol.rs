@@ -77,6 +77,16 @@ pub enum EngineCmd {
     Snapshot,
     /// What time it is in the simulation (answers with `Time`).
     Now,
+    /// How a device's settings stand now (answers with `DeviceState`).
+    DeviceState {
+        device: u32,
+    },
+    /// Type these lines at the device as a person in configuration mode would (a PC: at its
+    /// prompt). Answers with `Configured`.
+    Configure {
+        device: u32,
+        lines: Vec<String>,
+    },
     OpenTerminal {
         device: u32,
     },
@@ -116,6 +126,15 @@ pub enum EngineEvent {
     /// The lab changed (loaded, edited): this is how it looks now.
     Lab {
         view: LabView,
+    },
+    State {
+        device: u32,
+        state: crate::panel::DeviceState,
+    },
+    /// What the CLI said about the lines of a `Configure`; empty means all went through.
+    Configured {
+        device: u32,
+        said: Vec<String>,
     },
     /// Answer to `Snapshot`.
     LabText {
@@ -390,6 +409,22 @@ impl Engine {
                 ns: self.world.kernel.now().0,
                 background: self.world.kernel.has_background(),
             }],
+            EngineCmd::DeviceState { device } => match self.kinds.get(&device) {
+                Some(kind) => vec![EngineEvent::State {
+                    device,
+                    state: crate::panel::state(&self.world, *kind, DeviceId(device)),
+                }],
+                None => err("no such device"),
+            },
+            EngineCmd::Configure { device, lines } => match self.kinds.get(&device).copied() {
+                Some(kind) => {
+                    self.history.clear();
+                    let said =
+                        crate::panel::configure(&mut self.world, kind, DeviceId(device), &lines);
+                    vec![EngineEvent::Configured { device, said }]
+                }
+                None => err("no such device"),
+            },
             EngineCmd::Snapshot => match &self.topology {
                 Some(t) => vec![EngineEvent::LabText {
                     text: labfile::save(&t.snapshot(&self.world)),

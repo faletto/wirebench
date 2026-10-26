@@ -2,6 +2,7 @@
 
 pub mod chain;
 pub mod lab;
+pub mod panel;
 pub mod protocol;
 pub mod scenarios;
 pub mod script;
