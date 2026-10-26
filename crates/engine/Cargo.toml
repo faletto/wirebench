@@ -1,6 +1,6 @@
 [package]
 name = "engine"
-description = "World: owns the kernel and devices and dispatches events"
+description = "World and engine: devices, shells and labs, the command/event protocol the UI talks to"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

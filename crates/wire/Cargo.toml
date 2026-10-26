@@ -1,6 +1,6 @@
 [package]
 name = "wire"
-description = "Packet types and parsers: Ethernet, 802.1Q, ARP, IPv4, ICMP"
+description = "Packet types, parsers and the inspector's dissector: Ethernet, 802.1Q, ARP, IPv4, ICMP, UDP, DHCP, STP BPDUs, DTP"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

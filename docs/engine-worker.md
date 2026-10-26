@@ -1,9 +1,9 @@
 # Moving the engine into a Web Worker
 
 **Status 2026-10-26:** the engine runs in a Web Worker on the web build, and the app talks to it
-only through serialisable messages that may be answered late. What is left is moving pacing off
-the page's thread and testing under load (see "To do"). Native builds still run the engine in the
-app's thread through the same link.
+only through serialisable messages that may be answered late. Pacing (step 4) is done as far as it
+can be without a worker-owned clock. What is left is the 8x load proof and a CI check of the worker
+(see "To do"). Native builds still run the engine in the app's thread through the same link.
 
 ## Done in step 1: the app talks to the engine only by message
 
@@ -75,5 +75,7 @@ app's thread through the same link.
 ## Why this order
 
 Steps 1 and 2 could be finished and checked without a browser, and were (step 2 against a
-simulated slow engine, and both harness runs unchanged in Chromium). What is left changes where
-the engine runs, which only a browser can check.
+simulated slow engine). Steps 3 and 4 change where the engine runs and when it is asked, which
+only a browser can check, and the browser found what the unit tests could not (a clock loop that
+doubled the page's work). The last step is the same kind of check at a harder setting, plus keeping
+it from regressing.

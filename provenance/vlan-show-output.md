@@ -12,8 +12,11 @@ What we print:
   1005 are not listed. Status is always `active`.
 - `show interfaces trunk`: three sections (trunking ports with mode, encapsulation, status and
   native VLAN; VLANs allowed on the trunk; VLANs allowed and active). The fourth section (VLANs in
-  spanning-tree forwarding state) is left out until spanning tree exists. Mode is always `on` and
-  status `trunking`, because there is no negotiation or link state at the switch yet. Prints
+  spanning-tree forwarding state) is still left out, although spanning tree now exists (see
+  `spanning-tree.md`; `show spanning-tree` has that information). Since DTP (`dtp.md`) the Mode
+  column is `on`, `auto` or `desirable` after the port's configured mode, and a dynamic port is
+  listed only while it is trunking; status is always `trunking` because there is no link state
+  at the switch beyond what spanning tree and DTP poll. Prints
   nothing when there are no trunks.
 - `show mac address-table`: columns `Vlan Mac Address Port`. The real command also has a Type
   column and a header banner; ours does not.
