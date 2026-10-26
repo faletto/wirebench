@@ -1,0 +1,166 @@
+
+== sw1
+sw1>enable
+sw1#configure terminal
+sw1(config)#interface fa0/1
+sw1(config-if)#switchport access vlan 10
+% Access VLAN does not exist. Creating vlan 10
+sw1(config-if)#exit
+sw1(config)#interface fa0/2
+sw1(config-if)#switchport access vlan 20
+% Access VLAN does not exist. Creating vlan 20
+sw1(config-if)#exit
+sw1(config)#interface vlan 10
+sw1(config-if)#ip address 10.0.10.1 255.255.255.0
+sw1(config-if)#exit
+sw1(config)#interface vlan 20
+sw1(config-if)#ip address 10.0.20.1 255.255.255.0
+sw1(config-if)#end
+sw1#show ip interface brief
+Interface             Address           Status
+Vlan10                10.0.10.1         up
+Vlan20                10.0.20.1         up
+sw1#show ip route
+Codes: C connected, S static
+
+C  10.0.10.0/24  directly connected, Vlan10
+C  10.0.20.0/24  directly connected, Vlan20
+
+== pc1
+pc1>ipconfig set 10.0.10.2 255.255.255.0
+pc1>ipconfig gateway 10.0.10.1
+
+== pc2
+pc2>ipconfig set 10.0.20.2 255.255.255.0
+pc2>ipconfig gateway 10.0.20.1
+
+== pc1
+pc1>ping 10.0.10.1
+Reply from 10.0.10.1: time=25us
+Reply from 10.0.10.1: time=13us
+Reply from 10.0.10.1: time=13us
+Reply from 10.0.10.1: time=13us
+Sent 4, received 4
+pc1>ping 10.0.20.2
+No reply (timed out).
+No reply (timed out).
+No reply (timed out).
+No reply (timed out).
+Sent 4, received 0
+
+== sw1
+sw1#configure terminal
+sw1(config)#ip routing
+sw1(config)#end
+sw1#show ip route
+Codes: C connected, S static
+
+C  10.0.10.0/24  directly connected, Vlan10
+C  10.0.20.0/24  directly connected, Vlan20
+
+== pc1
+pc1>ping 10.0.20.2
+Reply from 10.0.20.2: time=39us
+Reply from 10.0.20.2: time=27us
+Reply from 10.0.20.2: time=27us
+Reply from 10.0.20.2: time=27us
+Sent 4, received 4
+
+== pc2
+pc2>ping 10.0.10.2
+Reply from 10.0.10.2: time=27us
+Reply from 10.0.10.2: time=27us
+Reply from 10.0.10.2: time=27us
+Reply from 10.0.10.2: time=27us
+Sent 4, received 4
+
+== sw1
+sw1#show mac address-table
+Vlan  Mac Address     Port
+10    0200.0000.0001  Fa0/1
+20    0200.0000.0101  Fa0/2
+sw1#configure terminal
+sw1(config)#interface fa0/2
+sw1(config-if)#switchport access vlan 10
+sw1(config-if)#end
+sw1#show ip interface brief
+Interface             Address           Status
+Vlan10                10.0.10.1         up
+Vlan20                10.0.20.1         down
+sw1#show ip route
+Codes: C connected, S static
+
+C  10.0.10.0/24  directly connected, Vlan10
+
+== pc1
+pc1>ping 10.0.20.2
+Destination unreachable.
+Destination unreachable.
+Destination unreachable.
+Destination unreachable.
+Sent 4, received 0
+
+== sw1
+sw1#configure terminal
+sw1(config)#interface fa0/2
+sw1(config-if)#switchport access vlan 20
+sw1(config-if)#exit
+sw1(config)#interface vlan 10
+sw1(config-if)#shutdown
+sw1(config-if)#end
+sw1#show ip interface brief
+Interface             Address           Status
+Vlan10                10.0.10.1         admin down
+Vlan20                10.0.20.1         up
+
+== pc2
+pc2>ping 10.0.10.2
+Destination unreachable.
+Destination unreachable.
+Destination unreachable.
+Destination unreachable.
+Sent 4, received 0
+
+== sw1
+sw1#configure terminal
+sw1(config)#interface fa0/3
+sw1(config-if)#ip address 10.9.9.1 255.255.255.0
+% Addresses go on VLAN interfaces (interface vlan N), not on switch ports.
+sw1(config-if)#interface vlan 20
+sw1(config-if)#switchport mode trunk
+% switchport commands apply to switch ports, not VLAN interfaces.
+sw1(config-if)#no interface vlan 30
+% No such interface.
+sw1(config-if)#no interface vlan 20
+sw1(config-if)#end
+sw1#show running-config
+hostname sw1
+!
+vlan 10
+!
+vlan 20
+!
+ip routing
+!
+interface FastEthernet0/1
+ switchport access vlan 10
+!
+interface FastEthernet0/2
+ switchport access vlan 20
+!
+interface Vlan10
+ ip address 10.0.10.1 255.255.255.0
+ shutdown
+!
+end
+sw1#configure terminal
+sw1(config)#no ip routing
+sw1(config)#interface vlan 10
+sw1(config-if)#no shutdown
+sw1(config-if)#ip default-gateway 10.0.10.254
+sw1(config-if)#end
+sw1#show ip route
+Codes: C connected, S static
+
+S  0.0.0.0/0  via 10.0.10.254, Vlan10
+C  10.0.10.0/24  directly connected, Vlan10

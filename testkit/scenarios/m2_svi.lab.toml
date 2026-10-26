@@ -1,0 +1,28 @@
+format = "labsim-lab"
+version = 1
+
+[meta]
+title = "Layer 3 switch with SVIs"
+
+[[device]]
+name = "pc1"
+template = "host-pc"
+pos = [0, 0]
+
+[[device]]
+name = "pc2"
+template = "host-pc"
+pos = [0, 120]
+
+[[device]]
+name = "sw1"
+template = "switch-l2-8"
+pos = [180, 60]
+
+[[link]]
+a = "pc1:eth0"
+b = "sw1:Fa0/1"
+
+[[link]]
+a = "pc2:eth0"
+b = "sw1:Fa0/2"
