@@ -27,12 +27,24 @@ impl<'a> Ctx<'a> {
         self.device
     }
 
+    /// Whether `port` has a cable to something and the link is up.
+    pub fn port_up(&self, port: PortId) -> bool {
+        self.kernel.port_up(self.device, port)
+    }
+
     pub fn transmit(&mut self, port: PortId, frame: Vec<u8>) {
         self.kernel.transmit(self.device, port, frame);
     }
 
     pub fn schedule(&mut self, after: SimTime, token: u64) -> TimerId {
         self.kernel.schedule_timer(self.device, after, token)
+    }
+
+    /// Like [`schedule`](Self::schedule) for periodic upkeep: it fires when time passes it but
+    /// does not stop the simulation from counting as idle.
+    pub fn schedule_background(&mut self, after: SimTime, token: u64) -> TimerId {
+        self.kernel
+            .schedule_background_timer(self.device, after, token)
     }
 
     pub fn cancel(&mut self, id: TimerId) {
