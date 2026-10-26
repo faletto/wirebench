@@ -4,28 +4,44 @@ use kernel::{PortId, SimTime};
 use std::any::Any;
 use wire::{
     ArpOp, ArpPacket, EtherType, EthernetFrame, IcmpEcho, IcmpError, IcmpErrorKind, IpProto,
-    Ipv4Addr, Ipv4Packet, MacAddr,
+    Ipv4Addr, Ipv4Packet, MacAddr, VlanTag,
 };
 
 const ARP_TIMEOUT: SimTime = SimTime::from_secs(1);
 const ARP_TTL: SimTime = SimTime::from_secs(4 * 3600);
 
+/// A logical interface. The first `n_ports` are the physical ports, in port order; subinterfaces
+/// follow, in the order they were created. Routes and ARP refer to interfaces by index (carried
+/// in a `PortId`), which is the port number for a physical interface.
 #[derive(Clone, Debug)]
 pub struct Interface {
     pub mac: MacAddr,
     pub addr: Option<(Ipv4Addr, u8)>,
     /// Administratively down interfaces neither forward nor appear in the FIB.
     pub shutdown: bool,
+    /// Set on subinterfaces (`interface g0/0.10`).
+    pub sub: Option<SubInterface>,
 }
 
-impl Interface {
-    fn active_addr(&self) -> Option<(Ipv4Addr, u8)> {
-        if self.shutdown {
-            None
-        } else {
-            self.addr
-        }
-    }
+/// An 802.1Q subinterface: traffic for one VLAN on a physical port, sharing the port's MAC.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SubInterface {
+    pub parent: PortId,
+    /// The number after the dot in the name. Unrelated to the VLAN id.
+    pub number: u16,
+    /// VLAN carried, set by `encapsulation dot1q`. Without it the interface carries nothing.
+    pub vlan: Option<u16>,
+    /// Untagged frames belong to this subinterface instead of the physical one.
+    pub native: bool,
+}
+
+/// Why an `encapsulation dot1q` was refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EncapError {
+    /// Not a subinterface.
+    NotSubinterface,
+    /// Another subinterface of the same port already carries that VLAN.
+    InUse,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,6 +55,7 @@ pub struct StaticRoute {
 #[derive(Debug)]
 pub struct Router {
     pub name: String,
+    n_ports: u16,
     ifaces: Vec<Interface>,
     statics: Vec<StaticRoute>,
     fib: Fib,
@@ -54,10 +71,12 @@ impl Router {
                 mac: MacAddr([2, 0xaa, 0, 0, unit, p as u8]),
                 addr: None,
                 shutdown: true,
+                sub: None,
             })
             .collect();
         Router {
             name: name.to_string(),
+            n_ports,
             ifaces,
             statics: Vec::new(),
             fib: Fib::default(),
@@ -66,8 +85,102 @@ impl Router {
         }
     }
 
+    /// Every logical interface: the physical ports, then subinterfaces.
     pub fn interfaces(&self) -> &[Interface] {
         &self.ifaces
+    }
+
+    /// Number of physical ports.
+    pub fn n_ports(&self) -> u16 {
+        self.n_ports
+    }
+
+    /// The interface's address if it is configured and up (its own and its port's shutdown flags
+    /// both clear).
+    pub fn live(&self, i: usize) -> Option<(Ipv4Addr, u8)> {
+        let ifc = self.ifaces.get(i)?;
+        let parent_down = ifc
+            .sub
+            .is_some_and(|s| self.ifaces[s.parent.0 as usize].shutdown);
+        if ifc.shutdown || parent_down {
+            None
+        } else {
+            ifc.addr
+        }
+    }
+
+    /// Whether the interface is administratively up, with or without an address.
+    pub fn is_up(&self, i: usize) -> bool {
+        self.ifaces.get(i).is_some_and(|ifc| {
+            !ifc.shutdown
+                && ifc
+                    .sub
+                    .is_none_or(|s| !self.ifaces[s.parent.0 as usize].shutdown)
+        })
+    }
+
+    /// Find or create subinterface `parent.number`; returns its interface index.
+    pub fn add_subinterface(&mut self, parent: PortId, number: u16) -> Option<usize> {
+        if parent.0 >= self.n_ports {
+            return None;
+        }
+        let found = self.ifaces.iter().position(|i| {
+            i.sub
+                .is_some_and(|s| s.parent == parent && s.number == number)
+        });
+        if found.is_some() {
+            return found;
+        }
+        self.ifaces.push(Interface {
+            mac: self.ifaces[parent.0 as usize].mac,
+            addr: None,
+            shutdown: false,
+            sub: Some(SubInterface {
+                parent,
+                number,
+                vlan: None,
+                native: false,
+            }),
+        });
+        Some(self.ifaces.len() - 1)
+    }
+
+    /// Delete a subinterface. Interface indexes above it shift down by one. Physical interfaces
+    /// cannot be removed.
+    pub fn remove_subinterface(&mut self, i: usize) -> bool {
+        if self.ifaces.get(i).is_none_or(|ifc| ifc.sub.is_none()) {
+            return false;
+        }
+        self.ifaces.remove(i);
+        self.rebuild_fib();
+        true
+    }
+
+    /// `encapsulation dot1q <vlan> [native]` on a subinterface, or `None` to remove it.
+    pub fn set_encapsulation(
+        &mut self,
+        i: usize,
+        vlan: Option<u16>,
+        native: bool,
+    ) -> Result<(), EncapError> {
+        let Some(sub) = self.ifaces.get(i).and_then(|ifc| ifc.sub) else {
+            return Err(EncapError::NotSubinterface);
+        };
+        if let Some(v) = vlan {
+            let clash = self.ifaces.iter().enumerate().any(|(j, o)| {
+                j != i
+                    && o.sub
+                        .is_some_and(|s| s.parent == sub.parent && s.vlan == Some(v))
+            });
+            if clash {
+                return Err(EncapError::InUse);
+            }
+        }
+        if let Some(s) = self.ifaces[i].sub.as_mut() {
+            s.vlan = vlan;
+            s.native = native && vlan.is_some();
+        }
+        Ok(())
     }
 
     pub fn statics(&self) -> &[StaticRoute] {
@@ -83,12 +196,16 @@ impl Router {
     }
 
     pub fn set_address(&mut self, port: PortId, addr: Option<(Ipv4Addr, u8)>) {
-        self.ifaces[port.0 as usize].addr = addr;
+        if let Some(ifc) = self.ifaces.get_mut(port.0 as usize) {
+            ifc.addr = addr;
+        }
         self.rebuild_fib();
     }
 
     pub fn set_shutdown(&mut self, port: PortId, down: bool) {
-        self.ifaces[port.0 as usize].shutdown = down;
+        if let Some(ifc) = self.ifaces.get_mut(port.0 as usize) {
+            ifc.shutdown = down;
+        }
         self.rebuild_fib();
     }
 
@@ -107,8 +224,8 @@ impl Router {
     /// Statics install only while their next hop is reachable through a connected route.
     fn rebuild_fib(&mut self) {
         let mut fib = Fib::default();
-        for (i, ifc) in self.ifaces.iter().enumerate() {
-            if let Some((ip, len)) = ifc.active_addr() {
+        for i in 0..self.ifaces.len() {
+            if let Some((ip, len)) = self.live(i) {
                 fib.insert(Route {
                     net: Ipv4Addr::from_u32(ip.to_u32() & mask(len)),
                     len,
@@ -136,25 +253,54 @@ impl Router {
         self.fib = fib;
     }
 
+    /// The interface that receives a frame arriving on physical `port` with VLAN `vid` (if tagged):
+    /// the matching subinterface, or for untagged frames the native subinterface, else the port.
+    fn classify(&self, port: PortId, vid: Option<u16>) -> Option<PortId> {
+        if port.0 >= self.n_ports {
+            return None;
+        }
+        let sub = |want: &dyn Fn(&SubInterface) -> bool| {
+            self.ifaces.iter().position(|i| {
+                i.sub
+                    .is_some_and(|s| s.parent == port && s.vlan.is_some() && want(&s))
+            })
+        };
+        let idx = match vid {
+            Some(v) => sub(&|s| !s.native && s.vlan == Some(v))?,
+            None => sub(&|s| s.native).unwrap_or(port.0 as usize),
+        };
+        Some(PortId(idx as u16))
+    }
+
     fn owns(&self, ip: Ipv4Addr) -> bool {
-        self.ifaces
-            .iter()
-            .any(|i| i.active_addr().is_some_and(|(a, _)| a == ip))
+        (0..self.ifaces.len()).any(|i| self.live(i).is_some_and(|(a, _)| a == ip))
     }
 
     fn emit(&self, ctx: &mut Ctx, port: PortId, dst: MacAddr, et: EtherType, mut payload: Vec<u8>) {
         if payload.len() < 46 {
             payload.resize(46, 0);
         }
-        let src = self.ifaces[port.0 as usize].mac;
+        let ifc = &self.ifaces[port.0 as usize];
+        // A subinterface sends on its parent port, tagged unless it is the native one.
+        let (phys, vlan) = match ifc.sub {
+            Some(s) => (
+                s.parent,
+                s.vlan.filter(|_| !s.native).map(|vid| VlanTag {
+                    pcp: 0,
+                    dei: false,
+                    vid,
+                }),
+            ),
+            None => (port, None),
+        };
         let f = EthernetFrame {
             dst,
-            src,
-            vlan: None,
+            src: ifc.mac,
+            vlan,
             ethertype: et,
             payload,
         };
-        ctx.transmit(port, f.emit());
+        ctx.transmit(phys, f.emit());
     }
 
     /// Route and transmit an IP packet (forwarded or locally originated).
@@ -169,8 +315,8 @@ impl Router {
             return;
         }
         if self.arp.queue(hop, pkt) {
-            let sender_ip = self.ifaces[r.port.0 as usize]
-                .active_addr()
+            let sender_ip = self
+                .live(r.port.0 as usize)
                 .map_or(Ipv4Addr::UNSPECIFIED, |(a, _)| a);
             let req = ArpPacket {
                 op: ArpOp::Request,
@@ -197,7 +343,7 @@ impl Router {
         {
             return;
         }
-        let Some((src, _)) = self.ifaces[ingress.0 as usize].active_addr() else {
+        let Some((src, _)) = self.live(ingress.0 as usize) else {
             return;
         };
         let err = IcmpError {
@@ -224,7 +370,7 @@ impl Router {
     }
 
     fn on_arp(&mut self, ctx: &mut Ctx, port: PortId, p: ArpPacket) {
-        let Some((my_ip, _)) = self.ifaces[port.0 as usize].active_addr() else {
+        let Some((my_ip, _)) = self.live(port.0 as usize) else {
             return;
         };
         if p.target_ip != my_ip {
@@ -296,14 +442,18 @@ impl Device for Router {
     fn handle(&mut self, ctx: &mut Ctx, ev: DeviceEvent) {
         match ev {
             DeviceEvent::FrameRx { port, frame } => {
-                let ifc = &self.ifaces[port.0 as usize];
-                if ifc.active_addr().is_none() {
-                    return;
-                }
                 let Ok(f) = EthernetFrame::parse(&frame) else {
                     return;
                 };
-                if f.dst != ifc.mac && !f.dst.is_broadcast() {
+                // Which logical interface the frame is for: by VLAN tag on this physical port.
+                let Some(port) = self.classify(port, f.vlan.map(|t| t.vid)) else {
+                    return;
+                };
+                let i = port.0 as usize;
+                if self.live(i).is_none() {
+                    return;
+                }
+                if f.dst != self.ifaces[i].mac && !f.dst.is_broadcast() {
                     return;
                 }
                 match f.ethertype {

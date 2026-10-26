@@ -1,0 +1,159 @@
+
+== sw1
+sw1>enable
+sw1#configure terminal
+sw1(config)#interface fa0/1
+sw1(config-if)#switchport access vlan 10
+% Access VLAN does not exist. Creating vlan 10
+sw1(config-if)#exit
+sw1(config)#interface fa0/2
+sw1(config-if)#switchport access vlan 20
+% Access VLAN does not exist. Creating vlan 20
+sw1(config-if)#exit
+sw1(config)#interface fa0/8
+sw1(config-if)#switchport mode trunk
+sw1(config-if)#end
+
+== r1
+r1>enable
+r1#configure terminal
+r1(config)#interface g0/0.10
+r1(config-if)#ip address 10.0.10.1 255.255.255.0
+% Set an encapsulation (encapsulation dot1q <vlan>) before addressing a subinterface.
+r1(config-if)#encapsulation dot1q 10
+r1(config-if)#ip address 10.0.10.1 255.255.255.0
+r1(config-if)#exit
+r1(config)#interface g0/0.20
+r1(config-if)#encapsulation dot1q 20
+r1(config-if)#ip address 10.0.20.1 255.255.255.0
+r1(config-if)#exit
+r1(config)#interface g0/0.30
+r1(config-if)#encapsulation dot1q 20
+% That VLAN is already used by another subinterface of this port.
+r1(config-if)#interface g0/0
+r1(config-if)#no shutdown
+r1(config-if)#end
+r1#show ip interface brief
+Interface             Address           Status
+GigabitEthernet0/0    unassigned        up
+GigabitEthernet0/1    unassigned        admin down
+GigabitEthernet0/0.10 10.0.10.1         up
+GigabitEthernet0/0.20 10.0.20.1         up
+GigabitEthernet0/0.30 unassigned        up
+r1#show ip route
+Codes: C connected, S static
+
+C  10.0.10.0/24  directly connected, GigabitEthernet0/0.10
+C  10.0.20.0/24  directly connected, GigabitEthernet0/0.20
+r1#show running-config
+hostname r1
+!
+interface GigabitEthernet0/0
+ no ip address
+ no shutdown
+!
+interface GigabitEthernet0/1
+ no ip address
+ shutdown
+!
+interface GigabitEthernet0/0.10
+ encapsulation dot1q 10
+ ip address 10.0.10.1 255.255.255.0
+!
+interface GigabitEthernet0/0.20
+ encapsulation dot1q 20
+ ip address 10.0.20.1 255.255.255.0
+!
+interface GigabitEthernet0/0.30
+ no ip address
+!
+end
+
+== pc1
+pc1>ipconfig set 10.0.10.2 255.255.255.0
+pc1>ipconfig gateway 10.0.10.1
+
+== pc2
+pc2>ipconfig set 10.0.20.2 255.255.255.0
+pc2>ipconfig gateway 10.0.20.1
+
+== pc1
+pc1>ping 10.0.20.2
+Reply from 10.0.20.2: time=104us
+Reply from 10.0.20.2: time=56us
+Reply from 10.0.20.2: time=56us
+Reply from 10.0.20.2: time=56us
+Sent 4, received 4
+pc1>ping 10.0.10.1
+Reply from 10.0.10.1: time=28us
+Reply from 10.0.10.1: time=28us
+Reply from 10.0.10.1: time=28us
+Reply from 10.0.10.1: time=28us
+Sent 4, received 4
+
+== sw1
+sw1#show mac address-table
+Vlan  Mac Address     Port
+10    0200.0000.0001  Fa0/1
+10    02aa.0000.0300  Fa0/8
+20    0200.0000.0101  Fa0/2
+20    02aa.0000.0300  Fa0/8
+
+== r1
+r1#configure terminal
+r1(config)#interface g0/0.20
+r1(config-if)#shutdown
+r1(config-if)#end
+r1#show ip interface brief
+Interface             Address           Status
+GigabitEthernet0/0    unassigned        up
+GigabitEthernet0/1    unassigned        admin down
+GigabitEthernet0/0.10 10.0.10.1         up
+GigabitEthernet0/0.20 10.0.20.1         admin down
+GigabitEthernet0/0.30 unassigned        up
+
+== pc1
+pc1>ping 10.0.20.2
+Destination unreachable.
+Destination unreachable.
+Destination unreachable.
+Destination unreachable.
+Sent 4, received 0
+
+== r1
+r1#configure terminal
+r1(config)#interface g0/0.20
+r1(config-if)#no shutdown
+r1(config-if)#exit
+r1(config)#no interface g0/0.30
+r1(config)#interface g0/0
+r1(config-if)#shutdown
+r1(config-if)#end
+r1#show ip interface brief
+Interface             Address           Status
+GigabitEthernet0/0    unassigned        admin down
+GigabitEthernet0/1    unassigned        admin down
+GigabitEthernet0/0.10 10.0.10.1         admin down
+GigabitEthernet0/0.20 10.0.20.1         admin down
+
+== pc1
+pc1>ping 10.0.10.1
+No reply (timed out).
+No reply (timed out).
+No reply (timed out).
+No reply (timed out).
+Sent 4, received 0
+
+== r1
+r1#configure terminal
+r1(config)#interface g0/0
+r1(config-if)#no shutdown
+r1(config-if)#end
+
+== pc1
+pc1>ping 10.0.20.2
+Reply from 10.0.20.2: time=56us
+Reply from 10.0.20.2: time=56us
+Reply from 10.0.20.2: time=56us
+Reply from 10.0.20.2: time=56us
+Sent 4, received 4

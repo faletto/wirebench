@@ -1,0 +1,78 @@
+# pc1 is in VLAN 10 and pc2 in VLAN 20. The only way between them is r1, which has one cable to
+# sw1 and a subinterface per VLAN (router on a stick).
+@sw1
+enable
+configure terminal
+interface fa0/1
+switchport access vlan 10
+exit
+interface fa0/2
+switchport access vlan 20
+exit
+interface fa0/8
+switchport mode trunk
+end
+
+@r1
+enable
+configure terminal
+interface g0/0.10
+ip address 10.0.10.1 255.255.255.0
+encapsulation dot1q 10
+ip address 10.0.10.1 255.255.255.0
+exit
+interface g0/0.20
+encapsulation dot1q 20
+ip address 10.0.20.1 255.255.255.0
+exit
+interface g0/0.30
+encapsulation dot1q 20
+interface g0/0
+no shutdown
+end
+show ip interface brief
+show ip route
+show running-config
+
+@pc1
+ipconfig set 10.0.10.2 255.255.255.0
+ipconfig gateway 10.0.10.1
+@pc2
+ipconfig set 10.0.20.2 255.255.255.0
+ipconfig gateway 10.0.20.1
+
+@pc1
+ping 10.0.20.2
+ping 10.0.10.1
+
+@sw1
+show mac address-table
+
+# Shutting the physical port takes both subinterfaces down; one of them can be shut alone.
+@r1
+configure terminal
+interface g0/0.20
+shutdown
+end
+show ip interface brief
+@pc1
+ping 10.0.20.2
+@r1
+configure terminal
+interface g0/0.20
+no shutdown
+exit
+no interface g0/0.30
+interface g0/0
+shutdown
+end
+show ip interface brief
+@pc1
+ping 10.0.10.1
+@r1
+configure terminal
+interface g0/0
+no shutdown
+end
+@pc1
+ping 10.0.20.2

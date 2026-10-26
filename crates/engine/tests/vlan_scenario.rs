@@ -1,4 +1,4 @@
-//! Golden transcript of the two-VLAN trunk lab, configured only through console commands.
+//! Golden transcripts of the M2 labs, configured only through console commands.
 //! Re-bless deliberately: `BLESS=1 cargo test -p engine --test vlan_scenario`.
 
 use engine::lab::{load_and_build, LabKind};
@@ -6,12 +6,26 @@ use engine::shell::Shell;
 use kernel::Trace;
 use std::path::Path;
 
-const LAB: &str = include_str!("../../../testkit/scenarios/m2_vlans.lab.toml");
-const SCRIPT: &str = include_str!("../../../testkit/scenarios/m2_vlans.script");
-const GOLDEN: &str = "../../testkit/scenarios/m2_vlans.out";
+struct Scenario {
+    lab: &'static str,
+    script: &'static str,
+    golden: &'static str,
+}
 
-fn transcript() -> String {
-    let mut lab = load_and_build(LAB, Trace::new()).expect("lab builds");
+const VLANS: Scenario = Scenario {
+    lab: include_str!("../../../testkit/scenarios/m2_vlans.lab.toml"),
+    script: include_str!("../../../testkit/scenarios/m2_vlans.script"),
+    golden: "../../testkit/scenarios/m2_vlans.out",
+};
+
+const INTER_VLAN: Scenario = Scenario {
+    lab: include_str!("../../../testkit/scenarios/m2_inter_vlan.lab.toml"),
+    script: include_str!("../../../testkit/scenarios/m2_inter_vlan.script"),
+    golden: "../../testkit/scenarios/m2_inter_vlan.out",
+};
+
+fn transcript(sc: &Scenario) -> String {
+    let mut lab = load_and_build(sc.lab, Trace::new()).expect("lab builds");
     assert!(lab.warnings.is_empty(), "{:?}", lab.warnings);
     let mut shells: Vec<(String, Shell)> = lab
         .devices
@@ -27,7 +41,7 @@ fn transcript() -> String {
         .collect();
     let mut out = String::new();
     let mut cur = 0;
-    for line in SCRIPT.lines() {
+    for line in sc.script.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
@@ -52,23 +66,41 @@ fn transcript() -> String {
     out
 }
 
-#[test]
-fn the_two_vlan_lab_matches_its_golden_transcript() {
-    let got = transcript();
+fn check_golden(sc: &Scenario) {
+    let got = transcript(sc);
     if std::env::var_os("BLESS").is_some() {
-        std::fs::write(Path::new(GOLDEN), &got).unwrap();
+        std::fs::write(Path::new(sc.golden), &got).unwrap();
     }
-    let want = std::fs::read_to_string(GOLDEN)
+    let want = std::fs::read_to_string(sc.golden)
         .expect("golden file; bless with BLESS=1")
         .replace("\r\n", "\n");
     assert_eq!(got, want, "transcript changed; re-bless if intended");
 }
 
 #[test]
+fn the_two_vlan_lab_matches_its_golden_transcript() {
+    check_golden(&VLANS);
+}
+
+#[test]
+fn the_router_on_a_stick_lab_matches_its_golden_transcript() {
+    check_golden(&INTER_VLAN);
+}
+
+#[test]
 fn the_transcript_shows_isolation_and_the_trunk_cut() {
-    let t = transcript();
+    let t = transcript(&VLANS);
     // pc1 to pc2 (VLAN 10) answers four times, twice (before and after cutting VLAN 20).
     assert_eq!(t.matches("Sent 4, received 4").count(), 3, "{t}");
     // pc1 to pc4 crosses VLANs and times out; pc3 to pc4 fails once the trunk drops VLAN 20.
+    assert_eq!(t.matches("Sent 4, received 0").count(), 2, "{t}");
+}
+
+#[test]
+fn the_router_is_the_only_way_between_vlans() {
+    let t = transcript(&INTER_VLAN);
+    // Routed ping, gateway ping, then (after the port is brought back) the routed ping again.
+    assert_eq!(t.matches("Sent 4, received 4").count(), 3, "{t}");
+    // Subinterface 20 shut, then the parent shut: both fail.
     assert_eq!(t.matches("Sent 4, received 0").count(), 2, "{t}");
 }

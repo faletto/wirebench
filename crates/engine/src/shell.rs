@@ -5,8 +5,8 @@ use crate::World;
 use clish::{render_error, render_help, Action, Args, Exec, Grammar, ModeId, Session};
 use kernel::{DeviceId, PortId, SimTime};
 use netdev::{
-    all_vlans, format_vlan_list, mask, parse_vlan_list, Host, L2Switch, PortMode, RouteKind,
-    Router, StaticRoute, DEFAULT_VLAN,
+    all_vlans, format_vlan_list, mask, parse_vlan_list, EncapError, Host, L2Switch, PortMode,
+    RouteKind, Router, StaticRoute, DEFAULT_VLAN,
 };
 use std::sync::Arc;
 use wire::{IcmpErrorKind, Ipv4Addr};
@@ -19,6 +19,10 @@ const TIMED_OUT: &str = "No reply (timed out).";
 const DEFAULT_VLAN_KEPT: &str = "% Default VLAN 1 may not be deleted.";
 const NO_SUCH_VLAN: &str = "% VLAN does not exist.";
 const BAD_VLAN_LIST: &str = "% Invalid VLAN list:";
+const NEEDS_ENCAP: &str =
+    "% Set an encapsulation (encapsulation dot1q <vlan>) before addressing a subinterface.";
+const ENCAP_IN_USE: &str = "% That VLAN is already used by another subinterface of this port.";
+const ENCAP_NOT_SUB: &str = "% Encapsulation can only be set on a subinterface.";
 const NAME_TOO_LONG: &str = "% VLAN name may be at most 32 characters.";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -77,6 +81,10 @@ const SW_ALLOWED_ALL: u32 = 54;
 const SW_ALLOWED_NONE: u32 = 55;
 const SHOW_VLAN: u32 = 56;
 const SHOW_TRUNK: u32 = 57;
+const ENCAP: u32 = 60;
+const ENCAP_NATIVE: u32 = 61;
+const NO_ENCAP: u32 = 62;
+const NO_INTERFACE: u32 = 63;
 
 fn router_grammar() -> (Grammar, Modes) {
     let mut g = Grammar::new();
@@ -143,8 +151,18 @@ fn router_grammar() -> (Grammar, Modes) {
     g.cmd(
         &[config],
         "interface <name:word>",
-        &["Configure an interface", "Interface, e.g. g0/0"],
+        &["Configure an interface", "Interface, e.g. g0/0 or g0/0.10"],
         h(INTERFACE),
+    );
+    g.cmd(
+        &[config],
+        "no interface <name:word>",
+        &[
+            "Negate",
+            "Delete a subinterface",
+            "Subinterface, e.g. g0/0.10",
+        ],
+        h(NO_INTERFACE),
     );
     let route_help = [
         "IP",
@@ -195,6 +213,29 @@ fn router_grammar() -> (Grammar, Modes) {
         "no ip address",
         &["Negate", "IP", "Remove the address"],
         h(NO_IP_ADDRESS),
+    );
+    g.cmd(
+        &[config_if],
+        "encapsulation dot1q <vlan:int(1..4094)>",
+        &["Set the encapsulation", "802.1Q tagging", "VLAN id"],
+        h(ENCAP),
+    );
+    g.cmd(
+        &[config_if],
+        "encapsulation dot1q <vlan:int(1..4094)> native",
+        &[
+            "Set the encapsulation",
+            "802.1Q tagging",
+            "VLAN id",
+            "Untagged frames belong here",
+        ],
+        h(ENCAP_NATIVE),
+    );
+    g.cmd(
+        &[config_if],
+        "no encapsulation dot1q",
+        &["Negate", "Set the encapsulation", "802.1Q tagging"],
+        h(NO_ENCAP),
     );
     g.cmd(
         &[config_if],
@@ -469,6 +510,26 @@ fn if_name(port: usize) -> String {
     format!("GigabitEthernet0/{port}")
 }
 
+/// Name of logical interface `i`: `GigabitEthernet0/1`, or `GigabitEthernet0/1.10` for a
+/// subinterface.
+fn iface_name(r: &Router, i: usize) -> String {
+    match r.interfaces()[i].sub {
+        Some(s) => format!("{}.{}", if_name(s.parent.0 as usize), s.number),
+        None => if_name(i),
+    }
+}
+
+/// Like [`parse_ifname`] but also accepts a subinterface suffix: `g0/0.10` gives `(0, Some(10))`.
+pub fn parse_router_ifname(s: &str, n_ports: usize) -> Option<(usize, Option<u16>)> {
+    match s.split_once('.') {
+        None => parse_ifname(s, n_ports).map(|p| (p, None)),
+        Some((base, num)) => {
+            let num: u16 = num.parse().ok()?;
+            parse_ifname(base, n_ports).map(|p| (p, Some(num)))
+        }
+    }
+}
+
 /// Accepts `g0/1`, `gi0/1`, `gigabitethernet0/1` (any prefix of the full name, case-insensitive).
 pub fn parse_ifname(s: &str, n_ports: usize) -> Option<usize> {
     let s = s.to_ascii_lowercase();
@@ -588,10 +649,51 @@ impl Shell {
             }
             INTERFACE => {
                 let name = a.word("name").unwrap();
-                let n = w.device::<Router>(id).interfaces().len();
-                match parse_ifname(name, n) {
-                    Some(p) => self.session.enter(m.config_if, Some(p.to_string())),
+                let n = w.device::<Router>(id).n_ports() as usize;
+                let Some((p, sub)) = parse_router_ifname(name, n) else {
+                    return format!("{UNKNOWN_INTERFACE} {name}");
+                };
+                let idx = match sub {
+                    None => Some(p),
+                    Some(num) => w.with_device::<Router, _>(id, |r, _| {
+                        r.add_subinterface(PortId(p as u16), num)
+                    }),
+                };
+                match idx {
+                    Some(i) => self.session.enter(m.config_if, Some(i.to_string())),
                     None => return format!("{UNKNOWN_INTERFACE} {name}"),
+                }
+            }
+            NO_INTERFACE => {
+                let name = a.word("name").unwrap();
+                let n = w.device::<Router>(id).n_ports() as usize;
+                let found = parse_router_ifname(name, n).and_then(|(p, sub)| {
+                    let num = sub?;
+                    w.device::<Router>(id).interfaces().iter().position(|i| {
+                        i.sub
+                            .is_some_and(|s| s.parent.0 as usize == p && s.number == num)
+                    })
+                });
+                match found {
+                    Some(i) => {
+                        w.with_device::<Router, _>(id, |r, _| r.remove_subinterface(i));
+                    }
+                    None => return format!("{UNKNOWN_INTERFACE} {name}"),
+                }
+            }
+            ENCAP | ENCAP_NATIVE | NO_ENCAP => {
+                let i = self
+                    .session
+                    .context()
+                    .and_then(|c| c.parse::<usize>().ok())
+                    .unwrap_or(0);
+                let vlan = a.int("vlan").map(|v| v as u16);
+                let native = handler == ENCAP_NATIVE;
+                let r = w.with_device::<Router, _>(id, |r, _| r.set_encapsulation(i, vlan, native));
+                match r {
+                    Ok(()) => {}
+                    Err(EncapError::NotSubinterface) => return ENCAP_NOT_SUB.to_string(),
+                    Err(EncapError::InUse) => return ENCAP_IN_USE.to_string(),
                 }
             }
             IP_ADDRESS | NO_IP_ADDRESS | SHUTDOWN | NO_SHUTDOWN => {
@@ -601,6 +703,15 @@ impl Shell {
                         .and_then(|c| c.parse().ok())
                         .unwrap_or(0),
                 );
+                let needs_vlan = w
+                    .device::<Router>(id)
+                    .interfaces()
+                    .get(port.0 as usize)
+                    .and_then(|i| i.sub)
+                    .is_some_and(|s| s.vlan.is_none());
+                if handler == IP_ADDRESS && needs_vlan {
+                    return NEEDS_ENCAP.to_string();
+                }
                 w.with_device::<Router, _>(id, |r, _| match handler {
                     IP_ADDRESS => r.set_address(
                         port,
@@ -756,16 +867,29 @@ fn fa(port: usize) -> String {
 pub fn running_config(r: &Router) -> String {
     let mut o = format!("hostname {}\n!\n", r.name);
     for (i, ifc) in r.interfaces().iter().enumerate() {
-        o += &format!("interface {}\n", if_name(i));
+        o += &format!("interface {}\n", iface_name(r, i));
+        if let Some(s) = ifc.sub {
+            if let Some(v) = s.vlan {
+                o += &format!(
+                    " encapsulation dot1q {v}{}\n",
+                    if s.native { " native" } else { "" }
+                );
+            }
+        }
         match ifc.addr {
             Some((ip, len)) => o += &format!(" ip address {ip} {}\n", dotted(len)),
             None => o += " no ip address\n",
         }
-        o += if ifc.shutdown {
-            " shutdown\n"
-        } else {
-            " no shutdown\n"
-        };
+        // A subinterface is up unless told otherwise, so only a shut one needs a line.
+        if ifc.sub.is_none() {
+            o += if ifc.shutdown {
+                " shutdown\n"
+            } else {
+                " no shutdown\n"
+            };
+        } else if ifc.shutdown {
+            o += " shutdown\n";
+        }
         o += "!\n";
     }
     for s in r.statics() {
@@ -905,11 +1029,11 @@ fn show_routes(r: &Router) -> String {
             (RouteKind::Connected, _) => {
                 o += &format!(
                     "C  {net}  directly connected, {}",
-                    if_name(rt.port.0 as usize)
+                    iface_name(r, rt.port.0 as usize)
                 )
             }
             (RouteKind::Static, Some(v)) => {
-                o += &format!("S  {net}  via {v}, {}", if_name(rt.port.0 as usize))
+                o += &format!("S  {net}  via {v}, {}", iface_name(r, rt.port.0 as usize))
             }
             (RouteKind::Static, None) => o += &format!("S  {net}"),
         }
@@ -926,8 +1050,8 @@ fn show_brief(r: &Router) -> String {
         let addr = ifc
             .addr
             .map_or("unassigned".to_string(), |(ip, _)| ip.to_string());
-        let st = if ifc.shutdown { "admin down" } else { "up" };
-        o += &format!("\n{:<22}{:<18}{}", if_name(i), addr, st);
+        let st = if r.is_up(i) { "up" } else { "admin down" };
+        o += &format!("\n{:<22}{:<18}{}", iface_name(r, i), addr, st);
     }
     o
 }
