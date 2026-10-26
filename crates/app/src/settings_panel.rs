@@ -56,11 +56,9 @@ impl App {
         }
         // The engine forgets what could be stepped back over; so must the log of marks.
         self.sim.marks.clear();
-        let said = match self
-            .engine
-            .send(EngineCmd::Configure { device, lines })
-            .pop()
-        {
+        let events = self.engine.send(EngineCmd::Configure { device, lines });
+        super::absorb(&mut self.lab_text, &events);
+        let said = match events.into_iter().next() {
             Some(EngineEvent::Configured { said, .. }) => said,
             Some(EngineEvent::Error { message }) => vec![message],
             _ => vec![],

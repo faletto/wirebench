@@ -92,6 +92,9 @@ pub struct App {
     notice: Option<String>,
     /// Set when a tab becomes active so its terminal grabs keyboard focus.
     focus_pending: bool,
+    /// The lab as lab-file text, as the engine last pushed it: what saving, dirty tracking,
+    /// autosave and the undo history read, so none of them has to ask and wait.
+    lab_text: String,
     sim: Sim,
     panel: Panel,
     anim: Anim,
@@ -150,6 +153,7 @@ impl App {
     /// An app around an engine that already holds the lab `view` describes.
     fn assemble(engine: EngineLink, view: LabView) -> Self {
         let warnings = view.warnings.clone();
+        let lab_text = engine.snapshot();
         let mut nodes = Vec::new();
         let mut tabs: Vec<Tab> = Vec::new();
         for d in &view.devices {
@@ -182,6 +186,7 @@ impl App {
                 dst: "10.0.2.2".into(),
                 ..Sim::default()
             },
+            lab_text,
             panel: Panel::default(),
             anim: Anim::default(),
             changes: Changes::default(),
@@ -273,14 +278,16 @@ impl App {
 
     /// The lab as the engine has it now, parsed (for the undo history).
     fn snapshot_lab(&self) -> labfile::LabFile {
-        labfile::load(&self.engine.snapshot())
+        labfile::load(&self.lab_text)
             .expect("the engine's snapshots load")
             .lab
     }
 
     /// Send an edit; the new view of the lab, or the reason it was refused.
     fn edit(&mut self, cmd: EngineCmd) -> Result<LabView, String> {
-        match self.engine.send(cmd).into_iter().next() {
+        let events = self.engine.send(cmd);
+        absorb(&mut self.lab_text, &events);
+        match events.into_iter().next() {
             Some(EngineEvent::Lab { view }) => Ok(view),
             Some(EngineEvent::Error { message }) => Err(message),
             other => Err(format!("unexpected answer: {other:?}")),
@@ -834,7 +841,7 @@ impl App {
 
     /// The lab as it is now (positions, cabling, live configs) as lab-file text.
     pub fn export_lab(&self) -> String {
-        self.engine.snapshot()
+        self.lab_text.clone()
     }
 
     /// Names of devices in lab order (for tests and keyboard shortcuts).
@@ -1280,7 +1287,11 @@ impl App {
                 }
                 self.sim.marks.clear();
                 self.panel.stale = true;
-                let reply = self.engine.send(EngineCmd::Exec { terminal, line }).pop();
+                let events = self.engine.send(EngineCmd::Exec { terminal, line });
+                absorb(&mut self.lab_text, &events);
+                let reply = events
+                    .into_iter()
+                    .find(|e| !matches!(e, EngineEvent::LabText { .. }));
                 // A command may have started spanning tree, which keeps its own time.
                 if let Some(EngineEvent::Time { ns, background }) =
                     self.engine.send(EngineCmd::Now).pop()
@@ -1704,5 +1715,14 @@ fn shell_kind(k: LabKind) -> ShellKind {
         LabKind::Router => ShellKind::Router,
         LabKind::Host => ShellKind::Host,
         LabKind::Switch => ShellKind::Switch,
+    }
+}
+
+/// Keep the copy of the lab text current from whatever the engine pushed.
+fn absorb(cache: &mut String, events: &[EngineEvent]) {
+    for e in events {
+        if let EngineEvent::LabText { text } = e {
+            cache.clone_from(text);
+        }
     }
 }
