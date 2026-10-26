@@ -1,0 +1,73 @@
+# Three switches joined in a triangle, a PC on two of them. Spanning tree is off until asked for,
+# so each switch is told to run rapid per-VLAN spanning tree, and sw1 is made the root.
+@sw1
+enable
+configure terminal
+spanning-tree mode rapid-pvst
+spanning-tree vlan 1 priority 4096
+end
+@sw2
+enable
+configure terminal
+spanning-tree mode rapid-pvst
+interface fa0/3
+spanning-tree portfast
+end
+@sw3
+enable
+configure terminal
+spanning-tree mode rapid-pvst
+interface fa0/3
+spanning-tree portfast
+end
+%wait 15
+# One link of the triangle is blocked: the loop is gone.
+@sw1
+show spanning-tree
+@sw2
+show spanning-tree
+@sw3
+show spanning-tree
+@pc1
+ipconfig set 10.0.0.1 255.255.255.0
+@pc2
+ipconfig set 10.0.0.2 255.255.255.0
+@pc1
+ping 10.0.0.2
+# Cut sw2's link to the root. Its traffic now goes round through sw3.
+@sw2
+configure terminal
+interface fa0/1
+shutdown
+end
+%wait 8
+show spanning-tree
+@pc1
+ping 10.0.0.2
+# Plug it back in.
+@sw2
+configure terminal
+interface fa0/1
+no shutdown
+end
+%wait 10
+show spanning-tree
+@pc1
+ping 10.0.0.2
+@sw3
+show spanning-tree vlan 1
+# sw3 drops back to the original protocol. Towards sw2 and sw1 it now waits out the old timers.
+configure terminal
+spanning-tree mode pvst
+end
+%wait 3
+show spanning-tree
+%wait 60
+show spanning-tree
+@sw1
+show spanning-tree
+# pc1 speaks first: a switch only learns where a silent host is when it next sends.
+@pc1
+ping 10.0.0.2
+@sw1
+show running-config

@@ -1,0 +1,122 @@
+//! Spanning tree keeps its own time, so the app lets simulated time pass while frames are drawn.
+
+use app::App;
+use egui::{Context, Event, Key, Modifiers, PointerButton, Pos2, RawInput};
+
+const LAB: &str = r#"
+format = "labsim-lab"
+version = 1
+
+[[device]]
+name = "sw1"
+template = "switch-l2-8"
+pos = [300, 100]
+running_config = """
+spanning-tree mode rapid-pvst
+spanning-tree vlan 1 priority 4096
+"""
+
+[[device]]
+name = "sw2"
+template = "switch-l2-8"
+pos = [150, 300]
+running_config = "spanning-tree mode rapid-pvst"
+
+[[device]]
+name = "sw3"
+template = "switch-l2-8"
+pos = [450, 300]
+running_config = "spanning-tree mode rapid-pvst"
+
+[[link]]
+a = "sw1:Fa0/1"
+b = "sw2:Fa0/1"
+
+[[link]]
+a = "sw1:Fa0/2"
+b = "sw3:Fa0/1"
+
+[[link]]
+a = "sw2:Fa0/2"
+b = "sw3:Fa0/2"
+"#;
+
+fn frame_at(ctx: &Context, app: &mut App, time: f64, events: Vec<Event>) {
+    let mut raw = RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            Pos2::ZERO,
+            egui::vec2(1000.0, 700.0),
+        )),
+        time: Some(time),
+        ..Default::default()
+    };
+    raw.events = events;
+    let mut out = ctx.run_ui(raw, |ui| app.ui(ui));
+    out.textures_delta.clear();
+}
+
+fn button(at: Pos2, pressed: bool) -> Event {
+    Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    }
+}
+
+#[test]
+fn simulated_time_passes_while_spanning_tree_runs_and_the_tree_settles() {
+    let mut app = App::from_lab_text(LAB).unwrap();
+    let ctx = Context::default();
+    let mut t = 0.0;
+    let mut step = |app: &mut App, events: Vec<Event>| {
+        t += 0.05;
+        frame_at(&ctx, app, t, events);
+    };
+    step(&mut app, vec![]);
+    step(&mut app, vec![]);
+    assert!(
+        app.sim_time_ns() < 200_000_000,
+        "only a frame's worth so far"
+    );
+    // Ten seconds of frames at 20 per second.
+    for _ in 0..200 {
+        step(&mut app, vec![]);
+    }
+    let secs = app.sim_time_ns() as f64 / 1e9;
+    assert!((9.0..=11.0).contains(&secs), "{secs} simulated seconds");
+    // Ask sw2 what it thinks.
+    let at = app.node_centre("sw2").unwrap();
+    step(&mut app, vec![Event::PointerMoved(at)]);
+    step(&mut app, vec![button(at, true)]);
+    step(&mut app, vec![button(at, false)]);
+    step(&mut app, vec![]);
+    assert_eq!(app.active_device(), "sw2");
+    for line in ["enable", "show spanning-tree"] {
+        step(&mut app, vec![Event::Text(line.into())]);
+        step(
+            &mut app,
+            vec![Event::Key {
+                key: Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            }],
+        );
+    }
+    let screen = app.active_scrollback().join("\n");
+    assert!(screen.contains("protocol rstp"), "{screen}");
+    assert!(screen.contains("Root FWD"), "{screen}");
+    assert!(screen.contains("Desg FWD"), "{screen}");
+}
+
+#[test]
+fn a_lab_without_spanning_tree_leaves_the_clock_alone() {
+    let mut app = App::new();
+    let ctx = Context::default();
+    for i in 0..100 {
+        frame_at(&ctx, &mut app, f64::from(i) * 0.05, vec![]);
+    }
+    assert_eq!(app.sim_time_ns(), 0);
+}

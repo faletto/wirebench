@@ -2,6 +2,7 @@
 
 mod addr;
 mod arp;
+mod bpdu;
 mod checksum;
 mod dhcp;
 mod ethernet;
@@ -12,6 +13,7 @@ mod udp;
 
 pub use addr::{Ipv4Addr, MacAddr};
 pub use arp::{ArpOp, ArpPacket};
+pub use bpdu::{Bpdu, BpduKind, BpduRole, BridgeId, PVST_MULTICAST};
 pub use checksum::internet_checksum;
 pub use dhcp::{DhcpMessage, DhcpOp, DhcpType};
 pub use ethernet::{EtherType, EthernetFrame, VlanTag};

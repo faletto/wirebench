@@ -1,11 +1,20 @@
+use crate::stp::{Action as StpAction, Mode as StpMode, Stp};
 use crate::vlan::{all_vlans, DEFAULT_VLAN};
 use crate::{Ctx, Device, DeviceEvent, Mgmt, Router};
-use kernel::{PortId, SimTime};
+use kernel::{PortId, SimTime, TimerId};
 use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
-use wire::{EthernetFrame, MacAddr};
+use wire::{Bpdu, BridgeId, EtherType, EthernetFrame, MacAddr, PVST_MULTICAST};
 
 const DOT1Q: [u8; 2] = [0x81, 0x00];
+
+/// Timer token for the one-second spanning tree tick (the layer 3 half uses addresses as tokens,
+/// which never reach this high).
+const STP_TIMER: u64 = 1 << 61;
+/// The class of service BPDUs are sent with, as network control traffic.
+const BPDU_PRIO: u8 = 0xc0;
+/// The priority a bridge has unless told otherwise.
+pub const DEFAULT_BRIDGE_PRIORITY: u16 = 32768;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PortMode {
@@ -21,6 +30,14 @@ pub struct PortConfig {
     pub access_vlan: u16,
     pub native_vlan: u16,
     pub allowed: BTreeSet<u16>,
+    /// Administratively down: carries nothing and takes no part in spanning tree.
+    pub shutdown: bool,
+    /// Spanning tree: forward at once, as a port facing a host does (`spanning-tree portfast`).
+    pub portfast: bool,
+    /// Spanning tree path cost; `None` is the default for the port.
+    pub stp_cost: Option<u32>,
+    /// Spanning tree port priority, in steps of 16; `None` is 128.
+    pub stp_priority: Option<u8>,
 }
 
 impl Default for PortConfig {
@@ -30,6 +47,10 @@ impl Default for PortConfig {
             access_vlan: DEFAULT_VLAN,
             native_vlan: DEFAULT_VLAN,
             allowed: all_vlans(),
+            shutdown: false,
+            portfast: false,
+            stp_cost: None,
+            stp_priority: None,
         }
     }
 }
@@ -42,8 +63,20 @@ pub struct MacEntry {
     pub port: PortId,
 }
 
-/// Learning bridge with VLANs: access and trunk ports, 802.1Q tagging, a MAC table per VLAN.
-/// No STP, DTP or VTP yet.
+/// Spanning tree settings for the whole switch.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SpanningConfig {
+    /// `None` leaves spanning tree off, which is how a new switch starts (unlike IOS, which starts
+    /// in `pvst`), so a lab with no redundant links forwards at once.
+    pub mode: Option<StpMode>,
+    /// Bridge priority by VLAN; a VLAN not listed has [`DEFAULT_BRIDGE_PRIORITY`].
+    pub priority: BTreeMap<u16, u16>,
+    /// VLANs with spanning tree turned off (`no spanning-tree vlan N`).
+    pub disabled: BTreeSet<u16>,
+}
+
+/// Learning bridge with VLANs: access and trunk ports, 802.1Q tagging, a MAC table per VLAN, and
+/// optionally one spanning tree per VLAN. No DTP or VTP yet.
 #[derive(Debug)]
 pub struct L2Switch {
     /// Hostname shown in prompts.
@@ -63,6 +96,14 @@ pub struct L2Switch {
     pub mgmt: Mgmt,
     /// The saved configuration: what `copy running-config startup-config` stored.
     pub startup: Option<String>,
+    spanning: SpanningConfig,
+    /// One tree per VLAN while spanning tree is on.
+    trees: BTreeMap<u16, Stp>,
+    /// Which ports had a link at the last look (polled every second while spanning tree runs).
+    link_up: Vec<bool>,
+    /// BPDUs and flushes decided without a context to send them in, delivered at the next event.
+    stp_pending: Vec<(u16, StpAction)>,
+    stp_timer: Option<TimerId>,
 }
 
 impl L2Switch {
@@ -81,6 +122,11 @@ impl L2Switch {
             unit: 0,
             mgmt: Mgmt::default(),
             startup: None,
+            spanning: SpanningConfig::default(),
+            trees: BTreeMap::new(),
+            link_up: vec![false; n_ports as usize],
+            stp_pending: Vec::new(),
+            stp_timer: None,
         }
     }
 
@@ -99,6 +145,9 @@ impl L2Switch {
             r
         };
         self.mgmt = Mgmt::default();
+        self.spanning = SpanningConfig::default();
+        self.trees.clear();
+        self.stp_pending.clear();
     }
 
     /// Set before creating SVIs; their MACs are `02:bb:00:<unit>:<vlan>`.
@@ -198,6 +247,7 @@ impl L2Switch {
             .entry(id)
             .or_insert_with(|| format!("VLAN{id:04}"));
         self.refresh_svis();
+        self.sync_stp();
     }
 
     /// Rename a VLAN, creating it first if need be.
@@ -215,6 +265,7 @@ impl L2Switch {
         if gone {
             self.table.retain(|(v, _), _| *v != id);
             self.refresh_svis();
+            self.sync_stp();
         }
         gone
     }
@@ -232,6 +283,7 @@ impl L2Switch {
             f(cfg);
             self.table.retain(|_, (port, _)| *port != p);
             self.refresh_svis();
+            self.sync_stp();
         }
     }
 
@@ -240,7 +292,8 @@ impl L2Switch {
         let Some(cfg) = self.ports.get(p.0 as usize) else {
             return false;
         };
-        self.vlans.contains_key(&v)
+        !cfg.shutdown
+            && self.vlans.contains_key(&v)
             && match cfg.mode {
                 PortMode::Access => cfg.access_vlan == v,
                 PortMode::Trunk => cfg.allowed.contains(&v),
@@ -307,7 +360,7 @@ impl L2Switch {
             .get(&(vlan, dst))
             .filter(|(_, seen)| *seen + self.aging > ctx.now())
             .map(|(p, _)| *p)
-            .filter(|p| self.carries(*p, vlan));
+            .filter(|p| self.passes(*p, vlan));
         match known {
             Some(out) if !dst.is_multicast() => {
                 // Destination is behind the ingress port: filter.
@@ -318,7 +371,7 @@ impl L2Switch {
             _ => {
                 for p in (0..self.n_ports())
                     .map(PortId)
-                    .filter(|p| Some(*p) != ingress && self.carries(*p, vlan))
+                    .filter(|p| Some(*p) != ingress && self.passes(*p, vlan))
                 {
                     ctx.transmit(p, self.egress(p, vlan, prio, plain));
                 }
@@ -344,10 +397,192 @@ impl L2Switch {
     }
 }
 
+// ---- spanning tree ----
+
+impl L2Switch {
+    pub fn spanning(&self) -> &SpanningConfig {
+        &self.spanning
+    }
+
+    /// Change the spanning tree settings; trees are created, removed and updated to match.
+    pub fn configure_spanning(&mut self, f: impl FnOnce(&mut SpanningConfig)) {
+        f(&mut self.spanning);
+        self.sync_stp();
+    }
+
+    /// The tree for `vlan`, while spanning tree runs for it.
+    pub fn tree(&self, vlan: u16) -> Option<&Stp> {
+        self.trees.get(&vlan)
+    }
+
+    pub fn trees(&self) -> impl Iterator<Item = (u16, &Stp)> {
+        self.trees.iter().map(|(v, t)| (*v, t))
+    }
+
+    /// This switch's address in bridge identifiers and BPDU source addresses.
+    pub fn bridge_mac(&self) -> MacAddr {
+        MacAddr([2, 0xbb, 0xff, self.unit, 0, 0])
+    }
+
+    pub fn bridge_priority(&self, vlan: u16) -> u16 {
+        self.spanning
+            .priority
+            .get(&vlan)
+            .copied()
+            .unwrap_or(DEFAULT_BRIDGE_PRIORITY)
+    }
+
+    /// The identifier in `vlan`'s tree: priority with the VLAN added in (the extended system id).
+    fn bridge_id(&self, vlan: u16) -> BridgeId {
+        BridgeId {
+            priority: self.bridge_priority(vlan) + vlan,
+            mac: self.bridge_mac(),
+        }
+    }
+
+    /// Whether data for `vlan` may leave through `p` right now.
+    fn passes(&self, p: PortId, vlan: u16) -> bool {
+        self.carries(p, vlan)
+            && self
+                .trees
+                .get(&vlan)
+                .is_none_or(|t| t.forwards(p.0 as usize))
+    }
+
+    /// Bring the trees in line with the configuration, the VLANs, the ports and the links.
+    /// Whatever the trees want sent is held until a context is at hand.
+    fn sync_stp(&mut self) {
+        let Some(mode) = self.spanning.mode else {
+            self.trees.clear();
+            self.stp_pending.clear();
+            return;
+        };
+        let wanted: BTreeSet<u16> = self
+            .vlans
+            .keys()
+            .copied()
+            .filter(|v| !self.spanning.disabled.contains(v))
+            .collect();
+        self.trees.retain(|v, _| wanted.contains(v));
+        for v in wanted {
+            let id = self.bridge_id(v);
+            let n = self.ports.len();
+            let on: Vec<bool> = (0..n)
+                .map(|p| self.link_up[p] && self.carries(PortId(p as u16), v))
+                .collect();
+            let tree = self.trees.entry(v).or_insert_with(|| Stp::new(mode, id, n));
+            let mut acts = vec![];
+            if tree.mode() != mode {
+                acts.extend(tree.set_mode(mode));
+            }
+            if tree.bridge() != id {
+                acts.extend(tree.set_bridge(id));
+            }
+            for (p, cfg) in self.ports.iter().enumerate() {
+                let view = tree.port(p);
+                let cost = cfg.stp_cost.unwrap_or(19);
+                let prio = cfg.stp_priority.unwrap_or(128);
+                if view.cost != cost {
+                    acts.extend(tree.set_cost(p, cost));
+                }
+                if view.priority != prio {
+                    acts.extend(tree.set_port_priority(p, prio));
+                }
+                if view.edge != cfg.portfast {
+                    acts.extend(tree.set_edge(p, cfg.portfast));
+                }
+                acts.extend(tree.set_enabled(p, on[p]));
+            }
+            self.stp_pending.extend(acts.into_iter().map(|a| (v, a)));
+        }
+    }
+
+    /// Look at the cables, settle the trees and send what is waiting. Called after
+    /// configuration changes, which is what starts spanning tree running, and on every tick.
+    pub fn stp_refresh(&mut self, ctx: &mut Ctx) {
+        if self.spanning.mode.is_none() {
+            self.trees.clear();
+            return;
+        }
+        for p in 0..self.ports.len() {
+            self.link_up[p] = ctx.port_up(PortId(p as u16));
+        }
+        self.sync_stp();
+        self.flush_stp(ctx);
+        if self.stp_timer.is_none() {
+            self.stp_timer = Some(ctx.schedule_background(SimTime::from_secs(1), STP_TIMER));
+        }
+    }
+
+    fn stp_tick(&mut self, ctx: &mut Ctx) {
+        if self.spanning.mode.is_none() {
+            return;
+        }
+        self.stp_refresh(ctx);
+        let mut acts = vec![];
+        for (v, t) in &mut self.trees {
+            acts.extend(t.tick().into_iter().map(|a| (*v, a)));
+        }
+        self.stp_pending.extend(acts);
+        self.flush_stp(ctx);
+    }
+
+    fn flush_stp(&mut self, ctx: &mut Ctx) {
+        for (vlan, a) in std::mem::take(&mut self.stp_pending) {
+            self.do_stp(ctx, vlan, a);
+        }
+    }
+
+    fn do_stp(&mut self, ctx: &mut Ctx, vlan: u16, a: StpAction) {
+        match a {
+            StpAction::Flush { except } => {
+                self.table.retain(|(v, _), (p, _)| {
+                    *v != vlan || except.is_some_and(|e| e == p.0 as usize)
+                });
+            }
+            StpAction::Send { port, bpdu } => {
+                let payload = bpdu.emit();
+                let frame = EthernetFrame {
+                    dst: PVST_MULTICAST,
+                    src: MacAddr([2, 0xbb, 0xff, self.unit, 0, port as u8 + 1]),
+                    vlan: None,
+                    ethertype: EtherType(payload.len() as u16),
+                    payload,
+                }
+                .emit();
+                let p = PortId(port as u16);
+                if self.carries(p, vlan) {
+                    ctx.transmit(p, self.egress(p, vlan, BPDU_PRIO, &frame));
+                }
+            }
+        }
+    }
+
+    fn on_bpdu(&mut self, ctx: &mut Ctx, port: PortId, vlan: u16, plain: &[u8]) {
+        let Ok(f) = EthernetFrame::parse(plain) else {
+            return;
+        };
+        let Ok(b) = Bpdu::parse(&f.payload) else {
+            return;
+        };
+        let acts = match self.trees.get_mut(&vlan) {
+            Some(t) => t.receive(port.0 as usize, &b),
+            None => return,
+        };
+        self.stp_pending.extend(acts.into_iter().map(|a| (vlan, a)));
+        self.flush_stp(ctx);
+    }
+}
+
 impl Device for L2Switch {
     fn handle(&mut self, ctx: &mut Ctx, ev: DeviceEvent) {
         let (port, frame) = match ev {
             DeviceEvent::FrameRx { port, frame } => (port, frame),
+            DeviceEvent::Timer { token, .. } if token == STP_TIMER => {
+                self.stp_timer = None;
+                self.stp_tick(ctx);
+                return;
+            }
             DeviceEvent::Timer { token, .. } => {
                 self.l3.on_timer(ctx, token);
                 self.drain_l3(ctx);
@@ -362,8 +597,22 @@ impl Device for L2Switch {
         };
         let dst = MacAddr(plain[0..6].try_into().unwrap());
         let src = MacAddr(plain[6..12].try_into().unwrap());
+        if dst == PVST_MULTICAST && self.trees.contains_key(&vlan) {
+            self.on_bpdu(ctx, port, vlan, &plain);
+            return;
+        }
+        let (learns, forwards) = match self.trees.get(&vlan) {
+            Some(t) => (t.learns(port.0 as usize), t.forwards(port.0 as usize)),
+            None => (true, true),
+        };
+        if !learns {
+            return;
+        }
         if !src.is_multicast() {
             self.table.insert((vlan, src), (port, ctx.now()));
+        }
+        if !forwards {
+            return;
         }
         // The SVI for this VLAN gets frames sent to it and broadcasts. Frames sent to it are not
         // bridged on: its address belongs to the switch, not to a port.

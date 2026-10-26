@@ -11,6 +11,10 @@ pub struct LinkId(pub u32);
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct TimerId(pub u64);
 
+/// The longest a frame may wait to be put on a link. Ten milliseconds is about 800 full-size frames
+/// at 100 Mb/s.
+pub const LINK_QUEUE: SimTime = SimTime::from_millis(10);
+
 /// An event delivered to a device.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Event {
@@ -69,6 +73,8 @@ enum Payload {
         device: DeviceId,
         id: TimerId,
         token: u64,
+        /// Periodic upkeep (spanning tree hellos). It never counts as work for idle detection.
+        background: bool,
     },
 }
 
@@ -105,6 +111,9 @@ pub struct Kernel {
     next_timer: u64,
     heap: BinaryHeap<Reverse<Scheduled>>,
     cancelled: BTreeSet<TimerId>,
+    /// Queued entries that are not background timers. While there are none, the simulation is
+    /// idle however many background timers are pending.
+    foreground: usize,
     links: Vec<Link>,
     delivered: u64,
     pub trace: Trace,
@@ -118,10 +127,17 @@ impl Kernel {
             next_timer: 0,
             heap: BinaryHeap::new(),
             cancelled: BTreeSet::new(),
+            foreground: 0,
             links: Vec::new(),
             delivered: 0,
             trace,
         }
+    }
+
+    /// Whether periodic upkeep (spanning tree hellos) is scheduled. Something that wants such
+    /// timers to run has to advance the clock, since nothing else will.
+    pub fn has_background(&self) -> bool {
+        self.heap.len() > self.foreground
     }
 
     /// Events handed to devices so far (dropped frames and cancelled timers excluded).
@@ -149,6 +165,13 @@ impl Kernel {
         LinkId(self.links.len() as u32 - 1)
     }
 
+    /// Whether `(device, port)` is cabled to a link that is up.
+    pub fn port_up(&self, device: DeviceId, port: PortId) -> bool {
+        self.links
+            .iter()
+            .any(|l| l.up && l.ends.contains(&(device, port)))
+    }
+
     pub fn set_link_up(&mut self, id: LinkId, up: bool) {
         let l = &mut self.links[id.0 as usize];
         if l.up && !up {
@@ -160,6 +183,15 @@ impl Kernel {
     fn push(&mut self, at: SimTime, payload: Payload) {
         let seq = self.next_seq;
         self.next_seq += 1;
+        if !matches!(
+            payload,
+            Payload::Timer {
+                background: true,
+                ..
+            }
+        ) {
+            self.foreground += 1;
+        }
         self.heap.push(Reverse(Scheduled { at, seq, payload }));
     }
 
@@ -185,6 +217,13 @@ impl Kernel {
         let dir = usize::from(l.ends[1] == (device, port));
         let to = l.ends[1 - dir];
         let start = now.max_with(l.busy_until[dir]);
+        // A transmit queue is not infinite: past this much backlog the frame is dropped, which is
+        // what keeps a broadcast storm from growing without bound.
+        if start.0 - now.0 > LINK_QUEUE.0 {
+            self.trace
+                .record(now, TraceKind::FrameDrop, device.0, port.0, &frame);
+            return;
+        }
         // ceil(bits * 1e9 / bps) ns
         let bits = frame.len() as u128 * 8;
         let ser = (bits * 1_000_000_000).div_ceil(l.cfg.bits_per_sec as u128) as u64;
@@ -208,9 +247,31 @@ impl Kernel {
     }
 
     pub fn schedule_timer(&mut self, device: DeviceId, after: SimTime, token: u64) -> TimerId {
+        self.timer(device, after, token, false)
+    }
+
+    /// A timer that does not keep the simulation busy: when only background timers are left,
+    /// [`next_event_within`](Self::next_event_within) reports idle. It still fires whenever time is
+    /// advanced past it.
+    pub fn schedule_background_timer(
+        &mut self,
+        device: DeviceId,
+        after: SimTime,
+        token: u64,
+    ) -> TimerId {
+        self.timer(device, after, token, true)
+    }
+
+    fn timer(&mut self, device: DeviceId, after: SimTime, token: u64, background: bool) -> TimerId {
         let id = TimerId(self.next_timer);
         self.next_timer += 1;
-        self.push(self.now + after, Payload::Timer { device, id, token });
+        let payload = Payload::Timer {
+            device,
+            id,
+            token,
+            background,
+        };
+        self.push(self.now + after, payload);
         id
     }
 
@@ -227,7 +288,7 @@ impl Kernel {
     /// Like [`next_event`](Self::next_event) but leaves events after `limit` queued and
     /// advances the clock to `limit` when none remain at or before it.
     pub fn next_event_until(&mut self, limit: SimTime) -> Option<Event> {
-        self.pop_event(limit, true)
+        self.pop_event(limit, true, false)
     }
 
     /// The next live event if it is due within `horizon` of now; otherwise `None` with the clock
@@ -235,11 +296,19 @@ impl Kernel {
     /// lease renewal hours away must not keep it running).
     pub fn next_event_within(&mut self, horizon: SimTime) -> Option<Event> {
         let limit = self.now + horizon;
-        self.pop_event(limit, false)
+        self.pop_event(limit, false, true)
     }
 
-    fn pop_event(&mut self, limit: SimTime, advance_when_empty: bool) -> Option<Event> {
+    fn pop_event(
+        &mut self,
+        limit: SimTime,
+        advance_when_empty: bool,
+        stop_when_only_background: bool,
+    ) -> Option<Event> {
         loop {
+            if stop_when_only_background && self.foreground == 0 {
+                return None;
+            }
             match self.heap.peek() {
                 Some(Reverse(s)) if s.at <= limit => {}
                 _ => {
@@ -251,8 +320,19 @@ impl Kernel {
             }
             let Reverse(s) = self.heap.pop().unwrap();
             self.now = s.at;
+            if !matches!(
+                s.payload,
+                Payload::Timer {
+                    background: true,
+                    ..
+                }
+            ) {
+                self.foreground -= 1;
+            }
             match s.payload {
-                Payload::Timer { device, id, token } => {
+                Payload::Timer {
+                    device, id, token, ..
+                } => {
                     if self.cancelled.remove(&id) {
                         continue;
                     }
@@ -410,4 +490,62 @@ mod tests {
     }
 
     const BLESSED: u64 = 7958038576765015734;
+
+    #[test]
+    fn a_full_transmit_queue_drops_frames_instead_of_growing() {
+        let mut k = k();
+        k.add_link((A, P), (B, P), LinkConfig::FAST_ETHERNET);
+        // 1500-byte frames take 120 us each at 100 Mb/s: the queue holds about 84 of them.
+        for _ in 0..1000 {
+            k.transmit(A, P, vec![0; 1500]);
+        }
+        let mut got = 0;
+        while let Some(Event::FrameRx { .. }) = k.next_event() {
+            got += 1;
+        }
+        assert!((80..=90).contains(&got), "{got} frames got through");
+    }
+
+    #[test]
+    fn background_timers_do_not_keep_the_simulation_busy() {
+        let mut k = k();
+        k.schedule_background_timer(A, SimTime::from_secs(1), 1);
+        assert!(k.next_event_within(SimTime::from_secs(30)).is_none());
+        assert_eq!(k.now(), SimTime::ZERO, "idle leaves the clock alone");
+        // Time moving on past it still fires it.
+        assert!(matches!(
+            k.next_event_until(SimTime::from_secs(2)),
+            Some(Event::Timer { token: 1, .. })
+        ));
+    }
+
+    #[test]
+    fn background_timers_fire_in_order_while_foreground_work_remains() {
+        let mut k = k();
+        k.schedule_background_timer(A, SimTime::from_secs(1), 1);
+        k.schedule_timer(A, SimTime::from_secs(2), 2);
+        let mut got = vec![];
+        while let Some(Event::Timer { token, .. }) = k.next_event_within(SimTime::from_secs(30)) {
+            got.push(token);
+        }
+        assert_eq!(got, vec![1, 2]);
+        // The foreground timer has fired, so a later background one no longer counts.
+        k.schedule_background_timer(A, SimTime::from_secs(1), 3);
+        assert!(k.next_event_within(SimTime::from_secs(30)).is_none());
+    }
+
+    #[test]
+    fn a_cancelled_foreground_timer_does_not_leave_the_kernel_busy() {
+        let mut k = k();
+        let t = k.schedule_timer(A, SimTime::from_secs(5), 1);
+        k.schedule_background_timer(A, SimTime::from_secs(1), 2);
+        k.cancel_timer(t);
+        // The cancelled entry is skipped when its time comes, after which only background is left.
+        let mut fired = vec![];
+        while let Some(Event::Timer { token, .. }) = k.next_event_within(SimTime::from_secs(30)) {
+            fired.push(token);
+        }
+        assert_eq!(fired, vec![2]);
+        assert!(k.next_event_within(SimTime::from_secs(30)).is_none());
+    }
 }
