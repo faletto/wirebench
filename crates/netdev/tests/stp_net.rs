@@ -539,3 +539,83 @@ fn stale_root_information_in_a_loop_does_not_make_notifications_chase_each_other
     net.run(150);
     net.assert_settled(19);
 }
+
+#[test]
+fn portfast_set_on_a_port_already_waiting_makes_it_forward_at_once() {
+    for mode in ALL {
+        let mut n = Net::new(mode, &[32768], 2, &[]);
+        let a = n.bridges[0].set_enabled(0, true);
+        n.deliver(0, a);
+        assert!(!n.forwarding(0, 0), "{mode:?}: waiting out the timers");
+        let a = n.bridges[0].set_edge(0, true);
+        n.deliver(0, a);
+        assert!(n.forwarding(0, 0), "{mode:?}");
+        // A BPDU arriving ends the exemption: the port is part of the tree again.
+        let b = n.bridges[0].port(0);
+        assert!(b.edge);
+    }
+}
+
+/// A BPDU as the root-side neighbour `X` would send it.
+fn bpdu_from(root: BridgeId, cost: u32, bridge: BridgeId, port: u16, proposal: bool) -> wire::Bpdu {
+    wire::Bpdu {
+        kind: wire::BpduKind::Rapid,
+        topology_change: false,
+        topology_change_ack: false,
+        proposal,
+        agreement: false,
+        learning: false,
+        forwarding: false,
+        role: wire::BpduRole::Designated,
+        root,
+        root_cost: cost,
+        bridge,
+        port,
+        message_age: 0,
+        max_age: wire::Bpdu::seconds(20),
+        hello_time: wire::Bpdu::seconds(2),
+        forward_delay: wire::Bpdu::seconds(15),
+    }
+}
+
+#[test]
+fn a_new_root_port_blocks_the_bridges_other_forwarding_ports_before_it_agrees() {
+    // B has C below it on port 1 and is their root: both of B's links forward.
+    let mut n = Net::new(StpMode::Rapid, &[32768, 32768], 2, &[[(0, 1), (1, 0)]]);
+    n.run(40);
+    assert!(n.forwarding(0, 1) && n.bridges[0].is_root());
+    // R, a better bridge, appears on B's port 0 and offers to forward.
+    let r = id(4096, 7);
+    let a = n.bridges[0].set_enabled(0, true);
+    n.deliver(0, a);
+    let out = n.bridges[0].receive(0, &bpdu_from(r, 0, r, 0x8001, true));
+    assert_eq!(n.bridges[0].port(0).role, StpRole::Root);
+    assert!(
+        !n.forwarding(0, 1),
+        "B put its other port to discarding before agreeing to R's proposal"
+    );
+    let agreed = out
+        .iter()
+        .any(|a| matches!(a, StpAction::Send { port: 0, bpdu } if bpdu.agreement));
+    assert!(agreed, "and then agreed: {out:?}");
+}
+
+#[test]
+fn what_a_neighbour_said_on_one_port_is_dropped_when_it_says_something_new_on_another() {
+    // X reaches B on two parallel links and has been telling it about root R. X loses R and
+    // becomes root itself, and says so on link 0 first.
+    let (r, x, b_id) = (id(0, 0), id(32768, 1), id(32768, 2));
+    let mut b = Stp::new(StpMode::Rapid, b_id, 2);
+    b.set_enabled(0, true);
+    b.set_enabled(1, true);
+    b.receive(0, &bpdu_from(r, 19, x, 0x8001, false));
+    b.receive(1, &bpdu_from(r, 19, x, 0x8002, false));
+    assert_eq!(b.root().root, r);
+    b.receive(0, &bpdu_from(x, 0, x, 0x8001, false));
+    assert_eq!(
+        b.root().root,
+        x,
+        "the old root is not still believed through the other link"
+    );
+    assert_eq!(b.root().cost, 19);
+}

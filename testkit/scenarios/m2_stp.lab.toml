@@ -1,0 +1,50 @@
+format = "labsim-lab"
+version = 1
+
+[meta]
+title = "Three switches in a triangle"
+
+[[device]]
+name = "sw1"
+template = "switch-l2-8"
+pos = [250, 0]
+
+[[device]]
+name = "sw2"
+template = "switch-l2-8"
+pos = [100, 200]
+
+[[device]]
+name = "sw3"
+template = "switch-l2-8"
+pos = [400, 200]
+
+[[device]]
+name = "pc1"
+template = "host-pc"
+pos = [0, 300]
+
+[[device]]
+name = "pc2"
+template = "host-pc"
+pos = [500, 300]
+
+[[link]]
+a = "sw1:Fa0/1"
+b = "sw2:Fa0/1"
+
+[[link]]
+a = "sw1:Fa0/2"
+b = "sw3:Fa0/1"
+
+[[link]]
+a = "sw2:Fa0/2"
+b = "sw3:Fa0/2"
+
+[[link]]
+a = "pc1:eth0"
+b = "sw2:Fa0/3"
+
+[[link]]
+a = "pc2:eth0"
+b = "sw3:Fa0/3"

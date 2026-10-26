@@ -248,6 +248,12 @@ impl Stp {
         let p = &mut self.ports[i];
         p.edge = edge;
         p.edge_oper = edge;
+        // A port already waiting to forward stops waiting.
+        if edge && p.role == Role::Designated {
+            p.state = State::Forwarding;
+            p.fd_while = 0;
+            p.proposing = false;
+        }
         self.reelect()
     }
 
@@ -382,6 +388,19 @@ impl Stp {
             let used = u32::from(bpdu.message_age).div_ceil(256);
             (MAX_AGE - used).max(1)
         };
+        // A bridge has one idea of the root at a time. Whatever else we were told by this same
+        // bridge, on another port, about a different root or cost is out of date now.
+        for (j, other) in self.ports.iter_mut().enumerate() {
+            if j != i
+                && other.info.as_ref().is_some_and(|k| {
+                    k.vector.bridge == vector.bridge
+                        && (k.vector.root, k.vector.cost) != (vector.root, vector.cost)
+                })
+            {
+                other.info = None;
+                other.rx_tc = false;
+            }
+        }
         let old_root = self.root;
         let old_roles: Vec<Role> = self.ports.iter().map(|p| p.role).collect();
         let tc_now = bpdu.topology_change && !self.ports[i].rx_tc;

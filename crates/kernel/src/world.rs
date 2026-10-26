@@ -11,6 +11,10 @@ pub struct LinkId(pub u32);
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct TimerId(pub u64);
 
+/// The longest a frame may wait to be put on a link. Ten milliseconds is about 800 full-size frames
+/// at 100 Mb/s.
+pub const LINK_QUEUE: SimTime = SimTime::from_millis(10);
+
 /// An event delivered to a device.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Event {
@@ -130,6 +134,12 @@ impl Kernel {
         }
     }
 
+    /// Whether periodic upkeep (spanning tree hellos) is scheduled. Something that wants such
+    /// timers to run has to advance the clock, since nothing else will.
+    pub fn has_background(&self) -> bool {
+        self.heap.len() > self.foreground
+    }
+
     /// Events handed to devices so far (dropped frames and cancelled timers excluded).
     pub fn delivered(&self) -> u64 {
         self.delivered
@@ -207,6 +217,13 @@ impl Kernel {
         let dir = usize::from(l.ends[1] == (device, port));
         let to = l.ends[1 - dir];
         let start = now.max_with(l.busy_until[dir]);
+        // A transmit queue is not infinite: past this much backlog the frame is dropped, which is
+        // what keeps a broadcast storm from growing without bound.
+        if start.0 - now.0 > LINK_QUEUE.0 {
+            self.trace
+                .record(now, TraceKind::FrameDrop, device.0, port.0, &frame);
+            return;
+        }
         // ceil(bits * 1e9 / bps) ns
         let bits = frame.len() as u128 * 8;
         let ser = (bits * 1_000_000_000).div_ceil(l.cfg.bits_per_sec as u128) as u64;
@@ -473,6 +490,21 @@ mod tests {
     }
 
     const BLESSED: u64 = 7958038576765015734;
+
+    #[test]
+    fn a_full_transmit_queue_drops_frames_instead_of_growing() {
+        let mut k = k();
+        k.add_link((A, P), (B, P), LinkConfig::FAST_ETHERNET);
+        // 1500-byte frames take 120 us each at 100 Mb/s: the queue holds about 84 of them.
+        for _ in 0..1000 {
+            k.transmit(A, P, vec![0; 1500]);
+        }
+        let mut got = 0;
+        while let Some(Event::FrameRx { .. }) = k.next_event() {
+            got += 1;
+        }
+        assert!((80..=90).contains(&got), "{got} frames got through");
+    }
 
     #[test]
     fn background_timers_do_not_keep_the_simulation_busy() {

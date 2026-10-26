@@ -264,4 +264,18 @@ mod tests {
         raw[4] = 9;
         assert_eq!(Bpdu::parse(&raw), Err(ParseError::Unsupported));
     }
+
+    proptest::proptest! {
+        /// What the fuzz target checks: anything that parses survives a trip through `emit`.
+        #[test]
+        fn anything_that_parses_round_trips(tail in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..60), kind in 0u8..3) {
+            let mut raw = vec![0x42, 0x42, 0x03, 0, 0];
+            raw.push(if kind == 2 { 2 } else { 0 });
+            raw.push(match kind { 0 => 0, 1 => 0x80, _ => 2 });
+            raw.extend(tail);
+            if let Ok(b) = Bpdu::parse(&raw) {
+                proptest::prop_assert_eq!(Bpdu::parse(&b.emit()), Ok(b));
+            }
+        }
+    }
 }

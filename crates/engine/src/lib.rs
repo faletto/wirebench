@@ -33,9 +33,16 @@ pub enum Delivered {
 /// renewal) stays queued without keeping `run_to_idle` or Play going.
 pub const IDLE_HORIZON: SimTime = SimTime::from_secs(30);
 
+/// The most events one [`World::run_to_idle`] will process. A broadcast storm never goes idle; this
+/// is what lets the caller get control back (about a second of storm).
+pub const MAX_EVENTS_PER_RUN: u64 = 500_000;
+
 pub struct World {
     pub kernel: Kernel,
     devices: Vec<Box<dyn Device>>,
+    /// The last `run_to_idle` stopped because it hit [`MAX_EVENTS_PER_RUN`], not because the
+    /// network went quiet.
+    pub storming: bool,
 }
 
 impl std::fmt::Debug for World {
@@ -51,6 +58,7 @@ impl World {
         World {
             kernel: Kernel::new(trace),
             devices: Vec::new(),
+            storming: false,
         }
     }
 
@@ -141,10 +149,18 @@ impl World {
 
     /// Run until nothing is due within [`IDLE_HORIZON`]. Packets in flight and short timers keep
     /// it going; a timer further away (a lease renewal hours from now) is left queued and fires
-    /// when time is advanced past it.
+    /// when time is advanced past it. Gives up after [`MAX_EVENTS_PER_RUN`] events and sets
+    /// [`World::storming`].
     pub fn run_to_idle(&mut self) {
+        self.storming = false;
+        let mut left = MAX_EVENTS_PER_RUN;
         while let Some(ev) = self.kernel.next_event_within(IDLE_HORIZON) {
             self.dispatch(ev);
+            left -= 1;
+            if left == 0 {
+                self.storming = true;
+                return;
+            }
         }
     }
 

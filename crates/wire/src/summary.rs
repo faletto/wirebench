@@ -1,6 +1,6 @@
 use crate::{
-    ArpOp, ArpPacket, DhcpMessage, DhcpOp, EtherType, EthernetFrame, IcmpEcho, IcmpError,
-    IcmpErrorKind, IpProto, Ipv4Packet, UdpDatagram,
+    ArpOp, ArpPacket, Bpdu, BpduKind, DhcpMessage, DhcpOp, EtherType, EthernetFrame, IcmpEcho,
+    IcmpError, IcmpErrorKind, IpProto, Ipv4Packet, UdpDatagram,
 };
 
 /// One-line description of a frame for the packet inspector. Never fails: unparseable
@@ -61,7 +61,40 @@ pub fn summarize(frame: &[u8]) -> String {
             }
             Err(_) => "IPv4 (malformed)".into(),
         },
+        // A length instead of a type: an LLC frame, which here means a spanning tree BPDU.
+        EtherType(t) if t < 0x0600 => match Bpdu::parse(&f.payload) {
+            Ok(b) => bpdu_summary(&b),
+            Err(_) => format!("LLC frame ({t} bytes)"),
+        },
         EtherType(t) => format!("ethertype {t:#06x}"),
+    }
+}
+
+fn bpdu_summary(b: &Bpdu) -> String {
+    match b.kind {
+        BpduKind::Tcn => "STP topology change notification".into(),
+        kind => {
+            let name = if kind == BpduKind::Rapid {
+                "RSTP"
+            } else {
+                "STP"
+            };
+            let mut o = format!(
+                "{name} BPDU root {}/{} cost {} bridge {}/{}",
+                b.root.priority, b.root.mac, b.root_cost, b.bridge.priority, b.bridge.mac
+            );
+            for (on, flag) in [
+                (b.proposal, "proposal"),
+                (b.agreement, "agreement"),
+                (b.topology_change, "topology change"),
+                (b.topology_change_ack, "topology change ack"),
+            ] {
+                if on {
+                    o += &format!(", {flag}");
+                }
+            }
+            o
+        }
     }
 }
 
@@ -188,5 +221,47 @@ mod tests {
         );
         // The same bytes on other ports are plain UDP.
         assert!(summarize(&dhcp_frame(&d, 5000, 6000)).starts_with("UDP 5000 > 6000:"));
+    }
+
+    #[test]
+    fn describes_bpdus() {
+        use crate::{BpduRole, BridgeId, PVST_MULTICAST};
+        let b = Bpdu {
+            kind: BpduKind::Rapid,
+            topology_change: false,
+            topology_change_ack: false,
+            proposal: true,
+            agreement: false,
+            learning: false,
+            forwarding: false,
+            role: BpduRole::Designated,
+            root: BridgeId {
+                priority: 4097,
+                mac: MacAddr([2, 0xbb, 0xff, 0, 0, 0]),
+            },
+            root_cost: 19,
+            bridge: BridgeId {
+                priority: 32769,
+                mac: MacAddr([2, 0xbb, 0xff, 1, 0, 0]),
+            },
+            port: 0x8001,
+            message_age: 0,
+            max_age: Bpdu::seconds(20),
+            hello_time: Bpdu::seconds(2),
+            forward_delay: Bpdu::seconds(15),
+        };
+        let payload = b.emit();
+        let frame = EthernetFrame {
+            dst: PVST_MULTICAST,
+            src: MacAddr([2, 0xbb, 0xff, 1, 0, 1]),
+            vlan: None,
+            ethertype: EtherType(payload.len() as u16),
+            payload,
+        }
+        .emit();
+        assert_eq!(
+            summarize(&frame),
+            "RSTP BPDU root 4097/02bb.ff00.0000 cost 19 bridge 32769/02bb.ff01.0000, proposal"
+        );
     }
 }

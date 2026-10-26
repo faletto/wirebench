@@ -42,6 +42,12 @@ const TRACE: Scenario = Scenario {
     golden: "../../testkit/scenarios/m2_traceroute.out",
 };
 
+const STP: Scenario = Scenario {
+    lab: include_str!("../../../testkit/scenarios/m2_stp.lab.toml"),
+    script: include_str!("../../../testkit/scenarios/m2_stp.script"),
+    golden: "../../testkit/scenarios/m2_stp.out",
+};
+
 const SVI: Scenario = Scenario {
     lab: include_str!("../../../testkit/scenarios/m2_svi.lab.toml"),
     script: include_str!("../../../testkit/scenarios/m2_svi.script"),
@@ -70,6 +76,13 @@ fn transcript(sc: &Scenario) -> String {
         // `<enter>` sends an empty line, as pressing Return at a [confirm] prompt does.
         let line = raw.trim_end();
         if line.is_empty() || line.starts_with("# ") {
+            continue;
+        }
+        // `%wait 30` lets thirty seconds of simulated time pass (spanning tree needs it).
+        if let Some(secs) = line.strip_prefix("%wait ") {
+            let to = lab.world.kernel.now() + kernel::SimTime::from_secs(secs.parse().unwrap());
+            lab.world.run_until(to);
+            out += &format!("\n-- {secs} s pass\n");
             continue;
         }
         let line = if line == "<enter>" { "" } else { line };
@@ -151,6 +164,11 @@ fn the_dhcp_lab_matches_its_golden_transcript() {
 #[test]
 fn the_traceroute_lab_matches_its_golden_transcript() {
     check_golden(&TRACE);
+}
+
+#[test]
+fn the_spanning_tree_lab_matches_its_golden_transcript() {
+    check_golden(&STP);
 }
 
 #[test]

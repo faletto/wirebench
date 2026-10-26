@@ -240,3 +240,37 @@ fn a_switch_with_spanning_tree_off_floods_bpdus_like_any_multicast() {
         "they agree on one root through the middle"
     );
 }
+
+#[test]
+fn a_loop_without_spanning_tree_storms_but_the_simulation_stays_in_control() {
+    let mut w = World::new(Trace::new());
+    let sw = [0, 1, 2].map(|i| {
+        let mut s = L2Switch::new(3);
+        s.set_unit(i + 1);
+        w.add_device(s)
+    });
+    let pc = w.add_device(host(1));
+    let l = LinkConfig::FAST_ETHERNET;
+    w.connect((sw[0], 0), (sw[1], 0), l);
+    w.connect((sw[1], 1), (sw[2], 0), l);
+    w.connect((sw[2], 1), (sw[0], 1), l);
+    w.connect((pc, 0), (sw[0], 2), l);
+    // An ARP request is a broadcast and goes round for ever.
+    w.with_device::<Host, _>(pc, |h, c| h.ping(c, ip(9)));
+    w.run_to_idle();
+    assert!(w.storming, "the broadcast never died down");
+    let at = w.kernel.now();
+    assert!(
+        at < SimTime::from_secs(2),
+        "{at:?}: but it did give control back"
+    );
+}
+
+#[test]
+fn a_quiet_network_reports_no_storm() {
+    let mut t = triangle(StpMode::Rapid, true);
+    run(&mut t.w, 10);
+    t.w.with_device::<Host, _>(t.pc[0], |h, c| h.ping(c, ip(2)));
+    t.w.run_to_idle();
+    assert!(!t.w.storming);
+}

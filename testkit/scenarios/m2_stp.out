@@ -1,0 +1,271 @@
+
+== sw1
+sw1>enable
+sw1#configure terminal
+sw1(config)#spanning-tree mode rapid-pvst
+sw1(config)#spanning-tree vlan 1 priority 4096
+sw1(config)#end
+
+== sw2
+sw2>enable
+sw2#configure terminal
+sw2(config)#spanning-tree mode rapid-pvst
+sw2(config)#interface fa0/3
+sw2(config-if)#spanning-tree portfast
+sw2(config-if)#end
+
+== sw3
+sw3>enable
+sw3#configure terminal
+sw3(config)#spanning-tree mode rapid-pvst
+sw3(config)#interface fa0/3
+sw3(config-if)#spanning-tree portfast
+sw3(config-if)#end
+
+-- 15 s pass
+
+== sw1
+sw1#show spanning-tree
+VLAN0001
+  Spanning tree enabled protocol rstp
+  Root ID    Priority    4097
+             Address     02bb.ff00.0000
+             This bridge is the root
+             Hello Time   2 sec  Max Age 20 sec  Forward Delay 15 sec
+
+  Bridge ID  Priority    4097  (priority 4096 sys-id-ext 1)
+             Address     02bb.ff00.0000
+             Hello Time   2 sec  Max Age 20 sec  Forward Delay 15 sec
+             Aging Time  300 sec
+
+Interface           Role Sts Cost      Prio.Nbr Type
+------------------- ---- --- --------- -------- --------------------------------
+Fa0/1               Desg FWD 19        128.1    P2p
+Fa0/2               Desg FWD 19        128.2    P2p
+
+== sw2
+sw2#show spanning-tree
+VLAN0001
+  Spanning tree enabled protocol rstp
+  Root ID    Priority    4097
+             Address     02bb.ff00.0000
+             Cost        19
+             Port        1 (FastEthernet0/1)
+             Hello Time   2 sec  Max Age 20 sec  Forward Delay 15 sec
+
+  Bridge ID  Priority    32769  (priority 32768 sys-id-ext 1)
+             Address     02bb.ff01.0000
+             Hello Time   2 sec  Max Age 20 sec  Forward Delay 15 sec
+             Aging Time  300 sec
+
+Interface           Role Sts Cost      Prio.Nbr Type
+------------------- ---- --- --------- -------- --------------------------------
+Fa0/1               Root FWD 19        128.1    P2p
+Fa0/2               Desg FWD 19        128.2    P2p
+Fa0/3               Desg FWD 19        128.3    P2p Edge
+
+== sw3
+sw3#show spanning-tree
+VLAN0001
+  Spanning tree enabled protocol rstp
+  Root ID    Priority    4097
+             Address     02bb.ff00.0000
+             Cost        19
+             Port        1 (FastEthernet0/1)
+             Hello Time   2 sec  Max Age 20 sec  Forward Delay 15 sec
+
+  Bridge ID  Priority    32769  (priority 32768 sys-id-ext 1)
+             Address     02bb.ff02.0000
+             Hello Time   2 sec  Max Age 20 sec  Forward Delay 15 sec
+             Aging Time  300 sec
+
+Interface           Role Sts Cost      Prio.Nbr Type
+------------------- ---- --- --------- -------- --------------------------------
+Fa0/1               Root FWD 19        128.1    P2p
+Fa0/2               Altn BLK 19        128.2    P2p
+Fa0/3               Desg FWD 19        128.3    P2p Edge
+
+== pc1
+pc1>ipconfig set 10.0.0.1 255.255.255.0
+
+== pc2
+pc2>ipconfig set 10.0.0.2 255.255.255.0
+
+== pc1
+pc1>ping 10.0.0.2
+Reply from 10.0.0.2: time=101us
+Reply from 10.0.0.2: time=55us
+Reply from 10.0.0.2: time=55us
+Reply from 10.0.0.2: time=55us
+Sent 4, received 4
+
+== sw2
+sw2#configure terminal
+sw2(config)#interface fa0/1
+sw2(config-if)#shutdown
+sw2(config-if)#end
+
+-- 8 s pass
+sw2#show spanning-tree
+VLAN0001
+  Spanning tree enabled protocol rstp
+  Root ID    Priority    4097
+             Address     02bb.ff00.0000
+             Cost        38
+             Port        2 (FastEthernet0/2)
+             Hello Time   2 sec  Max Age 20 sec  Forward Delay 15 sec
+
+  Bridge ID  Priority    32769  (priority 32768 sys-id-ext 1)
+             Address     02bb.ff01.0000
+             Hello Time   2 sec  Max Age 20 sec  Forward Delay 15 sec
+             Aging Time  300 sec
+
+Interface           Role Sts Cost      Prio.Nbr Type
+------------------- ---- --- --------- -------- --------------------------------
+Fa0/2               Root FWD 19        128.2    P2p
+Fa0/3               Desg FWD 19        128.3    P2p Edge
+
+== pc1
+pc1>ping 10.0.0.2
+Reply from 10.0.0.2: time=41us
+Reply from 10.0.0.2: time=41us
+Reply from 10.0.0.2: time=41us
+Reply from 10.0.0.2: time=41us
+Sent 4, received 4
+
+== sw2
+sw2#configure terminal
+sw2(config)#interface fa0/1
+sw2(config-if)#no shutdown
+sw2(config-if)#end
+
+-- 10 s pass
+sw2#show spanning-tree
+VLAN0001
+  Spanning tree enabled protocol rstp
+  Root ID    Priority    4097
+             Address     02bb.ff00.0000
+             Cost        19
+             Port        1 (FastEthernet0/1)
+             Hello Time   2 sec  Max Age 20 sec  Forward Delay 15 sec
+
+  Bridge ID  Priority    32769  (priority 32768 sys-id-ext 1)
+             Address     02bb.ff01.0000
+             Hello Time   2 sec  Max Age 20 sec  Forward Delay 15 sec
+             Aging Time  300 sec
+
+Interface           Role Sts Cost      Prio.Nbr Type
+------------------- ---- --- --------- -------- --------------------------------
+Fa0/1               Root FWD 19        128.1    P2p
+Fa0/2               Desg FWD 19        128.2    P2p
+Fa0/3               Desg FWD 19        128.3    P2p Edge
+
+== pc1
+pc1>ping 10.0.0.2
+Reply from 10.0.0.2: time=55us
+Reply from 10.0.0.2: time=55us
+Reply from 10.0.0.2: time=55us
+Reply from 10.0.0.2: time=55us
+Sent 4, received 4
+
+== sw3
+sw3#show spanning-tree vlan 1
+VLAN0001
+  Spanning tree enabled protocol rstp
+  Root ID    Priority    4097
+             Address     02bb.ff00.0000
+             Cost        19
+             Port        1 (FastEthernet0/1)
+             Hello Time   2 sec  Max Age 20 sec  Forward Delay 15 sec
+
+  Bridge ID  Priority    32769  (priority 32768 sys-id-ext 1)
+             Address     02bb.ff02.0000
+             Hello Time   2 sec  Max Age 20 sec  Forward Delay 15 sec
+             Aging Time  300 sec
+
+Interface           Role Sts Cost      Prio.Nbr Type
+------------------- ---- --- --------- -------- --------------------------------
+Fa0/1               Root FWD 19        128.1    P2p
+Fa0/2               Altn BLK 19        128.2    P2p
+Fa0/3               Desg FWD 19        128.3    P2p Edge
+sw3#configure terminal
+sw3(config)#spanning-tree mode pvst
+sw3(config)#end
+
+-- 3 s pass
+sw3#show spanning-tree
+VLAN0001
+  Spanning tree enabled protocol ieee
+  Root ID    Priority    4097
+             Address     02bb.ff00.0000
+             Cost        19
+             Port        1 (FastEthernet0/1)
+             Hello Time   2 sec  Max Age 20 sec  Forward Delay 15 sec
+
+  Bridge ID  Priority    32769  (priority 32768 sys-id-ext 1)
+             Address     02bb.ff02.0000
+             Hello Time   2 sec  Max Age 20 sec  Forward Delay 15 sec
+             Aging Time  300 sec
+
+Interface           Role Sts Cost      Prio.Nbr Type
+------------------- ---- --- --------- -------- --------------------------------
+Fa0/1               Root LIS 19        128.1    P2p
+Fa0/2               Altn BLK 19        128.2    P2p
+Fa0/3               Desg FWD 19        128.3    P2p Edge
+
+-- 60 s pass
+sw3#show spanning-tree
+VLAN0001
+  Spanning tree enabled protocol ieee
+  Root ID    Priority    4097
+             Address     02bb.ff00.0000
+             Cost        19
+             Port        1 (FastEthernet0/1)
+             Hello Time   2 sec  Max Age 20 sec  Forward Delay 15 sec
+
+  Bridge ID  Priority    32769  (priority 32768 sys-id-ext 1)
+             Address     02bb.ff02.0000
+             Hello Time   2 sec  Max Age 20 sec  Forward Delay 15 sec
+             Aging Time  300 sec
+
+Interface           Role Sts Cost      Prio.Nbr Type
+------------------- ---- --- --------- -------- --------------------------------
+Fa0/1               Root FWD 19        128.1    P2p
+Fa0/2               Altn BLK 19        128.2    P2p
+Fa0/3               Desg FWD 19        128.3    P2p Edge
+
+== sw1
+sw1#show spanning-tree
+VLAN0001
+  Spanning tree enabled protocol rstp
+  Root ID    Priority    4097
+             Address     02bb.ff00.0000
+             This bridge is the root
+             Hello Time   2 sec  Max Age 20 sec  Forward Delay 15 sec
+
+  Bridge ID  Priority    4097  (priority 4096 sys-id-ext 1)
+             Address     02bb.ff00.0000
+             Hello Time   2 sec  Max Age 20 sec  Forward Delay 15 sec
+             Aging Time  300 sec
+
+Interface           Role Sts Cost      Prio.Nbr Type
+------------------- ---- --- --------- -------- --------------------------------
+Fa0/1               Desg FWD 19        128.1    P2p
+Fa0/2               Desg FWD 19        128.2    P2p Peer(STP)
+
+== pc1
+pc1>ping 10.0.0.2
+Reply from 10.0.0.2: time=55us
+Reply from 10.0.0.2: time=55us
+Reply from 10.0.0.2: time=55us
+Reply from 10.0.0.2: time=55us
+Sent 4, received 4
+
+== sw1
+sw1#show running-config
+hostname sw1
+!
+spanning-tree mode rapid-pvst
+spanning-tree vlan 1 priority 4096
+!
+end
