@@ -167,21 +167,6 @@ impl EngineLink {
         }
     }
 
-    /// Ask the engine to load a lab (lab file text); the new lab's view, or why not.
-    pub fn load(&self, lab: &str) -> Result<LabView, String> {
-        match self
-            .send(EngineCmd::Load {
-                lab: lab.to_string(),
-            })
-            .into_iter()
-            .next()
-        {
-            Some(EngineEvent::Lab { view }) => Ok(view),
-            Some(EngineEvent::Error { message }) => Err(message),
-            other => Err(format!("unexpected answer: {other:?}")),
-        }
-    }
-
     /// The lab as it stands, as lab file text.
     pub fn snapshot(&self) -> String {
         match self.send(EngineCmd::Snapshot).into_iter().next() {

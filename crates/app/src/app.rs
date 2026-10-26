@@ -77,7 +77,7 @@ enum Drag {
 mod responses;
 #[path = "settings_panel.rs"]
 mod settings_panel;
-use responses::{Awaiting, StepKind};
+use responses::{Awaiting, EditKind, StepKind, Then, Undo};
 
 #[derive(Debug)]
 pub struct App {
@@ -130,6 +130,8 @@ pub struct App {
     /// The person is stepping through something (a queued ping): the live clock must not run it
     /// off ahead of them.
     busy: bool,
+    /// Whether the latest lab to be opened loaded.
+    open_ok: bool,
     frame_ms: f32,
     /// Milliseconds from the start of loading to the first drawn frame (see `clock`).
     ready_ms: Option<f64>,
@@ -153,7 +155,9 @@ impl App {
 
     pub fn from_built(built: BuiltLab) -> Self {
         let (engine, view) = EngineLink::from_built(built);
-        Self::assemble(engine, view)
+        // The engine is in this thread, so it can be asked outright for the first copy.
+        let text = engine.snapshot();
+        Self::assemble(engine, view, text)
     }
 
     /// An app whose engine takes `polls` frames to answer anything, as one in a Web Worker does.
@@ -161,13 +165,13 @@ impl App {
     pub fn from_lab_text_delayed(text: &str, polls: usize) -> Result<Self, String> {
         let built = engine::lab::load_and_build(text, kernel::Trace::new())?;
         let (engine, view) = EngineLink::from_built_delayed(built, polls);
-        Ok(Self::assemble(engine, view))
+        let text = engine.snapshot();
+        Ok(Self::assemble(engine, view, text))
     }
 
     /// An app around an engine that already holds the lab `view` describes.
-    fn assemble(engine: EngineLink, view: LabView) -> Self {
+    fn assemble(engine: EngineLink, view: LabView, lab_text: String) -> Self {
         let warnings = view.warnings.clone();
-        let lab_text = engine.snapshot();
         let mut nodes = Vec::new();
         let mut tabs: Vec<Tab> = Vec::new();
         let mut opens = Vec::new();
@@ -223,6 +227,7 @@ impl App {
             sim_now: 0,
             background: false,
             busy: false,
+            open_ok: false,
             frame_ms: 0.0,
             ready_ms: None,
         };
@@ -302,46 +307,20 @@ impl App {
             .lab
     }
 
-    /// Send an edit; the new view of the lab, or the reason it was refused.
-    fn edit(&mut self, cmd: EngineCmd) -> Result<LabView, String> {
-        let events = self.engine.send(cmd);
-        absorb(&mut self.lab_text, &events);
-        match events.into_iter().next() {
-            Some(EngineEvent::Lab { view }) => Ok(view),
-            Some(EngineEvent::Error { message }) => Err(message),
-            other => Err(format!("unexpected answer: {other:?}")),
-        }
-    }
-
     /// Add a device at a canvas position and open its console.
     pub fn add_device(&mut self, kind: LabKind, pos: [i32; 2]) {
         let before = self.snapshot_lab();
-        match self.edit(EngineCmd::AddDevice {
-            kind: shell_kind(kind),
-            pos,
-        }) {
-            Ok(view) => {
-                let i = view.devices.len() - 1;
-                let d = view.devices[i].clone();
-                self.history.record(format!("add {}", d.name), before);
-                let (tab_, id) = new_tab(&self.engine, &d, i);
-                self.tabs.push(tab_);
-                self.pending
-                    .insert(id, Awaiting::OpenTerminal { device: d.device });
-                self.pump();
-                self.nodes.push(NodeInfo {
-                    name: d.name.clone(),
-                    kind: lab_kind(d.kind),
-                    pos,
-                    tab: Some(self.tabs.len() - 1),
-                    device: d.device,
-                });
-                self.changes.mark_edited(self.wall);
-                self.notice = Some(format!("added {}", d.name));
-                self.select(self.tabs.len() - 1);
-            }
-            Err(e) => self.notice = Some(e),
-        }
+        self.post(
+            EngineCmd::AddDevice {
+                kind: shell_kind(kind),
+                pos,
+            },
+            Awaiting::Edit {
+                what: EditKind::AddDevice { pos },
+                before,
+            },
+        );
+        self.pump();
     }
 
     pub fn move_node(&mut self, node: usize, pos: [i32; 2]) {
@@ -360,26 +339,26 @@ impl App {
                 }
             }
             self.nodes[node].pos = pos;
-            let _ = self.edit(EngineCmd::MoveDevice { device: node, pos });
+            self.post(
+                EngineCmd::MoveDevice { device: node, pos },
+                Awaiting::Nothing,
+            );
             self.changes.mark_edited(self.wall);
+            self.pump();
         }
     }
 
     /// Cable two devices on their first free ports.
     pub fn connect(&mut self, a: usize, b: usize) {
         let before = self.snapshot_lab();
-        match self.edit(EngineCmd::AddLink { a, b }) {
-            Ok(_) => {
-                self.history.record(
-                    format!("cable {} to {}", self.nodes[a].name, self.nodes[b].name),
-                    before,
-                );
-                self.links.push((a, b));
-                self.changes.mark_edited(self.wall);
-                self.notice = None;
-            }
-            Err(e) => self.notice = Some(e),
-        }
+        self.post(
+            EngineCmd::AddLink { a, b },
+            Awaiting::Edit {
+                what: EditKind::AddLink { a, b },
+                before,
+            },
+        );
+        self.pump();
     }
 
     /// Remove a device and its cables. The world is rebuilt from the live configs, so
@@ -389,25 +368,27 @@ impl App {
             return;
         };
         let before = self.snapshot_lab();
-        match self.edit(EngineCmd::RemoveDevice { device: node }) {
-            Ok(view) => {
-                self.adopt(view, format!("removed {name}; consoles restarted"));
-                self.history.record(format!("remove {name}"), before);
-            }
-            Err(e) => self.notice = Some(e),
-        }
+        self.post(
+            EngineCmd::RemoveDevice { device: node },
+            Awaiting::Edit {
+                what: EditKind::RemoveDevice { name },
+                before,
+            },
+        );
+        self.pump();
     }
 
     /// Remove a cable (index into the cable list); rebuilds like [`App::delete_device`].
     pub fn delete_link(&mut self, link: usize) {
         let before = self.snapshot_lab();
-        match self.edit(EngineCmd::RemoveLink { link }) {
-            Ok(view) => {
-                self.adopt(view, "removed a cable; consoles restarted".into());
-                self.history.record("remove a cable", before);
-            }
-            Err(e) => self.notice = Some(e),
-        }
+        self.post(
+            EngineCmd::RemoveLink { link },
+            Awaiting::Edit {
+                what: EditKind::RemoveLink,
+                before,
+            },
+        );
+        self.pump();
     }
 
     pub fn can_undo(&self) -> bool {
@@ -426,9 +407,8 @@ impl App {
             self.notice = Some("nothing to undo".into());
             return;
         };
-        if !self.rebuild(&lab, format!("undid {label}; consoles restarted")) {
-            self.history.cancel_back(label, current);
-        }
+        let note = format!("undid {label}; consoles restarted");
+        self.rebuild(&lab, note, Undo::Back { label, current });
     }
 
     pub fn redo(&mut self) {
@@ -437,25 +417,20 @@ impl App {
             self.notice = Some("nothing to redo".into());
             return;
         };
-        if !self.rebuild(&lab, format!("redid {label}; consoles restarted")) {
-            self.history.cancel_forward(label, current);
-        }
+        let note = format!("redid {label}; consoles restarted");
+        self.rebuild(&lab, note, Undo::Forward { label, current });
     }
 
-    /// Replace the world with one built from `lab`. False (and nothing changed) if it won't build.
-    fn rebuild(&mut self, lab: &labfile::LabFile, note: String) -> bool {
-        match self.edit(EngineCmd::Load {
-            lab: labfile::save(lab),
-        }) {
-            Ok(view) => {
-                self.adopt(view, note);
-                true
-            }
-            Err(e) => {
-                self.notice = Some(format!("could not rebuild the lab: {e}"));
-                false
-            }
-        }
+    /// Ask the engine to replace the world with one built from `lab`. If it won't build, nothing
+    /// changes and `undo` says what to put back in the history.
+    fn rebuild(&mut self, lab: &labfile::LabFile, note: String, undo: Undo) {
+        self.post(
+            EngineCmd::Load {
+                lab: labfile::save(lab),
+            },
+            Awaiting::Rebuild { note, undo },
+        );
+        self.pump();
     }
 
     /// The engine now holds a different world (a rebuild after a delete or undo): start the
@@ -463,7 +438,7 @@ impl App {
     fn adopt(&mut self, view: LabView, note: String) {
         let active = self.tabs.get(self.active).map(|t| t.name.clone());
         let engine = std::mem::replace(&mut self.engine, EngineLink::detached());
-        let mut fresh = App::assemble(engine, view);
+        let mut fresh = App::assemble(engine, view, self.lab_text.clone());
         fresh.take_session(self);
         fresh.canvas = std::mem::take(&mut self.canvas);
         fresh.changes = std::mem::take(&mut self.changes);
@@ -508,24 +483,24 @@ impl App {
     /// Replace the lab with the one in `text`. If it cannot be loaded, the current lab stays
     /// and the notice says why. Returns whether the new lab was adopted.
     pub fn load_lab_text(&mut self, text: &str, source: &str) -> bool {
-        match self.engine.load(text) {
-            Ok(view) => {
-                let engine = std::mem::replace(&mut self.engine, EngineLink::detached());
-                let mut fresh = App::assemble(engine, view);
-                fresh.take_session(self);
-                let problems = fresh.notice.take();
-                fresh.notice = Some(match problems {
-                    Some(p) => format!("opened {source} ({p})"),
-                    None => format!("opened {source}"),
-                });
-                *self = fresh;
-                true
-            }
-            Err(e) => {
-                self.notice = Some(format!("could not open {source}: {e}"));
-                false
-            }
-        }
+        self.open_lab(text, source, Then::Nothing)
+    }
+
+    /// Ask the engine to load `text`; `then` is what to do when it has. Returns whether it loaded,
+    /// as far as is known when it returns (an engine that answers late has not answered).
+    fn open_lab(&mut self, text: &str, source: &str, then: Then) -> bool {
+        self.open_ok = false;
+        self.post(
+            EngineCmd::Load {
+                lab: text.to_string(),
+            },
+            Awaiting::Open {
+                source: source.to_string(),
+                then,
+            },
+        );
+        self.pump();
+        self.open_ok
     }
 
     /// Native: write the lab as it is now to `path`.
@@ -549,14 +524,7 @@ impl App {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn open_path(&mut self, path: &str) -> bool {
         match files::read_file(path) {
-            Ok(text) => {
-                let ok = self.load_lab_text(&text, path);
-                if ok {
-                    self.file_path = path.to_string();
-                    self.after_open();
-                }
-                ok
-            }
+            Ok(text) => self.open_lab(&text, path, Then::Path(path.to_string())),
             Err(e) => {
                 self.notice = Some(format!("could not open {path}: {e}"));
                 false
@@ -663,14 +631,8 @@ impl App {
         let Some(a) = self.recovery.take() else {
             return;
         };
-        if self.load_lab_text(&a.text, "recovered work") {
-            // Exists nowhere but the autosave, so it stays unsaved until saved for real.
-            let text = self.export_lab();
-            self.changes.mark_recovered(text, self.wall);
-            self.notice = Some("recovered unsaved work; Save to keep it".into());
-        } else {
-            self.recovery = Some(a);
-        }
+        let text = a.text.clone();
+        self.open_lab(&text, "recovered work", Then::Recovered(a));
     }
 
     fn observe_changes(&mut self) {
@@ -853,9 +815,7 @@ impl App {
         for item in self.inbox.take() {
             match item {
                 Incoming::Lab { name, text } => {
-                    if self.load_lab_text(&text, &name) {
-                        self.after_open();
-                    }
+                    self.open_lab(&text, &name, Then::Inbox);
                 }
                 Incoming::Failed(why) => self.notice = Some(why),
             }

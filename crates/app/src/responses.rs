@@ -6,7 +6,7 @@
 use super::*;
 
 /// What an unanswered command was for.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(super) enum Awaiting {
     /// A console is being opened for this device (its tab shows nothing until it is).
     OpenTerminal { device: u32 },
@@ -26,8 +26,55 @@ pub(super) enum Awaiting {
     },
     /// The latest step was undone.
     Back,
+    /// A structural edit the person made; `before` is the lab as it was, for the undo history.
+    Edit {
+        what: EditKind,
+        before: labfile::LabFile,
+    },
+    /// The world is being rebuilt from a lab (undo, redo).
+    Rebuild { note: String, undo: Undo },
+    /// A lab is being opened in place of this one.
+    Open { source: String, then: Then },
+    /// The panel asked for a device's state.
+    PanelState { device: u32 },
+    /// Lines were sent from the panel.
+    Configured { device: u32 },
     /// Only the side effects matter (the lab text, the clock).
     Nothing,
+}
+
+/// Which edit.
+#[derive(Debug)]
+pub(super) enum EditKind {
+    AddDevice { pos: [i32; 2] },
+    AddLink { a: usize, b: usize },
+    RemoveDevice { name: String },
+    RemoveLink,
+}
+
+/// What to put back if a rebuild for undo or redo is refused.
+#[derive(Debug)]
+pub(super) enum Undo {
+    Back {
+        label: String,
+        current: labfile::LabFile,
+    },
+    Forward {
+        label: String,
+        current: labfile::LabFile,
+    },
+}
+
+/// What to do once a lab has been opened.
+#[derive(Debug)]
+pub(super) enum Then {
+    Nothing,
+    /// It arrived through the inbox (the browser's file picker).
+    Inbox,
+    /// It was read from this path.
+    Path(String),
+    /// It is the autosave being recovered; if it will not load, the offer stands.
+    Recovered(crate::autosave::Autosave),
 }
 
 /// How far one request to step goes.
@@ -141,6 +188,75 @@ impl App {
                     }
                 }
             }
+            Awaiting::Edit { what, before } => self.edit_answered(what, before, main),
+            Awaiting::Rebuild { note, undo } => match main {
+                Some(EngineEvent::Lab { view }) => self.adopt(view, note),
+                other => {
+                    let why = match other {
+                        Some(EngineEvent::Error { message }) => message,
+                        _ => "no answer".to_string(),
+                    };
+                    self.notice = Some(format!("could not rebuild the lab: {why}"));
+                    match undo {
+                        Undo::Back { label, current } => self.history.cancel_back(label, current),
+                        Undo::Forward { label, current } => {
+                            self.history.cancel_forward(label, current)
+                        }
+                    }
+                }
+            },
+            Awaiting::Open { source, then } => match main {
+                Some(EngineEvent::Lab { view }) => {
+                    let engine = std::mem::replace(&mut self.engine, EngineLink::detached());
+                    let mut fresh = App::assemble(engine, view, self.lab_text.clone());
+                    fresh.take_session(self);
+                    let problems = fresh.notice.take();
+                    fresh.notice = Some(match problems {
+                        Some(p) => format!("opened {source} ({p})"),
+                        None => format!("opened {source}"),
+                    });
+                    fresh.open_ok = true;
+                    *self = fresh;
+                    match then {
+                        Then::Nothing => {}
+                        Then::Inbox => self.after_open(),
+                        Then::Path(path) => {
+                            self.file_path = path;
+                            self.after_open();
+                        }
+                        Then::Recovered(_) => {
+                            // Exists nowhere but the autosave, so it stays unsaved until saved.
+                            let text = self.export_lab();
+                            self.changes.mark_recovered(text, self.wall);
+                            self.notice = Some("recovered unsaved work; Save to keep it".into());
+                        }
+                    }
+                }
+                other => {
+                    let why = match other {
+                        Some(EngineEvent::Error { message }) => message,
+                        _ => "no answer".to_string(),
+                    };
+                    self.notice = Some(format!("could not open {source}: {why}"));
+                    self.open_ok = false;
+                    if let Then::Recovered(a) = then {
+                        self.recovery = Some(a);
+                    }
+                }
+            },
+            Awaiting::PanelState { device } => {
+                if let Some(EngineEvent::State { state, .. }) = main {
+                    self.panel_state_arrived(device, state);
+                }
+            }
+            Awaiting::Configured { device } => {
+                let _ = device;
+                self.panel.said = match main {
+                    Some(EngineEvent::Configured { said, .. }) => said,
+                    Some(EngineEvent::Error { message }) => vec![message],
+                    _ => vec![],
+                };
+            }
             Awaiting::Ping => self.apply_sim(events, false),
             Awaiting::Step {
                 animate,
@@ -197,6 +313,61 @@ impl App {
                 }
             }
             Awaiting::Nothing => {}
+        }
+    }
+
+    /// The answer to a structural edit.
+    fn edit_answered(
+        &mut self,
+        what: EditKind,
+        before: labfile::LabFile,
+        main: Option<EngineEvent>,
+    ) {
+        let view = match main {
+            Some(EngineEvent::Lab { view }) => view,
+            Some(EngineEvent::Error { message }) => {
+                self.notice = Some(message);
+                return;
+            }
+            _ => return,
+        };
+        match what {
+            EditKind::AddDevice { pos } => {
+                let i = view.devices.len() - 1;
+                let d = view.devices[i].clone();
+                self.history.record(format!("add {}", d.name), before);
+                let (tab, id) = new_tab(&self.engine, &d, i);
+                self.tabs.push(tab);
+                self.pending
+                    .insert(id, Awaiting::OpenTerminal { device: d.device });
+                self.nodes.push(NodeInfo {
+                    name: d.name.clone(),
+                    kind: lab_kind(d.kind),
+                    pos,
+                    tab: Some(self.tabs.len() - 1),
+                    device: d.device,
+                });
+                self.changes.mark_edited(self.wall);
+                self.notice = Some(format!("added {}", d.name));
+                self.select(self.tabs.len() - 1);
+            }
+            EditKind::AddLink { a, b } => {
+                self.history.record(
+                    format!("cable {} to {}", self.nodes[a].name, self.nodes[b].name),
+                    before,
+                );
+                self.links.push((a, b));
+                self.changes.mark_edited(self.wall);
+                self.notice = None;
+            }
+            EditKind::RemoveDevice { name } => {
+                self.adopt(view, format!("removed {name}; consoles restarted"));
+                self.history.record(format!("remove {name}"), before);
+            }
+            EditKind::RemoveLink => {
+                self.adopt(view, "removed a cable; consoles restarted".into());
+                self.history.record("remove a cable", before);
+            }
         }
     }
 

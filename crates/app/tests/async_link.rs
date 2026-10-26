@@ -213,3 +213,99 @@ fn the_live_clock_keeps_running_with_a_slow_engine() {
         app.sim_time_ns()
     );
 }
+
+#[test]
+fn an_added_device_appears_when_the_engine_confirms_it_and_undo_follows_suit() {
+    let mut app = App::from_lab_text_delayed(LAB, 3).unwrap();
+    let mut d = Driver::new();
+    d.frames(&mut app, 8);
+    let n = app.device_count();
+    app.add_device(engine::lab::LabKind::Switch, [10, 10]);
+    assert_eq!(app.device_count(), n, "not until the engine has said so");
+    d.frames(&mut app, 8);
+    assert_eq!(app.device_count(), n + 1);
+    assert!(app.can_undo());
+    assert!(app.is_dirty());
+    // The new device's console opens a little after it appears.
+    d.frames(&mut app, 8);
+    assert!(
+        app.active_prompt().ends_with('>'),
+        "{:?}",
+        app.active_prompt()
+    );
+    app.undo();
+    d.frames(&mut app, 12);
+    assert_eq!(app.device_count(), n, "undone");
+    assert!(app.can_redo());
+}
+
+#[test]
+fn cabling_and_deleting_wait_for_the_engine_too() {
+    let mut app = App::from_lab_text_delayed(LAB, 2).unwrap();
+    let mut d = Driver::new();
+    d.frames(&mut app, 8);
+    let cables = app.cables().len();
+    app.add_device(engine::lab::LabKind::Switch, [0, 0]);
+    app.add_device(engine::lab::LabKind::Switch, [50, 0]);
+    d.frames(&mut app, 12);
+    let n = app.device_count();
+    app.connect(n - 2, n - 1);
+    assert_eq!(app.cables().len(), cables, "not yet");
+    d.frames(&mut app, 8);
+    assert_eq!(app.cables().len(), cables + 1);
+    app.delete_link(cables);
+    d.frames(&mut app, 12);
+    assert_eq!(app.cables().len(), cables);
+    app.delete_device(n - 1);
+    d.frames(&mut app, 12);
+    assert_eq!(app.device_count(), n - 1);
+}
+
+#[test]
+fn a_lab_opened_late_replaces_the_old_one_and_a_bad_one_changes_nothing() {
+    let mut app = App::from_lab_text_delayed(LAB, 3).unwrap();
+    let mut d = Driver::new();
+    d.frames(&mut app, 8);
+    let before = app.export_lab();
+    app.load_lab_text("this is not a lab", "junk");
+    d.frames(&mut app, 8);
+    assert_eq!(app.export_lab(), before);
+    assert!(app
+        .status_notice()
+        .unwrap_or("")
+        .contains("could not open junk"));
+    let other = include_str!("../../../testkit/scenarios/m2_stp.lab.toml");
+    app.load_lab_text(other, "stp");
+    assert_eq!(
+        app.export_lab(),
+        before,
+        "still the old lab until the answer"
+    );
+    d.frames(&mut app, 12);
+    assert_ne!(app.export_lab(), before);
+    assert!(app.device_names().contains(&"sw1"));
+    assert!(app.status_notice().unwrap_or("").contains("opened stp"));
+}
+
+#[test]
+fn the_settings_panel_shows_what_the_engine_says_when_it_says_it() {
+    use engine::panel::DeviceState;
+    let mut app = App::from_lab_text_delayed(LAB, 3).unwrap();
+    let mut d = Driver::new();
+    d.frames(&mut app, 10);
+    pc(&mut app);
+    d.frames(&mut app, 10);
+    let said = app.configure_active(&[
+        "ipconfig set 10.0.1.66 255.255.255.0",
+        "ipconfig set 300.0.0.1 255.255.255.0",
+    ]);
+    assert!(said.is_empty(), "nothing has been said yet");
+    d.frames(&mut app, 12);
+    app.active_state();
+    d.frames(&mut app, 8);
+    let Some(DeviceState::Host(h)) = app.active_state() else {
+        panic!()
+    };
+    assert_eq!(h.ip, "10.0.1.66");
+    assert!(app.is_dirty());
+}

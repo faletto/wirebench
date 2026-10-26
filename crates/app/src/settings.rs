@@ -233,6 +233,10 @@ pub struct Panel {
     /// The device may have changed behind the panel's back (a console command): ask again.
     pub stale: bool,
     pub said: Vec<String>,
+    /// The device `said` is about, so a state arriving for a newly shown device does not wipe it.
+    pub said_for: Option<u32>,
+    /// The device a state has been asked for and not yet received.
+    pub asked: Option<u32>,
     pub host_addr: String,
     pub host_gw: String,
     pub if_addr: BTreeMap<String, String>,

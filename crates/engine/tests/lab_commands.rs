@@ -257,7 +257,7 @@ fn the_engine_pushes_the_lab_text_after_what_can_change_it_and_only_when_it_did(
         EngineEvent::TerminalOpened { terminal, .. } => terminal,
         other => panic!("{other:?}"),
     };
-    let mut say = |r: &mut Rig, line: &str| {
+    let say = |r: &mut Rig, line: &str| {
         r.send(EngineCmd::Exec {
             terminal: term,
             line: line.into(),

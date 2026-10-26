@@ -13,40 +13,56 @@ impl App {
         self.tabs.get(self.active).map(|t| t.device)
     }
 
-    /// Read the device's state again if the panel is showing another device or an old one.
+    /// Ask for the device's state if the panel is showing another device or an old one. The
+    /// answer is dealt with when it arrives ([`App::panel_state_arrived`]).
     fn panel_refresh(&mut self) {
         let Some(device) = self.panel_device() else {
             self.panel.device = None;
             self.panel.state = None;
             return;
         };
-        if self.panel.device == Some(device) && !self.panel.stale {
+        let current = self.panel.device == Some(device);
+        if current && !self.panel.stale {
             return;
         }
-        let changed_device = self.panel.device != Some(device);
-        if let Some(EngineEvent::State { state, .. }) =
-            self.engine.send(EngineCmd::DeviceState { device }).pop()
-        {
-            if changed_device || self.panel.state.as_ref() != Some(&state) {
-                self.panel.state = Some(state);
-                self.panel.load_drafts();
-            }
+        // One request for a device not yet shown is enough; a stale one needs asking again.
+        if !current && self.panel.asked == Some(device) {
+            return;
         }
-        if changed_device {
+        self.panel.asked = Some(device);
+        self.panel.stale = false;
+        self.post(
+            EngineCmd::DeviceState { device },
+            Awaiting::PanelState { device },
+        );
+    }
+
+    /// The engine's answer to a request for `device`'s state.
+    pub(super) fn panel_state_arrived(&mut self, device: u32, state: DeviceState) {
+        let changed_device = self.panel.device != Some(device);
+        if changed_device || self.panel.state.as_ref() != Some(&state) {
+            self.panel.state = Some(state);
+            self.panel.load_drafts();
+        }
+        if changed_device && self.panel.said_for != Some(device) {
             self.panel.said.clear();
         }
         self.panel.device = Some(device);
-        self.panel.stale = false;
+        if self.panel.asked == Some(device) {
+            self.panel.asked = None;
+        }
     }
 
     /// Send CLI lines to the active device, as if typed in configuration mode. Returns what the
-    /// CLI said about any it refused. The lab counts as edited and the panel reads the device again.
+    /// CLI said about any it refused (as far as is known when it returns: an engine that answers
+    /// late has not answered). The lab counts as edited and the panel reads the device again.
     pub fn configure_active(&mut self, lines: &[&str]) -> Vec<String> {
         let Some(device) = self.panel_device() else {
             return vec!["no device is open".to_string()];
         };
         let lines: Vec<String> = lines.iter().map(|l| (*l).to_string()).collect();
         self.panel_send(device, lines);
+        self.pump();
         self.panel.said.clone()
     }
 
@@ -56,24 +72,22 @@ impl App {
         }
         // The engine forgets what could be stepped back over; so must the log of marks.
         self.sim.marks.clear();
-        let events = self.engine.send(EngineCmd::Configure { device, lines });
-        super::absorb(&mut self.lab_text, &events);
-        let said = match events.into_iter().next() {
-            Some(EngineEvent::Configured { said, .. }) => said,
-            Some(EngineEvent::Error { message }) => vec![message],
-            _ => vec![],
-        };
-        self.panel.stale = true;
+        self.panel.said_for = Some(device);
+        self.post(
+            EngineCmd::Configure { device, lines },
+            Awaiting::Configured { device },
+        );
         self.changes.mark_edited(self.wall);
+        // The device's state, its prompt or hostname, and the clock may all have changed.
+        self.panel.stale = true;
         self.panel_refresh();
-        self.panel.said = said;
-        // The device's prompt or hostname may have changed.
         self.refresh_clock();
     }
 
-    /// The panel's state for the active device (reads it first), for tests.
+    /// The panel's state for the active device (asks first), for tests.
     pub fn active_state(&mut self) -> Option<DeviceState> {
         self.panel_refresh();
+        self.pump();
         self.panel.state.clone()
     }
 
