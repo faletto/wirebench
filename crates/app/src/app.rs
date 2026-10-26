@@ -18,6 +18,12 @@ use egui::{Key, Modifiers, Pos2, Ui};
 use engine::lab::{BuiltLab, LabKind};
 use engine::protocol::{DeviceView, EngineCmd, EngineEvent, LabView, ShellKind};
 
+/// The shortest wall time, in seconds, between rounds of messages that move the live clock on.
+const LIVE_ROUND: f64 = 0.1;
+
+/// Events asked for in one message when fast-forwarding.
+const RUN_BATCH: u32 = 5_000;
+
 /// The lab the app opens with until file loading exists.
 const DEFAULT_LAB: &str = include_str!("../../../labs/m1_static_routes.lab.toml");
 
@@ -134,6 +140,13 @@ pub struct App {
     open_ok: bool,
     /// The link has been given a way to ask for a frame when an answer arrives.
     waker_set: bool,
+    /// Whether an answer arriving now should make the page draw a frame (see `update_wake`).
+    wake_needed: std::rc::Rc<std::cell::Cell<bool>>,
+    /// Live clock: a round of commands is out, and the time owed since the last one went.
+    live_in_flight: bool,
+    live_debt: f64,
+    /// Wall time the last round went out.
+    live_sent: f64,
     frame_ms: f32,
     /// Milliseconds from the start of loading to the first drawn frame (see `clock`).
     ready_ms: Option<f64>,
@@ -246,6 +259,10 @@ impl App {
             busy: false,
             open_ok: false,
             waker_set: false,
+            wake_needed: std::rc::Rc::default(),
+            live_in_flight: false,
+            live_debt: 0.0,
+            live_sent: f64::MIN,
             frame_ms: 0.0,
             ready_ms: None,
         };
@@ -970,6 +987,19 @@ impl App {
     }
 
     fn sim_post_step(&mut self, animate: bool, kind: StepKind, play: bool) {
+        if kind == StepKind::Run {
+            // Fast-forward goes in batches: one message each, not one per event.
+            let max = self.sim.budget.min(RUN_BATCH);
+            self.post(
+                EngineCmd::Run { max },
+                Awaiting::Step {
+                    animate,
+                    kind,
+                    play,
+                },
+            );
+            return;
+        }
         self.push_mark();
         self.post(
             EngineCmd::Step,
@@ -1319,20 +1349,26 @@ impl App {
         // While a ping is being stepped through, time must not run on ahead of the person stepping.
         if !self.background || self.busy || self.anim.playing {
             self.live_at = None;
+            self.live_debt = 0.0;
             return;
         }
         if let Some(last) = self.live_at.replace(self.wall) {
             // A long gap (a hidden tab) is not made up for.
-            let dt = (self.wall - last).clamp(0.0, 0.25);
-            self.post(
-                EngineCmd::Advance {
-                    ns: (dt * 1e9) as u64,
-                },
-                Awaiting::Nothing,
-            );
-            // Time has moved on behind the engine's saved states: they are stale.
-            self.sim.marks.clear();
-            self.post(EngineCmd::ForgetHistory, Awaiting::Nothing);
+            self.live_debt += (self.wall - last).clamp(0.0, 0.25);
+            // One round at a time: an engine that falls behind is not sent more to do, and the
+            // time that passed meanwhile is asked for together when it catches up.
+            // Also not more often than the page asks to be drawn: an answer wakes the page, and
+            // without this the answer would start the next round at once, a loop at full speed.
+            if !self.live_in_flight && self.wall - self.live_sent >= LIVE_ROUND {
+                self.live_sent = self.wall;
+                let ns = (self.live_debt * 1e9) as u64;
+                self.live_debt = 0.0;
+                self.live_in_flight = true;
+                // One message a round: advancing time already makes the engine forget what could
+                // be stepped back over, and its answer carries the clock.
+                self.sim.marks.clear();
+                self.post(EngineCmd::Advance { ns }, Awaiting::LiveClock);
+            }
         }
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(100));
@@ -1381,8 +1417,14 @@ impl App {
         self.pump();
         if !self.waker_set {
             if let Some(ctx) = self.ctx.clone() {
-                self.engine
-                    .set_waker(Box::new(move || ctx.request_repaint()));
+                // An answer to the live clock needs no frame of its own (the page is already
+                // scheduled to draw); anything else somebody is waiting for does.
+                let needed = self.wake_needed.clone();
+                self.engine.set_waker(Box::new(move || {
+                    if needed.get() {
+                        ctx.request_repaint();
+                    }
+                }));
                 self.waker_set = true;
             }
         }

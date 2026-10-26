@@ -1,0 +1,913 @@
+format = "labsim-lab"
+version = 1
+
+[meta]
+title = "Twelve switches, seventy-two PCs"
+
+[[device]]
+name = "sw1"
+template = "switch-l2-8"
+pos = [100, 60]
+running_config = "spanning-tree mode rapid-pvst\nspanning-tree vlan 1 priority 4096\n"
+
+[[device]]
+name = "sw2"
+template = "switch-l2-8"
+pos = [210, 60]
+running_config = "spanning-tree mode rapid-pvst\n"
+
+[[device]]
+name = "sw3"
+template = "switch-l2-8"
+pos = [320, 60]
+running_config = "spanning-tree mode rapid-pvst\n"
+
+[[device]]
+name = "sw4"
+template = "switch-l2-8"
+pos = [430, 60]
+running_config = "spanning-tree mode rapid-pvst\n"
+
+[[device]]
+name = "sw5"
+template = "switch-l2-8"
+pos = [540, 60]
+running_config = "spanning-tree mode rapid-pvst\n"
+
+[[device]]
+name = "sw6"
+template = "switch-l2-8"
+pos = [650, 60]
+running_config = "spanning-tree mode rapid-pvst\n"
+
+[[device]]
+name = "sw7"
+template = "switch-l2-8"
+pos = [760, 60]
+running_config = "spanning-tree mode rapid-pvst\n"
+
+[[device]]
+name = "sw8"
+template = "switch-l2-8"
+pos = [870, 60]
+running_config = "spanning-tree mode rapid-pvst\n"
+
+[[device]]
+name = "sw9"
+template = "switch-l2-8"
+pos = [980, 60]
+running_config = "spanning-tree mode rapid-pvst\n"
+
+[[device]]
+name = "sw10"
+template = "switch-l2-8"
+pos = [1090, 60]
+running_config = "spanning-tree mode rapid-pvst\n"
+
+[[device]]
+name = "sw11"
+template = "switch-l2-8"
+pos = [1200, 60]
+running_config = "spanning-tree mode rapid-pvst\n"
+
+[[device]]
+name = "sw12"
+template = "switch-l2-8"
+pos = [1310, 60]
+running_config = "spanning-tree mode rapid-pvst\n"
+
+[[device]]
+name = "pc1"
+template = "host-pc"
+pos = [60, 140]
+[device.host]
+ipv4 = "10.0.0.1/24"
+
+[[device]]
+name = "pc2"
+template = "host-pc"
+pos = [90, 140]
+[device.host]
+ipv4 = "10.0.0.2/24"
+
+[[device]]
+name = "pc3"
+template = "host-pc"
+pos = [120, 140]
+[device.host]
+ipv4 = "10.0.0.3/24"
+
+[[device]]
+name = "pc4"
+template = "host-pc"
+pos = [60, 180]
+[device.host]
+ipv4 = "10.0.0.4/24"
+
+[[device]]
+name = "pc5"
+template = "host-pc"
+pos = [90, 180]
+[device.host]
+ipv4 = "10.0.0.5/24"
+
+[[device]]
+name = "pc6"
+template = "host-pc"
+pos = [120, 180]
+[device.host]
+ipv4 = "10.0.0.6/24"
+
+[[device]]
+name = "pc7"
+template = "host-pc"
+pos = [170, 140]
+[device.host]
+ipv4 = "10.0.0.7/24"
+
+[[device]]
+name = "pc8"
+template = "host-pc"
+pos = [200, 140]
+[device.host]
+ipv4 = "10.0.0.8/24"
+
+[[device]]
+name = "pc9"
+template = "host-pc"
+pos = [230, 140]
+[device.host]
+ipv4 = "10.0.0.9/24"
+
+[[device]]
+name = "pc10"
+template = "host-pc"
+pos = [170, 180]
+[device.host]
+ipv4 = "10.0.0.10/24"
+
+[[device]]
+name = "pc11"
+template = "host-pc"
+pos = [200, 180]
+[device.host]
+ipv4 = "10.0.0.11/24"
+
+[[device]]
+name = "pc12"
+template = "host-pc"
+pos = [230, 180]
+[device.host]
+ipv4 = "10.0.0.12/24"
+
+[[device]]
+name = "pc13"
+template = "host-pc"
+pos = [280, 140]
+[device.host]
+ipv4 = "10.0.0.13/24"
+
+[[device]]
+name = "pc14"
+template = "host-pc"
+pos = [310, 140]
+[device.host]
+ipv4 = "10.0.0.14/24"
+
+[[device]]
+name = "pc15"
+template = "host-pc"
+pos = [340, 140]
+[device.host]
+ipv4 = "10.0.0.15/24"
+
+[[device]]
+name = "pc16"
+template = "host-pc"
+pos = [280, 180]
+[device.host]
+ipv4 = "10.0.0.16/24"
+
+[[device]]
+name = "pc17"
+template = "host-pc"
+pos = [310, 180]
+[device.host]
+ipv4 = "10.0.0.17/24"
+
+[[device]]
+name = "pc18"
+template = "host-pc"
+pos = [340, 180]
+[device.host]
+ipv4 = "10.0.0.18/24"
+
+[[device]]
+name = "pc19"
+template = "host-pc"
+pos = [390, 140]
+[device.host]
+ipv4 = "10.0.0.19/24"
+
+[[device]]
+name = "pc20"
+template = "host-pc"
+pos = [420, 140]
+[device.host]
+ipv4 = "10.0.0.20/24"
+
+[[device]]
+name = "pc21"
+template = "host-pc"
+pos = [450, 140]
+[device.host]
+ipv4 = "10.0.0.21/24"
+
+[[device]]
+name = "pc22"
+template = "host-pc"
+pos = [390, 180]
+[device.host]
+ipv4 = "10.0.0.22/24"
+
+[[device]]
+name = "pc23"
+template = "host-pc"
+pos = [420, 180]
+[device.host]
+ipv4 = "10.0.0.23/24"
+
+[[device]]
+name = "pc24"
+template = "host-pc"
+pos = [450, 180]
+[device.host]
+ipv4 = "10.0.0.24/24"
+
+[[device]]
+name = "pc25"
+template = "host-pc"
+pos = [500, 140]
+[device.host]
+ipv4 = "10.0.0.25/24"
+
+[[device]]
+name = "pc26"
+template = "host-pc"
+pos = [530, 140]
+[device.host]
+ipv4 = "10.0.0.26/24"
+
+[[device]]
+name = "pc27"
+template = "host-pc"
+pos = [560, 140]
+[device.host]
+ipv4 = "10.0.0.27/24"
+
+[[device]]
+name = "pc28"
+template = "host-pc"
+pos = [500, 180]
+[device.host]
+ipv4 = "10.0.0.28/24"
+
+[[device]]
+name = "pc29"
+template = "host-pc"
+pos = [530, 180]
+[device.host]
+ipv4 = "10.0.0.29/24"
+
+[[device]]
+name = "pc30"
+template = "host-pc"
+pos = [560, 180]
+[device.host]
+ipv4 = "10.0.0.30/24"
+
+[[device]]
+name = "pc31"
+template = "host-pc"
+pos = [610, 140]
+[device.host]
+ipv4 = "10.0.0.31/24"
+
+[[device]]
+name = "pc32"
+template = "host-pc"
+pos = [640, 140]
+[device.host]
+ipv4 = "10.0.0.32/24"
+
+[[device]]
+name = "pc33"
+template = "host-pc"
+pos = [670, 140]
+[device.host]
+ipv4 = "10.0.0.33/24"
+
+[[device]]
+name = "pc34"
+template = "host-pc"
+pos = [610, 180]
+[device.host]
+ipv4 = "10.0.0.34/24"
+
+[[device]]
+name = "pc35"
+template = "host-pc"
+pos = [640, 180]
+[device.host]
+ipv4 = "10.0.0.35/24"
+
+[[device]]
+name = "pc36"
+template = "host-pc"
+pos = [670, 180]
+[device.host]
+ipv4 = "10.0.0.36/24"
+
+[[device]]
+name = "pc37"
+template = "host-pc"
+pos = [720, 140]
+[device.host]
+ipv4 = "10.0.0.37/24"
+
+[[device]]
+name = "pc38"
+template = "host-pc"
+pos = [750, 140]
+[device.host]
+ipv4 = "10.0.0.38/24"
+
+[[device]]
+name = "pc39"
+template = "host-pc"
+pos = [780, 140]
+[device.host]
+ipv4 = "10.0.0.39/24"
+
+[[device]]
+name = "pc40"
+template = "host-pc"
+pos = [720, 180]
+[device.host]
+ipv4 = "10.0.0.40/24"
+
+[[device]]
+name = "pc41"
+template = "host-pc"
+pos = [750, 180]
+[device.host]
+ipv4 = "10.0.0.41/24"
+
+[[device]]
+name = "pc42"
+template = "host-pc"
+pos = [780, 180]
+[device.host]
+ipv4 = "10.0.0.42/24"
+
+[[device]]
+name = "pc43"
+template = "host-pc"
+pos = [830, 140]
+[device.host]
+ipv4 = "10.0.0.43/24"
+
+[[device]]
+name = "pc44"
+template = "host-pc"
+pos = [860, 140]
+[device.host]
+ipv4 = "10.0.0.44/24"
+
+[[device]]
+name = "pc45"
+template = "host-pc"
+pos = [890, 140]
+[device.host]
+ipv4 = "10.0.0.45/24"
+
+[[device]]
+name = "pc46"
+template = "host-pc"
+pos = [830, 180]
+[device.host]
+ipv4 = "10.0.0.46/24"
+
+[[device]]
+name = "pc47"
+template = "host-pc"
+pos = [860, 180]
+[device.host]
+ipv4 = "10.0.0.47/24"
+
+[[device]]
+name = "pc48"
+template = "host-pc"
+pos = [890, 180]
+[device.host]
+ipv4 = "10.0.0.48/24"
+
+[[device]]
+name = "pc49"
+template = "host-pc"
+pos = [940, 140]
+[device.host]
+ipv4 = "10.0.0.49/24"
+
+[[device]]
+name = "pc50"
+template = "host-pc"
+pos = [970, 140]
+[device.host]
+ipv4 = "10.0.0.50/24"
+
+[[device]]
+name = "pc51"
+template = "host-pc"
+pos = [1000, 140]
+[device.host]
+ipv4 = "10.0.0.51/24"
+
+[[device]]
+name = "pc52"
+template = "host-pc"
+pos = [940, 180]
+[device.host]
+ipv4 = "10.0.0.52/24"
+
+[[device]]
+name = "pc53"
+template = "host-pc"
+pos = [970, 180]
+[device.host]
+ipv4 = "10.0.0.53/24"
+
+[[device]]
+name = "pc54"
+template = "host-pc"
+pos = [1000, 180]
+[device.host]
+ipv4 = "10.0.0.54/24"
+
+[[device]]
+name = "pc55"
+template = "host-pc"
+pos = [1050, 140]
+[device.host]
+ipv4 = "10.0.0.55/24"
+
+[[device]]
+name = "pc56"
+template = "host-pc"
+pos = [1080, 140]
+[device.host]
+ipv4 = "10.0.0.56/24"
+
+[[device]]
+name = "pc57"
+template = "host-pc"
+pos = [1110, 140]
+[device.host]
+ipv4 = "10.0.0.57/24"
+
+[[device]]
+name = "pc58"
+template = "host-pc"
+pos = [1050, 180]
+[device.host]
+ipv4 = "10.0.0.58/24"
+
+[[device]]
+name = "pc59"
+template = "host-pc"
+pos = [1080, 180]
+[device.host]
+ipv4 = "10.0.0.59/24"
+
+[[device]]
+name = "pc60"
+template = "host-pc"
+pos = [1110, 180]
+[device.host]
+ipv4 = "10.0.0.60/24"
+
+[[device]]
+name = "pc61"
+template = "host-pc"
+pos = [1160, 140]
+[device.host]
+ipv4 = "10.0.0.61/24"
+
+[[device]]
+name = "pc62"
+template = "host-pc"
+pos = [1190, 140]
+[device.host]
+ipv4 = "10.0.0.62/24"
+
+[[device]]
+name = "pc63"
+template = "host-pc"
+pos = [1220, 140]
+[device.host]
+ipv4 = "10.0.0.63/24"
+
+[[device]]
+name = "pc64"
+template = "host-pc"
+pos = [1160, 180]
+[device.host]
+ipv4 = "10.0.0.64/24"
+
+[[device]]
+name = "pc65"
+template = "host-pc"
+pos = [1190, 180]
+[device.host]
+ipv4 = "10.0.0.65/24"
+
+[[device]]
+name = "pc66"
+template = "host-pc"
+pos = [1220, 180]
+[device.host]
+ipv4 = "10.0.0.66/24"
+
+[[device]]
+name = "pc67"
+template = "host-pc"
+pos = [1270, 140]
+[device.host]
+ipv4 = "10.0.0.67/24"
+
+[[device]]
+name = "pc68"
+template = "host-pc"
+pos = [1300, 140]
+[device.host]
+ipv4 = "10.0.0.68/24"
+
+[[device]]
+name = "pc69"
+template = "host-pc"
+pos = [1330, 140]
+[device.host]
+ipv4 = "10.0.0.69/24"
+
+[[device]]
+name = "pc70"
+template = "host-pc"
+pos = [1270, 180]
+[device.host]
+ipv4 = "10.0.0.70/24"
+
+[[device]]
+name = "pc71"
+template = "host-pc"
+pos = [1300, 180]
+[device.host]
+ipv4 = "10.0.0.71/24"
+
+[[device]]
+name = "pc72"
+template = "host-pc"
+pos = [1330, 180]
+[device.host]
+ipv4 = "10.0.0.72/24"
+
+[[link]]
+a = "sw1:Fa0/7"
+b = "sw2:Fa0/8"
+
+[[link]]
+a = "sw2:Fa0/7"
+b = "sw3:Fa0/8"
+
+[[link]]
+a = "sw3:Fa0/7"
+b = "sw4:Fa0/8"
+
+[[link]]
+a = "sw4:Fa0/7"
+b = "sw5:Fa0/8"
+
+[[link]]
+a = "sw5:Fa0/7"
+b = "sw6:Fa0/8"
+
+[[link]]
+a = "sw6:Fa0/7"
+b = "sw7:Fa0/8"
+
+[[link]]
+a = "sw7:Fa0/7"
+b = "sw8:Fa0/8"
+
+[[link]]
+a = "sw8:Fa0/7"
+b = "sw9:Fa0/8"
+
+[[link]]
+a = "sw9:Fa0/7"
+b = "sw10:Fa0/8"
+
+[[link]]
+a = "sw10:Fa0/7"
+b = "sw11:Fa0/8"
+
+[[link]]
+a = "sw11:Fa0/7"
+b = "sw12:Fa0/8"
+
+[[link]]
+a = "pc1:eth0"
+b = "sw1:Fa0/1"
+
+[[link]]
+a = "pc2:eth0"
+b = "sw1:Fa0/2"
+
+[[link]]
+a = "pc3:eth0"
+b = "sw1:Fa0/3"
+
+[[link]]
+a = "pc4:eth0"
+b = "sw1:Fa0/4"
+
+[[link]]
+a = "pc5:eth0"
+b = "sw1:Fa0/5"
+
+[[link]]
+a = "pc6:eth0"
+b = "sw1:Fa0/6"
+
+[[link]]
+a = "pc7:eth0"
+b = "sw2:Fa0/1"
+
+[[link]]
+a = "pc8:eth0"
+b = "sw2:Fa0/2"
+
+[[link]]
+a = "pc9:eth0"
+b = "sw2:Fa0/3"
+
+[[link]]
+a = "pc10:eth0"
+b = "sw2:Fa0/4"
+
+[[link]]
+a = "pc11:eth0"
+b = "sw2:Fa0/5"
+
+[[link]]
+a = "pc12:eth0"
+b = "sw2:Fa0/6"
+
+[[link]]
+a = "pc13:eth0"
+b = "sw3:Fa0/1"
+
+[[link]]
+a = "pc14:eth0"
+b = "sw3:Fa0/2"
+
+[[link]]
+a = "pc15:eth0"
+b = "sw3:Fa0/3"
+
+[[link]]
+a = "pc16:eth0"
+b = "sw3:Fa0/4"
+
+[[link]]
+a = "pc17:eth0"
+b = "sw3:Fa0/5"
+
+[[link]]
+a = "pc18:eth0"
+b = "sw3:Fa0/6"
+
+[[link]]
+a = "pc19:eth0"
+b = "sw4:Fa0/1"
+
+[[link]]
+a = "pc20:eth0"
+b = "sw4:Fa0/2"
+
+[[link]]
+a = "pc21:eth0"
+b = "sw4:Fa0/3"
+
+[[link]]
+a = "pc22:eth0"
+b = "sw4:Fa0/4"
+
+[[link]]
+a = "pc23:eth0"
+b = "sw4:Fa0/5"
+
+[[link]]
+a = "pc24:eth0"
+b = "sw4:Fa0/6"
+
+[[link]]
+a = "pc25:eth0"
+b = "sw5:Fa0/1"
+
+[[link]]
+a = "pc26:eth0"
+b = "sw5:Fa0/2"
+
+[[link]]
+a = "pc27:eth0"
+b = "sw5:Fa0/3"
+
+[[link]]
+a = "pc28:eth0"
+b = "sw5:Fa0/4"
+
+[[link]]
+a = "pc29:eth0"
+b = "sw5:Fa0/5"
+
+[[link]]
+a = "pc30:eth0"
+b = "sw5:Fa0/6"
+
+[[link]]
+a = "pc31:eth0"
+b = "sw6:Fa0/1"
+
+[[link]]
+a = "pc32:eth0"
+b = "sw6:Fa0/2"
+
+[[link]]
+a = "pc33:eth0"
+b = "sw6:Fa0/3"
+
+[[link]]
+a = "pc34:eth0"
+b = "sw6:Fa0/4"
+
+[[link]]
+a = "pc35:eth0"
+b = "sw6:Fa0/5"
+
+[[link]]
+a = "pc36:eth0"
+b = "sw6:Fa0/6"
+
+[[link]]
+a = "pc37:eth0"
+b = "sw7:Fa0/1"
+
+[[link]]
+a = "pc38:eth0"
+b = "sw7:Fa0/2"
+
+[[link]]
+a = "pc39:eth0"
+b = "sw7:Fa0/3"
+
+[[link]]
+a = "pc40:eth0"
+b = "sw7:Fa0/4"
+
+[[link]]
+a = "pc41:eth0"
+b = "sw7:Fa0/5"
+
+[[link]]
+a = "pc42:eth0"
+b = "sw7:Fa0/6"
+
+[[link]]
+a = "pc43:eth0"
+b = "sw8:Fa0/1"
+
+[[link]]
+a = "pc44:eth0"
+b = "sw8:Fa0/2"
+
+[[link]]
+a = "pc45:eth0"
+b = "sw8:Fa0/3"
+
+[[link]]
+a = "pc46:eth0"
+b = "sw8:Fa0/4"
+
+[[link]]
+a = "pc47:eth0"
+b = "sw8:Fa0/5"
+
+[[link]]
+a = "pc48:eth0"
+b = "sw8:Fa0/6"
+
+[[link]]
+a = "pc49:eth0"
+b = "sw9:Fa0/1"
+
+[[link]]
+a = "pc50:eth0"
+b = "sw9:Fa0/2"
+
+[[link]]
+a = "pc51:eth0"
+b = "sw9:Fa0/3"
+
+[[link]]
+a = "pc52:eth0"
+b = "sw9:Fa0/4"
+
+[[link]]
+a = "pc53:eth0"
+b = "sw9:Fa0/5"
+
+[[link]]
+a = "pc54:eth0"
+b = "sw9:Fa0/6"
+
+[[link]]
+a = "pc55:eth0"
+b = "sw10:Fa0/1"
+
+[[link]]
+a = "pc56:eth0"
+b = "sw10:Fa0/2"
+
+[[link]]
+a = "pc57:eth0"
+b = "sw10:Fa0/3"
+
+[[link]]
+a = "pc58:eth0"
+b = "sw10:Fa0/4"
+
+[[link]]
+a = "pc59:eth0"
+b = "sw10:Fa0/5"
+
+[[link]]
+a = "pc60:eth0"
+b = "sw10:Fa0/6"
+
+[[link]]
+a = "pc61:eth0"
+b = "sw11:Fa0/1"
+
+[[link]]
+a = "pc62:eth0"
+b = "sw11:Fa0/2"
+
+[[link]]
+a = "pc63:eth0"
+b = "sw11:Fa0/3"
+
+[[link]]
+a = "pc64:eth0"
+b = "sw11:Fa0/4"
+
+[[link]]
+a = "pc65:eth0"
+b = "sw11:Fa0/5"
+
+[[link]]
+a = "pc66:eth0"
+b = "sw11:Fa0/6"
+
+[[link]]
+a = "pc67:eth0"
+b = "sw12:Fa0/1"
+
+[[link]]
+a = "pc68:eth0"
+b = "sw12:Fa0/2"
+
+[[link]]
+a = "pc69:eth0"
+b = "sw12:Fa0/3"
+
+[[link]]
+a = "pc70:eth0"
+b = "sw12:Fa0/4"
+
+[[link]]
+a = "pc71:eth0"
+b = "sw12:Fa0/5"
+
+[[link]]
+a = "pc72:eth0"
+b = "sw12:Fa0/6"

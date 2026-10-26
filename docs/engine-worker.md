@@ -51,12 +51,25 @@ app's thread through the same link.
   Step/Back, field tree) give the same results with the worker as without. There is no test of
   the worker in CI; the harness is run by hand.
 
+## Done in step 4: pacing
+
+- **Fast-forward is batched.** `Run` used to be up to 100,000 round trips (one `Step` each); it is
+  now `EngineCmd::Run { max }`, which steps up to `max` times in the worker and answers with what
+  each step delivered (5,000 at a time, so the page can draw between batches). Back still undoes
+  one step at a time; a batch equals that many single steps (tested, trace hashes equal).
+- **The live clock has flow control.** One message a round (`Advance` already forgets saved states
+  and answers with the clock), one round at a time, not more often than every 0.1 s; time that
+  passes while the engine is busy is asked for together when it catches up, so a slow engine is
+  never queued more than it can do. Answers to the clock do not wake the page for a frame; answers
+  somebody is waiting for do.
+- **Measured** with `load.mjs` on an 84-device lab: with these, the page's frame gaps with the
+  engine in the worker equal those with it in the page (see the harness README). Before the last
+  two changes the worker made them six times worse.
+- Not moved: the clock is still driven by the page's frames, so a hidden tab stops simulated time.
+
 ## To do, in order
 
-1. **Pacing.** Run-to-idle and live time then happen off the page's thread, so a storm or a
-   long Run cannot stall drawing. `Advance` can be driven by the worker's own timer instead of
-   the page's frames.
-2. **Prove it in a browser, under load.** The throttled-browser harness (`testkit/throttle`: `demo.mjs` and
+1. **Prove it in a browser, under load.** The throttled-browser harness (`testkit/throttle`: `demo.mjs` and
    `m2.mjs`) is the way, at 8x and with a lab big enough that the engine is busy; and put a check of the worker in CI. The plan's per-frame budget is easiest to meet once this is true.
 
 ## Why this order

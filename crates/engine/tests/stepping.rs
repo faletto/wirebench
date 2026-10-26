@@ -272,3 +272,36 @@ fn hops_carry_the_frame_itself() {
     assert!(!frames.is_empty());
     assert!(frames.iter().all(|f| wire::EthernetFrame::parse(f).is_ok()));
 }
+
+#[test]
+fn run_is_the_same_as_that_many_steps_and_each_can_be_undone() {
+    let (mut single, id) = engine();
+    let (mut batch, _) = engine();
+    for e in [&mut single, &mut batch] {
+        e.handle(EngineCmd::PingOnce {
+            device: id("pc1"),
+            dst: [10, 0, 1, 1],
+        });
+    }
+    let one_by_one = step_all(&mut single);
+    let all = batch.handle(EngineCmd::Run { max: 1000 });
+    assert_eq!(all, one_by_one, "same events, same order, ending in Idle");
+    assert_eq!(single.world.trace_hash(), batch.world.trace_hash());
+    // A short batch stops where it was told to and can be stepped back through, step by step.
+    let (mut b2, id2) = engine();
+    b2.handle(EngineCmd::PingOnce {
+        device: id2("pc1"),
+        dst: [10, 0, 1, 1],
+    });
+    let h0 = b2.world.trace_hash();
+    let part = b2.handle(EngineCmd::Run { max: 3 });
+    assert_eq!(part.len(), 3);
+    assert!(part.iter().all(|e| !matches!(e, EngineEvent::Idle { .. })));
+    for _ in 0..3 {
+        assert!(matches!(
+            b2.handle(EngineCmd::StepBack).remove(0),
+            EngineEvent::Rewound { .. }
+        ));
+    }
+    assert_eq!(b2.world.trace_hash(), h0);
+}
