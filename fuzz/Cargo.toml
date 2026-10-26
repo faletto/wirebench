@@ -95,3 +95,9 @@ name = "wire_dtp"
 path = "fuzz_targets/wire_dtp.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "wire_dissect"
+path = "fuzz_targets/wire_dissect.rs"
+test = false
+doc = false
