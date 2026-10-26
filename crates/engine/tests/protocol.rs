@@ -38,7 +38,10 @@ fn protocol_messages_roundtrip() {
             line: "show ".into(),
         },
         EngineEvent::Closed { terminal: 7 },
-        EngineEvent::Time { ns: 123 },
+        EngineEvent::Time {
+            ns: 123,
+            background: false,
+        },
         EngineEvent::Error {
             message: "no".into(),
         },
@@ -119,6 +122,9 @@ fn terminal_session_over_the_byte_protocol() {
     ));
     assert_eq!(
         call(EngineCmd::Advance { ns: 5_000 }),
-        vec![EngineEvent::Time { ns: 5_000 }]
+        vec![EngineEvent::Time {
+            ns: 5_000,
+            background: false,
+        }]
     );
 }

@@ -1,0 +1,209 @@
+//! Building and editing a lab through the message protocol alone, as a UI in another thread
+//! (a Web Worker) has to: every command and answer goes through postcard bytes.
+
+use engine::protocol::{decode, encode, Engine, EngineCmd, EngineEvent, LabView, ShellKind};
+use kernel::Trace;
+
+const LAB: &str = include_str!("../../../labs/m1_static_routes.lab.toml");
+
+/// An engine that has never seen a lab, and a way to talk to it over bytes.
+struct Rig {
+    e: Engine,
+}
+
+impl Rig {
+    fn new() -> Rig {
+        Rig {
+            e: Engine::new(engine::World::new(Trace::new())),
+        }
+    }
+
+    fn send(&mut self, cmd: EngineCmd) -> Vec<EngineEvent> {
+        let out = self.e.handle_bytes(&encode(&cmd));
+        decode(&out).expect("answers decode")
+    }
+
+    fn view(&mut self, cmd: EngineCmd) -> LabView {
+        match self.send(cmd).remove(0) {
+            EngineEvent::Lab { view } => view,
+            other => panic!("expected a lab view, got {other:?}"),
+        }
+    }
+
+    fn error(&mut self, cmd: EngineCmd) -> String {
+        match self.send(cmd).remove(0) {
+            EngineEvent::Error { message } => message,
+            other => panic!("expected an error, got {other:?}"),
+        }
+    }
+
+    fn text(&mut self) -> String {
+        match self.send(EngineCmd::Snapshot).remove(0) {
+            EngineEvent::LabText { text } => text,
+            other => panic!("expected text, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn before_a_lab_is_loaded_edits_and_snapshots_are_refused() {
+    let mut r = Rig::new();
+    assert_eq!(r.error(EngineCmd::Snapshot), "no lab loaded");
+    assert_eq!(
+        r.error(EngineCmd::AddDevice {
+            kind: ShellKind::Host,
+            pos: [0, 0]
+        }),
+        "no lab loaded"
+    );
+}
+
+#[test]
+fn loading_describes_the_lab_and_lets_every_device_open_a_console() {
+    let mut r = Rig::new();
+    let v = r.view(EngineCmd::Load { lab: LAB.into() });
+    assert!(!v.devices.is_empty() && !v.links.is_empty());
+    assert!(v.devices.iter().any(|d| d.kind == ShellKind::Router));
+    for d in &v.devices {
+        let ev = r
+            .send(EngineCmd::OpenTerminal { device: d.device })
+            .remove(0);
+        assert!(
+            matches!(ev, EngineEvent::TerminalOpened { .. }),
+            "{}: {ev:?}",
+            d.name
+        );
+    }
+    let bad = r.error(EngineCmd::Load {
+        lab: "not a lab".into(),
+    });
+    assert!(!bad.is_empty());
+    // A refused load leaves the old lab in place.
+    assert!(r.text().contains("pc1"));
+}
+
+#[test]
+fn adding_devices_and_cables_updates_the_view_and_the_snapshot() {
+    let mut r = Rig::new();
+    r.view(EngineCmd::Load { lab: LAB.into() });
+    let before = r.text();
+    let v = r.view(EngineCmd::AddDevice {
+        kind: ShellKind::Switch,
+        pos: [40, 50],
+    });
+    let sw = v.devices.last().unwrap().clone();
+    assert_eq!(
+        (sw.name.as_str(), sw.pos, sw.kind),
+        ("sw1", [40, 50], ShellKind::Switch)
+    );
+    // The new device has a console straight away.
+    let ev = r
+        .send(EngineCmd::OpenTerminal { device: sw.device })
+        .remove(0);
+    assert!(matches!(ev, EngineEvent::TerminalOpened { .. }));
+    let n = v.devices.len();
+    r.view(EngineCmd::AddDevice {
+        kind: ShellKind::Switch,
+        pos: [90, 50],
+    });
+    let v = r.view(EngineCmd::AddLink { a: n - 1, b: n });
+    assert_eq!(v.links.last().map(|l| (l.a, l.b)), Some((n - 1, n)));
+    let v = r.view(EngineCmd::MoveDevice {
+        device: n - 1,
+        pos: [1, 2],
+    });
+    assert_eq!(v.devices[n - 1].pos, [1, 2]);
+    let after = r.text();
+    assert_ne!(after, before);
+    assert!(after.contains("sw1"));
+    // Loading the snapshot elsewhere gives the same lab and the same text.
+    let mut r2 = Rig::new();
+    let v2 = r2.view(EngineCmd::Load { lab: after.clone() });
+    assert_eq!(v2.devices.len(), n + 1);
+    assert_eq!(r2.text(), after);
+}
+
+#[test]
+fn a_cable_with_nowhere_to_go_is_refused_with_a_reason() {
+    let mut r = Rig::new();
+    r.view(EngineCmd::Load { lab: LAB.into() });
+    assert!(!r.error(EngineCmd::AddLink { a: 0, b: 0 }).is_empty());
+    assert!(!r.error(EngineCmd::AddLink { a: 0, b: 99 }).is_empty());
+}
+
+#[test]
+fn removing_rebuilds_without_the_device_or_cable_and_closes_consoles() {
+    let mut r = Rig::new();
+    let v = r.view(EngineCmd::Load { lab: LAB.into() });
+    let t = match r
+        .send(EngineCmd::OpenTerminal {
+            device: v.devices[0].device,
+        })
+        .remove(0)
+    {
+        EngineEvent::TerminalOpened { terminal, .. } => terminal,
+        other => panic!("{other:?}"),
+    };
+    let links = v.links.len();
+    let v2 = r.view(EngineCmd::RemoveLink { link: 0 });
+    assert_eq!(v2.links.len(), links - 1);
+    assert_eq!(v2.devices.len(), v.devices.len());
+    // The console that was open belonged to the old world.
+    let ev = r
+        .send(EngineCmd::Exec {
+            terminal: t,
+            line: "ipconfig".into(),
+        })
+        .remove(0);
+    assert!(matches!(ev, EngineEvent::Error { .. }), "{ev:?}");
+    let first = v2.devices[0].name.clone();
+    let v3 = r.view(EngineCmd::RemoveDevice { device: 0 });
+    assert_eq!(v3.devices.len(), v.devices.len() - 1);
+    assert!(v3.devices.iter().all(|d| d.name != first));
+    assert!(v3
+        .links
+        .iter()
+        .all(|l| l.a < v3.devices.len() && l.b < v3.devices.len()));
+    assert!(!r.error(EngineCmd::RemoveDevice { device: 99 }).is_empty());
+}
+
+#[test]
+fn configuration_typed_at_a_console_is_in_the_snapshot() {
+    let mut r = Rig::new();
+    let v = r.view(EngineCmd::Load { lab: LAB.into() });
+    let router = v
+        .devices
+        .iter()
+        .find(|d| d.kind == ShellKind::Router)
+        .unwrap()
+        .clone();
+    let t = match r
+        .send(EngineCmd::OpenTerminal {
+            device: router.device,
+        })
+        .remove(0)
+    {
+        EngineEvent::TerminalOpened { terminal, .. } => terminal,
+        other => panic!("{other:?}"),
+    };
+    for line in ["enable", "configure terminal", "hostname typed-here", "end"] {
+        r.send(EngineCmd::Exec {
+            terminal: t,
+            line: line.into(),
+        });
+    }
+    assert!(r.text().contains("typed-here"));
+}
+
+#[test]
+fn now_reports_the_clock_and_whether_upkeep_is_pending() {
+    let mut r = Rig::new();
+    r.view(EngineCmd::Load { lab: LAB.into() });
+    match r.send(EngineCmd::Now).remove(0) {
+        EngineEvent::Time { ns, background } => {
+            assert_eq!(ns, 0);
+            assert!(!background);
+        }
+        other => panic!("{other:?}"),
+    }
+}

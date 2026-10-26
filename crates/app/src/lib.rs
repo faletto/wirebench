@@ -10,6 +10,7 @@ pub mod clock;
 mod files;
 mod history;
 mod inspector;
+mod link;
 mod sim;
 mod term;
 pub mod widget;
