@@ -121,6 +121,18 @@ fn collect(fields: Vec<Option<Node>>, end: usize) -> Vec<Node> {
 
 /// The layers of `frame`, outermost first: Ethernet, then whatever it carries.
 pub fn dissect(frame: &[u8]) -> Vec<Node> {
+    let mut layers = dissect_layers(frame);
+    // A header can claim more than the frame holds; whatever it says, no range leaves the frame.
+    fn clamp(n: &mut Node, len: usize) {
+        n.range.start = n.range.start.min(len);
+        n.range.end = n.range.end.min(len).max(n.range.start);
+        n.children.iter_mut().for_each(|c| clamp(c, len));
+    }
+    layers.iter_mut().for_each(|l| clamp(l, frame.len()));
+    layers
+}
+
+fn dissect_layers(frame: &[u8]) -> Vec<Node> {
     let c = Cursor { b: frame };
     let mut layers = vec![];
     let (eth, ethertype, mut at) = ethernet(&c);
@@ -919,6 +931,18 @@ mod tests {
         check(&f, &l);
         assert_eq!(protocols(&l), ["ethernet", "dtp"]);
         assert!(labels(&l).contains(&"Trunk status: desirable".to_string()));
+    }
+
+    #[test]
+    fn a_header_that_claims_more_than_the_frame_holds_stays_inside_it() {
+        // Found by the fuzzer: an IPv4 header with a zero length nibble, then a frame that ends
+        // before the payload it points to.
+        let frame = [
+            0x41, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x08, 0x00, 0x00, 0x0a, 0x90, 0x90, 0x90, 0x00,
+            0x90, 0x90, 0x00, 0x01, 0, 0, 0, 0, 0, 0, 0x03,
+        ];
+        let l = dissect(&frame);
+        check(&frame, &l);
     }
 
     #[test]
