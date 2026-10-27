@@ -85,3 +85,14 @@ changes" is showing, which the script allows for.
 
 `hundred-lab.toml` has 100 devices (14 switches, 86 PCs); `load.mjs` takes a lab as its fifth
 argument, and `check.mjs` (CI) uses this one.
+
+## Offline (`offline.mjs`)
+
+`node offline.mjs <dist> [port=8766] [path=/]` serves a web build itself, first as an older
+version (the same bundle renamed), then as it is, and checks that the service worker's cache
+(`crates/app/web/sw.js`) swaps the old bundle for the new. Then it stops the server, puts the
+browser offline and opens the page again, with the engine in the worker and with
+`?engine=inline`: the page must come from the cache and the worker's engine must answer.
+Screenshots go to `out-offline/`. `path` is the build's `--public-url` (`/wirebench/` for the
+Pages build). CI runs it (job `worker-browser`). Without the service worker it fails at the
+offline load.

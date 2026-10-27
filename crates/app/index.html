@@ -5,6 +5,23 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>wirebench</title>
     <link data-trunk rel="rust" data-bin="wirebench-app" data-wasm-opt="z" />
+    <link data-trunk rel="copy-file" href="web/sw.js" />
+    <link data-trunk rel="copy-file" href="web/manifest.webmanifest" />
+    <link data-trunk rel="copy-file" href="web/icon.svg" />
+    <link data-trunk rel="copy-file" href="web/icon-192.png" />
+    <link data-trunk rel="copy-file" href="web/icon-512.png" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="icon-192.png" />
+    <meta name="theme-color" content="#1b1b1b" />
+    <script>
+      // Offline support (web/sw.js). Not when opened from a file, where there is nothing to cache.
+      if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+        addEventListener('load', () => {
+          navigator.serviceWorker.register('./sw.js').catch((e) => console.warn('wirebench: no offline copy:', e));
+        });
+      }
+    </script>
     <style>
       html, body { margin: 0; height: 100%; background: #1b1b1b; color: #ccc; font-family: system-ui, sans-serif; }
       canvas { width: 100%; height: 100%; display: block; }
