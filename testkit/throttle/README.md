@@ -72,3 +72,16 @@ answer to the live clock does not ask for a frame.
 
 `check.mjs [rate=8] [url]` runs both and exits non-zero if the worker did not start or its frame
 gaps are more than twice the inline run's. CI runs it (job `worker-browser`).
+
+## The M2 run, second part (`m2b.mjs`)
+
+What `m2.mjs` left out: the DTP port-mode drop-down in the settings panel (one end "dynamic
+desirable" trunks a link between "dynamic auto" ends, "access" undoes it), the inspector's filter
+box, Save then Open of a changed lab, and delete and undo with another device's console in
+configuration mode. The script asserts two things itself (the saved file has the trunk setting;
+reopening and saving again gives the same text); the rest is screenshots (`01` to `18`). It is
+pixel-driven and run by hand, not in CI. The Save button sits further right while "unsaved
+changes" is showing, which the script allows for.
+
+`hundred-lab.toml` has 100 devices (14 switches, 86 PCs); `load.mjs` takes a lab as its fifth
+argument, and `check.mjs` (CI) uses this one.

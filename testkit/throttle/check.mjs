@@ -2,12 +2,13 @@
 // fail if the worker was not used or made the page's frames noticeably worse. Compared against the
 // inline run on the same machine, so a slow runner does not matter. The regression this guards
 // against (a clock loop at full speed) made the median gap six times worse.
-//   CHROMIUM=... node check.mjs [rate=8] [url=http://localhost:8765/]
+//   CHROMIUM=... node check.mjs [rate=8] [url=http://localhost:8765/] [lab=./hundred-lab.toml]
 import { execFileSync } from 'child_process';
 const rate = process.argv[2] ?? '8';
 const base = process.argv[3] ?? 'http://localhost:8765/';
+const lab = process.argv[4] ?? './hundred-lab.toml';
 const run = (url, out) => {
-  const text = execFileSync('node', ['load.mjs', rate, url, out], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
+  const text = execFileSync('node', ['load.mjs', rate, url, out, lab], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
   console.log(text.replace(/^RESULT .*\n/m, ''));
   return JSON.parse(text.split('\n').find(l => l.startsWith('RESULT ')).slice(7));
 };

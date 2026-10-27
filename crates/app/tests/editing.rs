@@ -200,3 +200,117 @@ fn an_edited_lab_survives_export_and_reload_with_working_traffic() {
     again.sim_run();
     assert!(!again.sim_hops().is_empty());
 }
+
+/// Deleting something removes it from the running lab; it does not rebuild the lab. The other
+/// devices keep their console sessions.
+#[test]
+fn deleting_a_device_leaves_the_others_consoles_alone() {
+    use app::widget::TermAction;
+    let mut app = App::new();
+    let ctx = ready(&mut app);
+    for line in ["enable", "configure terminal"] {
+        app.apply(0, TermAction::Submit(line.into()));
+    }
+    frame(&ctx, &mut app, vec![]);
+    assert_eq!(app.active_device(), "r1");
+    assert!(app.active_prompt().contains("(config)"));
+    let lines = app.active_scrollback().len();
+    let count = app.device_names().len();
+    app.delete_device(count - 1);
+    frame(&ctx, &mut app, vec![]);
+    assert_eq!(app.device_names().len(), count - 1);
+    assert_eq!(app.active_device(), "r1");
+    assert!(
+        app.active_prompt().contains("(config)"),
+        "still in configuration mode: {}",
+        app.active_prompt()
+    );
+    assert_eq!(app.active_scrollback().len(), lines, "scrollback kept");
+    // The session is still the same one: the next line runs in config mode.
+    app.apply(0, TermAction::Submit("hostname core".into()));
+    frame(&ctx, &mut app, vec![]);
+    assert!(app.active_prompt().starts_with("core(config)"));
+}
+
+/// Undo and redo change the running lab to match; they do not restart it.
+#[test]
+fn undo_and_redo_of_a_delete_keep_other_consoles_and_restore_the_order() {
+    use app::widget::TermAction;
+    let mut app = App::new();
+    let ctx = ready(&mut app);
+    let names: Vec<String> = app.device_names().iter().map(|s| s.to_string()).collect();
+    let cables = app.cables().len();
+    for line in ["enable", "configure terminal"] {
+        app.apply(0, TermAction::Submit(line.into()));
+    }
+    frame(&ctx, &mut app, vec![]);
+    let lines = app.active_scrollback().len();
+    app.delete_device(1); // a device in the middle of the list
+    frame(&ctx, &mut app, vec![]);
+    assert_eq!(app.device_names().len(), names.len() - 1);
+    app.undo();
+    frame(&ctx, &mut app, vec![]);
+    frame(&ctx, &mut app, vec![]);
+    assert_eq!(app.device_names(), names, "back, in the same place");
+    assert_eq!(app.cables().len(), cables);
+    assert_eq!(app.active_device(), "r1");
+    assert!(
+        app.active_prompt().contains("(config)"),
+        "r1 was not restarted"
+    );
+    assert_eq!(app.active_scrollback().len(), lines);
+    // The device that came back has a console of its own.
+    app.select(1);
+    frame(&ctx, &mut app, vec![]);
+    assert!(!app.active_prompt().is_empty());
+    app.redo();
+    frame(&ctx, &mut app, vec![]);
+    assert_eq!(app.device_names().len(), names.len() - 1);
+    app.select(0);
+    assert!(app.active_prompt().contains("(config)"));
+}
+
+#[test]
+fn deleting_the_open_device_moves_to_a_neighbour_and_cables_stay_in_step() {
+    use app::widget::TermAction;
+    let mut app = App::new();
+    let ctx = ready(&mut app);
+    let before = app.cables().len();
+    app.select(0);
+    app.delete_device(0); // r1, with its cables
+    frame(&ctx, &mut app, vec![]);
+    assert!(!app.device_names().contains(&"r1"));
+    assert_ne!(app.active_device(), "r1");
+    assert!(app.cables().len() < before);
+    // Every cable still joins two devices that exist, and each console answers.
+    let names: Vec<String> = app.device_names().iter().map(|s| s.to_string()).collect();
+    for (a, b) in app.cables() {
+        assert!(names.iter().any(|n| n == a) && names.iter().any(|n| n == b));
+    }
+    for tab in 0..names.len() {
+        app.select(tab);
+        app.apply(tab, TermAction::Submit("".into()));
+        frame(&ctx, &mut app, vec![]);
+        assert!(!app.active_prompt().is_empty(), "tab {tab}");
+    }
+    // And a new device can still be added.
+    app.add_device(LabKind::Host, [10, 10]);
+    frame(&ctx, &mut app, vec![]);
+    frame(&ctx, &mut app, vec![]);
+    assert_eq!(app.device_names().len(), names.len() + 1);
+}
+
+/// A lab with a tab per device would take most of the window; past a dozen there is one picker.
+/// Drawing it and choosing from it works at any size.
+#[test]
+fn a_big_lab_is_drawn_and_navigated_with_the_picker() {
+    let lab = include_str!("../../../testkit/throttle/big-lab.toml");
+    let mut app = App::from_lab_text(lab).unwrap();
+    let ctx = ready(&mut app);
+    assert_eq!(app.device_names().len(), 84);
+    for tab in [0, 40, 83, 5] {
+        app.select(tab);
+        frame(&ctx, &mut app, vec![]);
+        assert_eq!(app.active_device(), app.device_names()[tab]);
+    }
+}

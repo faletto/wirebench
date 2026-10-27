@@ -61,18 +61,26 @@ The plan (M2, "MVP, public alpha") lists more than the table above. Not done:
 ## What was checked in a real browser
 
 `testkit/throttle` (Chromium, CPU throttled, run by hand): the M1 demo, an M2 run (spanning-tree
-reroute, panel, Step/Back, field tree), and a load run (84 devices) with the engine in the page and
-in the worker. It found three bugs unit tests could not: the live clock running a stepped ping to
-the end, the worker's clock loop doubling the page's work, and the dissector's out-of-range byte
-ranges (found by fuzzing, not the browser). See `testkit/throttle/README.md` and `perf-baseline.md`.
+reroute, panel, Step/Back, field tree), `m2b.mjs` (the DTP mode control turning a link between two
+"dynamic auto" ends into a trunk and back, the inspector's filter, a changed lab saved, reopened
+and saved again to the same text, and delete and undo leaving another console's session alone), and
+load runs with the engine in the page and in the worker (84 and 100 devices). The browser found
+three bugs unit tests could not: the live clock running a stepped ping to the end, the worker's
+clock loop doubling the page's work, and the dissector's out-of-range byte ranges (found by
+fuzzing, not the browser). See `testkit/throttle/README.md` and `perf-baseline.md`.
 
 ## Open
 
 - **Hidden tab:** time that passes while the tab draws no frames is made up for on the next frame
   (up to an hour), not run in the background (`engine-worker.md`). Not tried in a real hidden tab.
-- **UI scale:** one tab per device means 84 tabs take a fifth of the window, and a frame costs
-  6 to 7 ms with that many devices. The plan's per-frame budget is still not met or measured on a
-  100-node lab.
-- **Console resets on delete and undo**, as in M1: removing a device rebuilds the world.
-- Not tried in a real browser: DTP controls, the inspector's filter, and file Save/Open beyond the
-  M1 demo.
+- **UI scale:** past 12 devices the tab strip is one picker (previous, next, a list with a filter
+  box). A 100-device lab measures p99 0.47 ms native (CPU side) and about 16 ms browser frame gaps
+  at 4x throttle. The browser number is a pacing measure, not paint cost, and there is no
+  low-end machine to try it on. A lab of 100 devices is also hard to *read* on one canvas; there is
+  no grouping, minimap or search on the canvas itself.
+- **Consoles and tables now survive delete and undo.** Delete, cable removal, undo and redo change
+  the running lab in place (`Topology::reconcile`); a device that comes back through undo is new
+  (empty ARP and MAC tables, its saved configuration). Removed devices stay in the engine's memory
+  for the session. Opening a lab still starts everything over, as it should.
+- `m2b.mjs` is a pixel-driven harness with screenshots, run by hand, not in CI; only
+  `check.mjs` (frame pacing, worker against page) runs there.
