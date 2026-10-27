@@ -15,7 +15,7 @@ AI assistant and should not be used to size M3.
 | Management plane | `provenance/management-plane.md` | Enable secret/password, line passwords, banner, `write`/`reload`/`erase`; our own secret formats |
 | DHCP | `provenance/dhcp.md` | Server, relay (`ip helper-address`), client state machine |
 | Traceroute, `ping` on routers | `provenance/traceroute.md` | `tracert`, `traceroute`, ICMP port unreachable, rate limit |
-| STP and RSTP, per VLAN | `provenance/spanning-tree.md` | Pure state machine plus switch integration; property-tested; **off by default on new switches** |
+| STP and RSTP, per VLAN | `provenance/spanning-tree.md` | Pure state machine plus switch integration; property-tested; checked against mstpd (`testkit/mstpd-oracle`, in CI); **off by default on new switches** |
 | DTP | `provenance/dtp.md` | Dynamic auto/desirable, `nonegotiate`; **default port mode is now dynamic auto** |
 | Packet inspector | `provenance/packet-inspector.md` | Filter, field tree, hex view, exact step back |
 | Device settings panels | `provenance/device-panels.md` | PC, router, switch; run through the real CLI |
@@ -28,8 +28,6 @@ the three CI targets; there are fuzz targets for every new parser.
 
 The plan (M2, "MVP, public alpha") lists more than the table above. Not done:
 
-- **mstpd oracle for spanning tree**, which the plan calls "not optional". It is Linux-only and was
-  not available; properties and mutation checks stand in for it, which is weaker.
 - **PWA offline.**
 - **"100-node benchmark green."** Measured instead: an 84-device lab in a throttled browser (frame
   gaps, not the plan's per-frame budget) and, in M1, engine cold start at 100 nodes.
@@ -49,8 +47,9 @@ The plan (M2, "MVP, public alpha") lists more than the table above. Not done:
   command; the kernel has no link-change event. Every link costs 19 for spanning tree.
 - **The simulation moves in real time while spanning tree runs.** Simulated time otherwise moves
   only when something happens. Time a hidden tab missed is made up for on return, up to an hour.
-- **No mstpd oracle** for spanning tree and no Kea oracle for DHCP. Checks are properties over
-  random networks, golden transcripts and mutation checks (see each provenance note).
+- **No Kea oracle** for DHCP. Checks are properties over random networks, golden transcripts
+  and mutation checks (`provenance/dhcp.md`). Spanning tree has the mstpd oracle (added
+  2026-10-27), which compares where networks settle, not how fast.
 - **Transient loops are possible** in races between messages (the property tests check each
   exchange's settled result, not every BPDU hop).
 - Not implemented from the plan's M2 list or noted along the way: MST, BPDU/root/loop guard,
