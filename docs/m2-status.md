@@ -20,6 +20,7 @@ AI assistant and should not be used to size M3.
 | Packet inspector | `provenance/packet-inspector.md` | Filter, field tree, hex view, exact step back |
 | Device settings panels | `provenance/device-panels.md` | PC, router, switch; run through the real CLI |
 | Engine in a Web Worker | `docs/engine-worker.md` | All 5 steps done; load-tested at 8x; browser check in CI |
+| PWA offline | `crates/app/web/sw.js` | Service worker keeps the page and its bundle; network first, so a new version is used at once; installable (manifest, icons); browser check in CI opens it with the server stopped |
 
 About 500 tests (unit, integration, property, golden transcripts, a late-answering engine) pass on
 the three CI targets; there are fuzz targets for every new parser.
@@ -30,7 +31,6 @@ The plan (M2, "MVP, public alpha") lists more than the table above. Not done:
 
 - **mstpd oracle for spanning tree**, which the plan calls "not optional". It is Linux-only and was
   not available; properties and mutation checks stand in for it, which is weaker.
-- **PWA offline.**
 - **"100-node benchmark green."** Measured instead: an 84-device lab in a throttled browser (frame
   gaps, not the plan's per-frame budget) and, in M1, engine cold start at 100 nodes.
 - **Exit demo:** "ten switching and addressing labs ... each with a scripted golden test". There
@@ -83,4 +83,4 @@ fuzzing, not the browser). See `testkit/throttle/README.md` and `perf-baseline.m
   (empty ARP and MAC tables, its saved configuration). Removed devices stay in the engine's memory
   for the session. Opening a lab still starts everything over, as it should.
 - `m2b.mjs` is a pixel-driven harness with screenshots, run by hand, not in CI; only
-  `check.mjs` (frame pacing, worker against page) runs there.
+  `check.mjs` (frame pacing, worker against page) and `offline.mjs` run there.

@@ -49,4 +49,5 @@ A loop with spanning tree off is a storm, which cannot hang the simulation: link
   was chosen differently, what is not implemented).
 - `testkit/scenarios/` holds golden console transcripts (`BLESS=1` rewrites them);
   `testkit/determinism.txt` pins trace hashes, checked on three targets in CI.
-- `testkit/throttle/` drives the real web build in Chromium (not in CI).
+- `testkit/throttle/` drives the real web build in Chromium; CI runs `check.mjs` (worker frame
+  pacing) and `offline.mjs` (opening the app with no network, from `crates/app/web/sw.js`'s cache).

@@ -71,7 +71,7 @@ jobs:
 
   # The engine worker in a real browser: the 100-device lab at 8x CPU throttling, with the engine in
   # the worker and in the page; fails if the worker is not used or its frame gaps are worse than the
-  # page's (testkit/throttle/check.mjs).
+  # page's (testkit/throttle/check.mjs). Then the offline check.
   worker-browser:
     needs: web
     runs-on: ubuntu-latest
@@ -90,6 +90,10 @@ jobs:
         working-directory: testkit/throttle
       - run: python3 -m http.server 8765 --directory web-dist &
       - run: node check.mjs 8 http://localhost:8765/
+        working-directory: testkit/throttle
+      # Offline: open once, stop the server, open again from the service worker's cache
+      # (testkit/throttle/offline.mjs); it also checks that a new version replaces the old.
+      - run: node offline.mjs ../../web-dist 8766
         working-directory: testkit/throttle
 
   # Short fuzz smoke run of every target (a longer run belongs in a scheduled job).
