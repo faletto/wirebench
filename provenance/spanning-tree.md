@@ -5,11 +5,14 @@
 and the proposal/agreement handshake, recalled rather than re-read) and public doc (general
 knowledge of Cisco's PVST+ and Rapid PVST+ behaviour and of `show spanning-tree`); own tests
 (`crates/netdev/tests/stp_net.rs`, `crates/engine/tests/stp_world.rs`, `stp_shell.rs`,
-`crates/app/tests/stp_live.rs`, golden `testkit/scenarios/m2_stp.*`). [verify] marks choices not
+`crates/app/tests/stp_live.rs`, golden `testkit/scenarios/m2_stp.*`); and, from 2026-10-27, an
+oracle: mstpd's protocol core (`testkit/mstpd-oracle`, `crates/netdev/tests/stp_oracle.rs`). [verify] marks choices not
 checked against a real device or the standard's text.
 
-No oracle ran. The plan names `mstpd` as one; it is Linux-only and was not available. The checks
-are instead properties (below) and the invariants the standard states.
+**Oracle:** mstpd (an independent RSTP/MSTP implementation for Linux, GPL, run only as a test
+oracle, never shipped). Random networks, run through both, settle to the same roots, costs, root
+ports, roles and states; see "How it was checked". mstpd's source was read in one place, to
+confirm the 802.1Q rule for recognising the same sender (below); nothing was copied from it.
 
 ## What is modelled
 
@@ -105,6 +108,28 @@ behaviour [verify the exact rule]).
   never age each fail a specific test. (Two further breaks were tried and found not to change any
   behaviour that can be observed: dropping the receiving-port tie-break, which only matters for a
   cable looped back to a single port, and removing the "agreement must answer a proposal" test.)
+- **mstpd oracle** (`testkit/mstpd-oracle`): `mstp.c` from mstpd at a pinned commit, linked
+  with our own harness that wires bridges together the way `stp_oracle.rs` wires ours (zero
+  delay, one second at a time), and a script both sides run. Random networks of up to six
+  bridges with up to four ports each: parallel links, cables looped back into one bridge, random
+  bridge priorities (many equal), costs and port priorities, in classic and rapid mode; then
+  cables pulled and restored a few seconds apart and a bridge's priority changed. Each side's
+  report 90 seconds after the last change must be identical. 30,000 cases agreed by hand on
+  2026-10-27; CI runs 2,000. Six recorded cases (`cases/*.script`, with mstpd's answers) run
+  everywhere, without the oracle. Breaking the cost setting fails it within a few cases.
+- **What the oracle found:** a bridge that changed its own priority was not recognised as the
+  same sender, because we compared whole bridge identifiers; its worse information was then
+  ignored until it aged out (6 s in rapid mode) instead of replacing the old at once. The rule
+  (802.1Q-2005 13.10) compares the bridge *address* and port *number*, without their priority
+  bits; mstpd's source was read to confirm it. Fixed, with `cases/prio_change_rstp`.
+- **Where we differ in timing, not result** (found by comparing reports a few seconds after a
+  change instead of 90): (1) a cable looped back into one bridge: mstpd's designated end waits
+  for the forward delay timers (30 s), ours forwards within a second, so ours takes an
+  agreement from its own backup port that mstpd does not [verify which a real switch does]; (2) after a root is cut off or makes its own
+  priority worse, both can count to infinity for a few seconds on stale information (RSTP's
+  known weakness; the root path cost climbs in steps of 19), but not always at the same moments;
+  (3) mstpd's handshake completes one tick later than ours. Classic mode agreed exactly even 50
+  seconds after the last change, in 5,000 cases with flapping links.
 - **Known to be weaker than it looks:** messages are delivered instantly and in a fixed order, so
   races between messages in flight are not explored. A check made when an exchange has finished
   does not see states that exist for a few BPDU hops in the middle of it. A stricter version of

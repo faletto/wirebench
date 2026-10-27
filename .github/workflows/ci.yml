@@ -92,6 +92,19 @@ jobs:
       - run: node check.mjs 8 http://localhost:8765/
         working-directory: testkit/throttle
 
+  # Spanning tree against mstpd's protocol core: random networks must settle to the same roots,
+  # roles and states (testkit/mstpd-oracle).
+  stp-oracle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build the oracle
+        run: echo "MSTPD_ORACLE=$(testkit/mstpd-oracle/build.sh)" >> "$GITHUB_ENV"
+      - run: cargo test --release -p netdev --test stp_oracle
+        env:
+          MSTPD_CASES: 2000
+
   # Short fuzz smoke run of every target (a longer run belongs in a scheduled job).
   # Each target also asserts parse -> emit -> parse round-trips, so this is a property test too.
   fuzz:

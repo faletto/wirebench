@@ -1,0 +1,39 @@
+t=60
+b0 root 32768.020000000001 cost 0 rootport -
+b0p1 designated forwarding
+b0p2 designated forwarding
+b1 root 32768.020000000001 cost 19 rootport 1
+b1p1 root forwarding
+b1p2 designated forwarding
+b2 root 32768.020000000001 cost 38 rootport 1
+b2p1 root forwarding
+b2p2 alternate discarding
+b3 root 32768.020000000001 cost 19 rootport 2
+b3p1 designated forwarding
+b3p2 root forwarding
+t=150
+b0 root 32768.020000000001 cost 0 rootport -
+b0p1 disabled discarding
+b0p2 designated forwarding
+b1 root 32768.020000000001 cost 57 rootport 2
+b1p1 disabled discarding
+b1p2 root forwarding
+b2 root 32768.020000000001 cost 38 rootport 2
+b2p1 designated forwarding
+b2p2 root forwarding
+b3 root 32768.020000000001 cost 19 rootport 2
+b3p1 designated forwarding
+b3p2 root forwarding
+t=240
+b0 root 32768.020000000001 cost 0 rootport -
+b0p1 designated forwarding
+b0p2 designated forwarding
+b1 root 32768.020000000001 cost 19 rootport 1
+b1p1 root forwarding
+b1p2 designated forwarding
+b2 root 32768.020000000001 cost 38 rootport 1
+b2p1 root forwarding
+b2p2 alternate discarding
+b3 root 32768.020000000001 cost 19 rootport 2
+b3p1 designated forwarding
+b3p2 root forwarding
