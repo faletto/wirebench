@@ -48,7 +48,7 @@ The plan (M2, "MVP, public alpha") lists more than the table above. Not done:
 - **Link state is polled**, once a second while spanning tree or DTP is running, and at each
   command; the kernel has no link-change event. Every link costs 19 for spanning tree.
 - **The simulation moves in real time while spanning tree runs.** Simulated time otherwise moves
-  only when something happens.
+  only when something happens. Time a hidden tab missed is made up for on return, up to an hour.
 - **No mstpd oracle** for spanning tree and no Kea oracle for DHCP. Checks are properties over
   random networks, golden transcripts and mutation checks (see each provenance note).
 - **Transient loops are possible** in races between messages (the property tests check each
@@ -68,8 +68,8 @@ ranges (found by fuzzing, not the browser). See `testkit/throttle/README.md` and
 
 ## Open
 
-- **Worker:** the CI job `worker-browser` is new and has not run on a GitHub runner yet. The clock
-  is still driven by page frames, so a hidden tab pauses it (`engine-worker.md`).
+- **Hidden tab:** time that passes while the tab draws no frames is made up for on the next frame
+  (up to an hour), not run in the background (`engine-worker.md`). Not tried in a real hidden tab.
 - **UI scale:** one tab per device means 84 tabs take a fifth of the window, and a frame costs
   6 to 7 ms with that many devices. The plan's per-frame budget is still not met or measured on a
   100-node lab.

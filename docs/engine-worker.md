@@ -77,7 +77,12 @@ exists (step 5). Native builds still run the engine in the app's thread through 
   the inline run on the same machine, so a slow CI runner does not matter. CI job `worker-browser`
   runs it on the `web` job's bundle. It has not yet run on a GitHub runner; the first run may need
   its thresholds looked at.
-- Still not moved: the clock is driven by the page's frames, so a hidden tab stops simulated time.
+- **Hidden tab:** the clock is still driven by the page's frames, and a hidden tab draws none. The
+  time that went by is now made up for on the next frame instead of dropped, in rounds of at most
+  10 simulated minutes (one round per 0.1 s), and a gap over an hour is not made up for. The engine
+  is deterministic, so the lab ends up where it would have been had the clock kept running; the
+  only difference is that nothing happens in the lab *while* the tab is hidden (no worker-owned
+  timer). Tested in `stp_live.rs` by a frame gap; not tried with a really hidden browser tab.
 
 ## Why this order
 
