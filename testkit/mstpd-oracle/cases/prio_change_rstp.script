@@ -1,0 +1,12 @@
+# The root makes its own priority worse. Its neighbour must take that from the same bridge address
+# and port at once, not wait for the old word to age out (found by the oracle: ours waited 6 s).
+mode rstp
+bridge 32768 020000000001 1
+bridge 32768 020000000002 1
+link 0 1 1 1
+up 0
+run 10
+dump
+prio 0 36864
+run 4
+dump

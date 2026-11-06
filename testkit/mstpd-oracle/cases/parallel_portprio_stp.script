@@ -1,0 +1,14 @@
+# Two cables between the same pair: the root's lower port identifier wins, and the port
+# priority set on the root's second port beats port numbering.
+mode stp
+bridge 4096 020000000009 2
+bridge 32768 020000000001 2
+link 0 1 1 1
+link 0 2 1 2
+up 0
+up 1
+run 60
+dump
+portprio 0 2 64
+run 60
+dump

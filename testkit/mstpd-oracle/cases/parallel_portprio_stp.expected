@@ -1,0 +1,14 @@
+t=60
+b0 root 4096.020000000009 cost 0 rootport -
+b0p1 designated forwarding
+b0p2 designated forwarding
+b1 root 4096.020000000009 cost 19 rootport 1
+b1p1 root forwarding
+b1p2 alternate discarding
+t=120
+b0 root 4096.020000000009 cost 0 rootport -
+b0p1 designated forwarding
+b0p2 designated forwarding
+b1 root 4096.020000000009 cost 19 rootport 2
+b1p1 alternate discarding
+b1p2 root forwarding

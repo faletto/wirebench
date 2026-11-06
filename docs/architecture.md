@@ -51,3 +51,5 @@ A loop with spanning tree off is a storm, which cannot hang the simulation: link
   `testkit/determinism.txt` pins trace hashes, checked on three targets in CI.
 - `testkit/throttle/` drives the real web build in Chromium; CI runs `check.mjs` (worker frame
   pacing) and `offline.mjs` (opening the app with no network, from `crates/app/web/sw.js`'s cache).
+- `testkit/mstpd-oracle/` runs spanning tree scripts through mstpd's protocol core and ours and
+  compares where they settle (CI job `stp-oracle`).

@@ -1,0 +1,7 @@
+t=90
+b0 root 32768.020000000001 cost 0 rootport -
+b0p1 designated forwarding
+b1 root 32768.020000000001 cost 19 rootport 3
+b1p1 designated forwarding
+b1p2 backup discarding
+b1p3 root forwarding
