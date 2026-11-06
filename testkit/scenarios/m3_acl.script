@@ -1,0 +1,95 @@
+# pc1 and pc2 (10.0.1.0/24) reach a server (10.0.2.10) through r1. Access lists on r1 decide who
+# gets there. All of it is typed at the consoles.
+@r1
+enable
+configure terminal
+interface g0/0
+ip address 10.0.1.1 255.255.255.0
+no shutdown
+exit
+interface g0/1
+ip address 10.0.2.1 255.255.255.0
+no shutdown
+end
+
+@pc1
+ipconfig set 10.0.1.10 255.255.255.0
+ipconfig gateway 10.0.1.1
+@pc2
+ipconfig set 10.0.1.20 255.255.255.0
+ipconfig gateway 10.0.1.1
+@srv
+ipconfig set 10.0.2.10 255.255.255.0
+ipconfig gateway 10.0.2.1
+
+# With no list applied, everyone gets through.
+@pc1
+ping 10.0.2.10
+@pc2
+ping 10.0.2.10
+
+# A named extended list on the way in: pc2 may not ping the server network; the rest is allowed.
+@r1
+configure terminal
+ip access-list extended KEEP-PC2-OUT
+remark pc2 may not ping the servers
+deny icmp host 10.0.1.20 10.0.2.0 0.0.0.255
+permit ip any any
+exit
+interface g0/0
+ip access-group KEEP-PC2-OUT in
+end
+show access-lists
+
+@pc1
+ping 10.0.2.10
+@pc2
+ping 10.0.2.10
+@r1
+show access-lists KEEP-PC2-OUT
+
+# Entries are numbered and can be edited in place.
+configure terminal
+ip access-list extended KEEP-PC2-OUT
+15 permit icmp host 10.0.1.20 host 10.0.2.10 echo
+end
+show access-lists
+@pc2
+ping 10.0.2.10
+@r1
+configure terminal
+ip access-list extended KEEP-PC2-OUT
+no 15
+end
+
+# A list applied outward is checked after routing, and only for packets the router forwards:
+# the standard list below has nothing that permits, yet the router can still ping the server.
+configure terminal
+interface g0/0
+no ip access-group KEEP-PC2-OUT in
+exit
+access-list 10 deny 10.0.1.0 0.0.0.255
+interface g0/1
+ip access-group 10 out
+end
+ping 10.0.2.10
+@pc1
+ping 10.0.2.10
+@r1
+show ip access-lists
+
+# Mistakes are refused, and a name with no list behind it permits everything.
+configure terminal
+access-list 101 permit foo any any
+access-list 101 permit tcp any any eq 80 log
+access-list 5 permit 10.0.0.0 0.0.0.255 extra
+ip access-list standard KEEP-PC2-OUT
+interface g0/1
+ip access-group NO-SUCH-LIST out
+end
+@pc1
+ping 10.0.2.10
+@r1
+clear access-list counters
+show access-lists
+show running-config

@@ -1,0 +1,177 @@
+
+== r1
+r1>enable
+r1#configure terminal
+r1(config)#interface g0/0
+r1(config-if)#ip address 10.0.1.1 255.255.255.0
+r1(config-if)#no shutdown
+r1(config-if)#exit
+r1(config)#interface g0/1
+r1(config-if)#ip address 10.0.2.1 255.255.255.0
+r1(config-if)#no shutdown
+r1(config-if)#end
+
+== pc1
+pc1>ipconfig set 10.0.1.10 255.255.255.0
+pc1>ipconfig gateway 10.0.1.1
+
+== pc2
+pc2>ipconfig set 10.0.1.20 255.255.255.0
+pc2>ipconfig gateway 10.0.1.1
+
+== srv
+srv>ipconfig set 10.0.2.10 255.255.255.0
+srv>ipconfig gateway 10.0.2.1
+
+== pc1
+pc1>ping 10.0.2.10
+Reply from 10.0.2.10: time=76us
+Reply from 10.0.2.10: time=41us
+Reply from 10.0.2.10: time=41us
+Reply from 10.0.2.10: time=41us
+Sent 4, received 4
+
+== pc2
+pc2>ping 10.0.2.10
+Reply from 10.0.2.10: time=64us
+Reply from 10.0.2.10: time=41us
+Reply from 10.0.2.10: time=41us
+Reply from 10.0.2.10: time=41us
+Sent 4, received 4
+
+== r1
+r1#configure terminal
+r1(config)#ip access-list extended KEEP-PC2-OUT
+r1(config-ext-nacl)#remark pc2 may not ping the servers
+r1(config-ext-nacl)#deny icmp host 10.0.1.20 10.0.2.0 0.0.0.255
+r1(config-ext-nacl)#permit ip any any
+r1(config-ext-nacl)#exit
+r1(config)#interface g0/0
+r1(config-if)#ip access-group KEEP-PC2-OUT in
+r1(config-if)#end
+r1#show access-lists
+Extended IP access list KEEP-PC2-OUT
+    20 deny icmp host 10.0.1.20 10.0.2.0 0.0.0.255
+    30 permit ip any any
+
+== pc1
+pc1>ping 10.0.2.10
+Reply from 10.0.2.10: time=41us
+Reply from 10.0.2.10: time=41us
+Reply from 10.0.2.10: time=41us
+Reply from 10.0.2.10: time=41us
+Sent 4, received 4
+
+== pc2
+pc2>ping 10.0.2.10
+Destination unreachable.
+Destination unreachable.
+Destination unreachable.
+Destination unreachable.
+Sent 4, received 0
+
+== r1
+r1#show access-lists KEEP-PC2-OUT
+Extended IP access list KEEP-PC2-OUT
+    20 deny icmp host 10.0.1.20 10.0.2.0 0.0.0.255 (4 matches)
+    30 permit ip any any (4 matches)
+r1#configure terminal
+r1(config)#ip access-list extended KEEP-PC2-OUT
+r1(config-ext-nacl)#15 permit icmp host 10.0.1.20 host 10.0.2.10 echo
+r1(config-ext-nacl)#end
+r1#show access-lists
+Extended IP access list KEEP-PC2-OUT
+    15 permit icmp host 10.0.1.20 host 10.0.2.10 echo
+    20 deny icmp host 10.0.1.20 10.0.2.0 0.0.0.255 (4 matches)
+    30 permit ip any any (4 matches)
+
+== pc2
+pc2>ping 10.0.2.10
+Reply from 10.0.2.10: time=41us
+Reply from 10.0.2.10: time=41us
+Reply from 10.0.2.10: time=41us
+Reply from 10.0.2.10: time=41us
+Sent 4, received 4
+
+== r1
+r1#configure terminal
+r1(config)#ip access-list extended KEEP-PC2-OUT
+r1(config-ext-nacl)#no 15
+r1(config-ext-nacl)#end
+r1#configure terminal
+r1(config)#interface g0/0
+r1(config-if)#no ip access-group KEEP-PC2-OUT in
+r1(config-if)#exit
+r1(config)#access-list 10 deny 10.0.1.0 0.0.0.255
+r1(config)#interface g0/1
+r1(config-if)#ip access-group 10 out
+r1(config-if)#end
+r1#ping 10.0.2.10
+Type escape sequence to abort.
+Sending 5, 100-byte ICMP Echos to 10.0.2.10, timeout is 2 seconds:
+!!!!!
+Success rate is 100 percent (5/5), round-trip min/avg/max = 13/13/13 usec
+
+== pc1
+pc1>ping 10.0.2.10
+Destination unreachable.
+Destination unreachable.
+Destination unreachable.
+Destination unreachable.
+Sent 4, received 0
+
+== r1
+r1#show ip access-lists
+Extended IP access list KEEP-PC2-OUT
+    20 deny icmp host 10.0.1.20 10.0.2.0 0.0.0.255 (4 matches)
+    30 permit ip any any (4 matches)
+Standard IP access list 10
+    10 deny 10.0.1.0, wildcard bits 0.0.0.255 (4 matches)
+r1#configure terminal
+r1(config)#access-list 101 permit foo any any
+% Invalid input detected at or near 'foo'.
+r1(config)#access-list 101 permit tcp any any eq 80 log
+% Logging of matches is not supported.
+r1(config)#access-list 5 permit 10.0.0.0 0.0.0.255 extra
+% Invalid input detected at or near 'extra'.
+r1(config)#ip access-list standard KEEP-PC2-OUT
+% An access list of that name already exists and is of the other kind.
+r1(config)#interface g0/1
+r1(config-if)#ip access-group NO-SUCH-LIST out
+r1(config-if)#end
+
+== pc1
+pc1>ping 10.0.2.10
+Reply from 10.0.2.10: time=41us
+Reply from 10.0.2.10: time=41us
+Reply from 10.0.2.10: time=41us
+Reply from 10.0.2.10: time=41us
+Sent 4, received 4
+
+== r1
+r1#clear access-list counters
+r1#show access-lists
+Extended IP access list KEEP-PC2-OUT
+    20 deny icmp host 10.0.1.20 10.0.2.0 0.0.0.255
+    30 permit ip any any
+Standard IP access list 10
+    10 deny 10.0.1.0, wildcard bits 0.0.0.255
+r1#show running-config
+hostname r1
+!
+interface GigabitEthernet0/0
+ ip address 10.0.1.1 255.255.255.0
+ no shutdown
+!
+interface GigabitEthernet0/1
+ ip address 10.0.2.1 255.255.255.0
+ ip access-group NO-SUCH-LIST out
+ no shutdown
+!
+ip access-list extended KEEP-PC2-OUT
+ remark pc2 may not ping the servers
+ deny icmp host 10.0.1.20 10.0.2.0 0.0.0.255
+ permit ip any any
+access-list 10 deny 10.0.1.0 0.0.0.255
+!
+end

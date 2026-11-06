@@ -1,6 +1,7 @@
 //! Device model. Devices are plain state machines driven by [`DeviceEvent`]s and
 //! acting on the world only through [`Ctx`].
 
+mod acl;
 mod arp;
 mod device;
 mod dhcp_server;
@@ -13,6 +14,12 @@ mod stp;
 mod switch;
 mod vlan;
 
+pub use acl::{
+    config_text as acl_config_text, kind_of_number as acl_kind_of_number,
+    parse_rule as parse_acl_rule, show as acl_show, Acl, AclKind, AclSet, AddError as AclAddError,
+    AddrSpec, Body as AclBody, Entry as AclEntry, IcmpSpec, Packet as AclPacket, PortSpec,
+    Rule as AclRule,
+};
 pub use arp::Resolver;
 pub use device::{Ctx, Device, DeviceEvent};
 pub use dhcp_server::{client_key, Binding, BindingState, DhcpServer, Pool};

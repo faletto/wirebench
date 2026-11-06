@@ -11,6 +11,7 @@ mod ethernet;
 mod icmp;
 mod ipv4;
 mod summary;
+mod tcp;
 mod udp;
 
 pub use addr::{Ipv4Addr, MacAddr};
@@ -24,6 +25,7 @@ pub use ethernet::{EtherType, EthernetFrame, VlanTag};
 pub use icmp::{IcmpEcho, IcmpError, IcmpErrorKind};
 pub use ipv4::{IpProto, Ipv4Packet};
 pub use summary::summarize;
+pub use tcp::TcpSegment;
 pub use udp::UdpDatagram;
 
 /// Parse failure. Parsers never panic on arbitrary input.
