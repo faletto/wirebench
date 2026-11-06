@@ -60,6 +60,12 @@ const SVI: Scenario = Scenario {
     golden: "../../testkit/scenarios/m2_svi.out",
 };
 
+const ACL: Scenario = Scenario {
+    lab: include_str!("../../../testkit/scenarios/m3_acl.lab.toml"),
+    script: include_str!("../../../testkit/scenarios/m3_acl.script"),
+    golden: "../../testkit/scenarios/m3_acl.out",
+};
+
 fn transcript(sc: &Scenario) -> String {
     let mut lab = load_and_build(sc.lab, Trace::new()).expect("lab builds");
     assert!(lab.warnings.is_empty(), "{:?}", lab.warnings);
@@ -185,6 +191,11 @@ fn the_dtp_lab_matches_its_golden_transcript() {
 #[test]
 fn the_svi_lab_matches_its_golden_transcript() {
     check_golden(&SVI);
+}
+
+#[test]
+fn the_acl_lab_matches_its_golden_transcript() {
+    check_golden(&ACL);
 }
 
 #[test]

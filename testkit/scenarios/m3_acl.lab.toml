@@ -1,0 +1,46 @@
+format = "labsim-lab"
+version = 1
+
+[meta]
+title = "ACLs: filtering at a router between a LAN and a server network"
+
+[[device]]
+name = "pc1"
+template = "host-pc"
+pos = [0, 0]
+
+[[device]]
+name = "pc2"
+template = "host-pc"
+pos = [0, 120]
+
+[[device]]
+name = "sw1"
+template = "switch-l2-8"
+pos = [140, 60]
+
+[[device]]
+name = "r1"
+template = "router-2g"
+pos = [300, 60]
+
+[[device]]
+name = "srv"
+template = "host-pc"
+pos = [460, 60]
+
+[[link]]
+a = "pc1:eth0"
+b = "sw1:Fa0/1"
+
+[[link]]
+a = "pc2:eth0"
+b = "sw1:Fa0/2"
+
+[[link]]
+a = "sw1:Fa0/8"
+b = "r1:Gi0/0"
+
+[[link]]
+a = "r1:Gi0/1"
+b = "srv:eth0"

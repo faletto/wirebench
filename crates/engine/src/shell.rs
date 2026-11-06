@@ -6,8 +6,9 @@ use crate::World;
 use clish::{render_error, render_help, Action, Args, Exec, Grammar, ModeId, Session};
 use kernel::{DeviceId, PortId, SimTime};
 use netdev::{
-    all_vlans, banner_delimiter, format_vlan_list, mask, parse_vlan_list, password_text,
-    plain_password, stored_secret, EncapError, Host, L2Switch, Mgmt, PortMode, RouteKind, Router,
+    acl_config_text, acl_kind_of_number, acl_show, all_vlans, banner_delimiter, format_vlan_list,
+    mask, parse_acl_rule, parse_vlan_list, password_text, plain_password, stored_secret,
+    AclAddError, AclBody, AclKind, EncapError, Host, L2Switch, Mgmt, PortMode, RouteKind, Router,
     StaticRoute, StpMode, StpRole, StpState, DEFAULT_VLAN,
 };
 use std::sync::Arc;
@@ -48,6 +49,14 @@ const NO_SUCH_EXCLUSION: &str = "% That range is not excluded.";
 const NO_SUCH_POOL: &str = "% No such pool.";
 const NO_SUCH_HELPER: &str = "% That helper address is not configured.";
 const DHCP_NO_ANSWER: &str = "No DHCP server answered; it keeps trying for a few more seconds.";
+const BAD_ACL_NUMBER: &str = "% Invalid input detected: no such access list number.";
+const ACL_KIND_CLASH: &str =
+    "% An access list of that name already exists and is of the other kind.";
+const NO_SUCH_ACL: &str = "% No such access list.";
+const NO_SUCH_ACE: &str = "% No such entry in the access list.";
+const NO_SUCH_SEQ: &str = "% No entry has that sequence number.";
+const DUP_SEQ: &str = "% Duplicate sequence number.";
+const SEQ_OVERFLOW: &str = "% Sequence number overflow.";
 const NAME_TOO_LONG: &str = "% VLAN name may be at most 32 characters.";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -69,6 +78,9 @@ struct Modes {
     config_line: ModeId,
     /// `ip dhcp pool` configuration. Hosts point it at their only mode.
     config_dhcp: ModeId,
+    /// `ip access-list standard|extended <name>`. Hosts point both at their only mode.
+    config_std_nacl: ModeId,
+    config_ext_nacl: ModeId,
 }
 
 // Handler ids.
@@ -168,6 +180,29 @@ const SW_MODE_DESIRABLE: u32 = 181;
 const SW_NONEGOTIATE: u32 = 182;
 const NO_SW_NONEGOTIATE: u32 = 183;
 const SHOW_SWITCHPORT: u32 = 184;
+const ACL_PERMIT: u32 = 200;
+const ACL_DENY: u32 = 201;
+const ACL_REMARK: u32 = 202;
+const ACL_NO_SEQ: u32 = 203;
+const ACL_NO_PERMIT: u32 = 204;
+const ACL_NO_DENY: u32 = 205;
+const NO_ACL_NUMBER: u32 = 206;
+const ACL_STD: u32 = 207;
+const ACL_EXT: u32 = 208;
+const NO_ACL_STD: u32 = 209;
+const NO_ACL_EXT: u32 = 210;
+const ACCESS_GROUP_IN: u32 = 211;
+const NO_ACCESS_GROUP_IN: u32 = 212;
+const NO_ACCESS_GROUP_ANY_IN: u32 = 213;
+const ACCESS_GROUP_OUT: u32 = 220;
+const NO_ACCESS_GROUP_OUT: u32 = 221;
+const NO_ACCESS_GROUP_ANY_OUT: u32 = 222;
+const ACCESS_CLASS: u32 = 214;
+const NO_ACCESS_CLASS: u32 = 215;
+const SHOW_ACL: u32 = 216;
+const SHOW_ACL_ONE: u32 = 217;
+const CLEAR_ACL: u32 = 218;
+const CLEAR_ACL_ONE: u32 = 219;
 const SPAN_MODE_PVST: u32 = 160;
 const SPAN_MODE_RAPID: u32 = 161;
 const NO_SPAN_MODE: u32 = 162;
@@ -206,6 +241,18 @@ fn router_grammar() -> (Grammar, Modes) {
     let config_dhcp = g.mode(
         "config-dhcp",
         "{host}(dhcp-config)#",
+        Some(config),
+        Some(config),
+    );
+    let config_std_nacl = g.mode(
+        "config-std-nacl",
+        "{host}(config-std-nacl)#",
+        Some(config),
+        Some(config),
+    );
+    let config_ext_nacl = g.mode(
+        "config-ext-nacl",
+        "{host}(config-ext-nacl)#",
         Some(config),
         Some(config),
     );
@@ -357,6 +404,15 @@ fn router_grammar() -> (Grammar, Modes) {
     );
     mgmt_commands(&mut g, privileged, config, config_line);
     dhcp_commands(&mut g, privileged, config, config_if, config_dhcp);
+    acl_commands(
+        &mut g,
+        privileged,
+        config,
+        config_if,
+        config_line,
+        config_std_nacl,
+        config_ext_nacl,
+    );
     probe_commands(&mut g, privileged);
     (
         g,
@@ -368,6 +424,8 @@ fn router_grammar() -> (Grammar, Modes) {
             config_vlan: config,
             config_line,
             config_dhcp,
+            config_std_nacl,
+            config_ext_nacl,
         },
     )
 }
@@ -441,6 +499,8 @@ fn host_grammar() -> (Grammar, Modes) {
             config_vlan: m,
             config_line: m,
             config_dhcp: m,
+            config_std_nacl: m,
+            config_ext_nacl: m,
         },
     )
 }
@@ -471,6 +531,18 @@ fn switch_grammar() -> (Grammar, Modes) {
     let config_dhcp = g.mode(
         "config-dhcp",
         "{host}(dhcp-config)#",
+        Some(config),
+        Some(config),
+    );
+    let config_std_nacl = g.mode(
+        "config-std-nacl",
+        "{host}(config-std-nacl)#",
+        Some(config),
+        Some(config),
+    );
+    let config_ext_nacl = g.mode(
+        "config-ext-nacl",
+        "{host}(config-ext-nacl)#",
         Some(config),
         Some(config),
     );
@@ -799,6 +871,15 @@ fn switch_grammar() -> (Grammar, Modes) {
     );
     mgmt_commands(&mut g, privileged, config, config_line);
     dhcp_commands(&mut g, privileged, config, config_if, config_dhcp);
+    acl_commands(
+        &mut g,
+        privileged,
+        config,
+        config_if,
+        config_line,
+        config_std_nacl,
+        config_ext_nacl,
+    );
     probe_commands(&mut g, privileged);
     span_commands(&mut g, user, privileged, config, config_if);
     (
@@ -811,6 +892,8 @@ fn switch_grammar() -> (Grammar, Modes) {
             config_vlan,
             config_line,
             config_dhcp,
+            config_std_nacl,
+            config_ext_nacl,
         },
     )
 }
@@ -1178,6 +1261,368 @@ fn dhcp_commands(
             "Address",
         ][..],
         h(CLEAR_DHCP_ADDR),
+    );
+}
+
+impl Shell {
+    /// Add or remove a line of an access list: `access-list N permit ...` in global
+    /// configuration, or `permit ...` inside a named list.
+    fn acl_entry_cmd(&mut self, w: &mut World, handler: u32, a: &Args, m: &Modes) -> String {
+        let (name, kind) = match a.int("num") {
+            Some(n) => {
+                let Some(kind) = acl_kind_of_number(n as u32) else {
+                    return BAD_ACL_NUMBER.to_string();
+                };
+                if handler == NO_ACL_NUMBER {
+                    if !self.with_l3(w, |r| r.acls.remove(&n.to_string())) {
+                        return NO_SUCH_ACL.to_string();
+                    }
+                    return String::new();
+                }
+                (n.to_string(), kind)
+            }
+            None => {
+                let Some(name) = self.session.context().map(str::to_string) else {
+                    return NO_SUCH_ACL.to_string();
+                };
+                let kind = if self.session.mode() == m.config_std_nacl {
+                    AclKind::Standard
+                } else {
+                    AclKind::Extended
+                };
+                (name, kind)
+            }
+        };
+        let seq = a.int("seq").map(|s| s as u32);
+        if handler == ACL_NO_SEQ {
+            let seq = seq.expect("parsed");
+            return if self.with_l3(w, |r| {
+                r.acls.get_mut(&name).is_some_and(|l| l.remove_seq(seq))
+            }) {
+                String::new()
+            } else {
+                NO_SUCH_SEQ.to_string()
+            };
+        }
+        let rest = a.word("rest").unwrap_or("").trim().to_string();
+        let body = if handler == ACL_REMARK {
+            AclBody::Remark(rest)
+        } else {
+            let action = if matches!(handler, ACL_PERMIT | ACL_NO_PERMIT) {
+                "permit"
+            } else {
+                "deny"
+            };
+            let mut toks = vec![action];
+            toks.extend(rest.split_whitespace());
+            match parse_acl_rule(kind, &toks) {
+                Ok(r) => AclBody::Rule(r),
+                Err(e) => return e.0,
+            }
+        };
+        if matches!(handler, ACL_NO_PERMIT | ACL_NO_DENY) {
+            return if self.with_l3(w, |r| {
+                r.acls.get_mut(&name).is_some_and(|l| l.remove_body(&body))
+            }) {
+                String::new()
+            } else {
+                NO_SUCH_ACE.to_string()
+            };
+        }
+        self.with_l3(w, |r| match r.acls.open(&name, kind) {
+            Err(_) => ACL_KIND_CLASH.to_string(),
+            Ok(acl) => match acl.add(seq, body) {
+                Ok(_) => String::new(),
+                Err(AclAddError::DuplicateSeq) => DUP_SEQ.to_string(),
+                Err(AclAddError::SeqOverflow) => SEQ_OVERFLOW.to_string(),
+            },
+        })
+    }
+}
+
+/// Access list commands, the same on routers and layer 3 switches.
+fn acl_commands(
+    g: &mut Grammar,
+    privileged: ModeId,
+    config: ModeId,
+    config_if: ModeId,
+    line: ModeId,
+    std: ModeId,
+    ext: ModeId,
+) {
+    let h = Action::Handler;
+    const SEQ: &str = "int(1..2147483647)";
+    for (pattern, help, id) in [
+        (
+            "access-list <num:int(1..2699)> permit <rest:rest>".to_string(),
+            vec![
+                "Add an access list entry",
+                "List number",
+                "Allow matching packets",
+                "Conditions",
+            ],
+            ACL_PERMIT,
+        ),
+        (
+            "access-list <num:int(1..2699)> deny <rest:rest>".to_string(),
+            vec![
+                "Add an access list entry",
+                "List number",
+                "Drop matching packets",
+                "Conditions",
+            ],
+            ACL_DENY,
+        ),
+        (
+            "access-list <num:int(1..2699)> remark <rest:rest>".to_string(),
+            vec![
+                "Add an access list entry",
+                "List number",
+                "A comment",
+                "Text",
+            ],
+            ACL_REMARK,
+        ),
+        (
+            "no access-list <num:int(1..2699)>".to_string(),
+            vec!["Negate", "Delete an access list", "List number"],
+            NO_ACL_NUMBER,
+        ),
+        (
+            "ip access-list standard <name:word>".to_string(),
+            vec![
+                "IP",
+                "Named access list",
+                "Standard (source address only)",
+                "List name or number",
+            ],
+            ACL_STD,
+        ),
+        (
+            "ip access-list extended <name:word>".to_string(),
+            vec![
+                "IP",
+                "Named access list",
+                "Extended (protocol, addresses, ports)",
+                "List name or number",
+            ],
+            ACL_EXT,
+        ),
+        (
+            "no ip access-list standard <name:word>".to_string(),
+            vec![
+                "Negate",
+                "IP",
+                "Named access list",
+                "Standard",
+                "List name or number",
+            ],
+            NO_ACL_STD,
+        ),
+        (
+            "no ip access-list extended <name:word>".to_string(),
+            vec![
+                "Negate",
+                "IP",
+                "Named access list",
+                "Extended",
+                "List name or number",
+            ],
+            NO_ACL_EXT,
+        ),
+    ] {
+        g.cmd(&[config], &pattern, &help, h(id));
+    }
+    for mode in [std, ext] {
+        for (pattern, help, id) in [
+            (
+                "permit <rest:rest>".to_string(),
+                vec!["Allow matching packets", "Conditions"],
+                ACL_PERMIT,
+            ),
+            (
+                "deny <rest:rest>".to_string(),
+                vec!["Drop matching packets", "Conditions"],
+                ACL_DENY,
+            ),
+            (
+                "remark <rest:rest>".to_string(),
+                vec!["A comment", "Text"],
+                ACL_REMARK,
+            ),
+            (
+                format!("<seq:{SEQ}> permit <rest:rest>"),
+                vec!["Sequence number", "Allow matching packets", "Conditions"],
+                ACL_PERMIT,
+            ),
+            (
+                format!("<seq:{SEQ}> deny <rest:rest>"),
+                vec!["Sequence number", "Drop matching packets", "Conditions"],
+                ACL_DENY,
+            ),
+            (
+                format!("<seq:{SEQ}> remark <rest:rest>"),
+                vec!["Sequence number", "A comment", "Text"],
+                ACL_REMARK,
+            ),
+            (
+                format!("no <seq:{SEQ}>"),
+                vec!["Negate", "Sequence number of the entry"],
+                ACL_NO_SEQ,
+            ),
+            (
+                "no permit <rest:rest>".to_string(),
+                vec!["Negate", "Allow matching packets", "Conditions"],
+                ACL_NO_PERMIT,
+            ),
+            (
+                "no deny <rest:rest>".to_string(),
+                vec!["Negate", "Drop matching packets", "Conditions"],
+                ACL_NO_DENY,
+            ),
+        ] {
+            g.cmd(&[mode], &pattern, &help, h(id));
+        }
+        g.cmd(&[mode], "exit", &["Up one level"], Action::Exit);
+    }
+    g.cmd(
+        &[config, std, ext],
+        "end",
+        &["Back to privileged"],
+        Action::End(privileged),
+    );
+    for (pattern, help, id) in [
+        (
+            "ip access-group <acl:word> in",
+            &[
+                "IP",
+                "Apply an access list",
+                "List name or number",
+                "To arriving packets",
+            ][..],
+            ACCESS_GROUP_IN,
+        ),
+        (
+            "ip access-group <acl:word> out",
+            &[
+                "IP",
+                "Apply an access list",
+                "List name or number",
+                "To forwarded packets",
+            ][..],
+            ACCESS_GROUP_OUT,
+        ),
+        (
+            "no ip access-group <acl:word> in",
+            &[
+                "Negate",
+                "IP",
+                "Apply an access list",
+                "List name or number",
+                "To arriving packets",
+            ][..],
+            NO_ACCESS_GROUP_IN,
+        ),
+        (
+            "no ip access-group <acl:word> out",
+            &[
+                "Negate",
+                "IP",
+                "Apply an access list",
+                "List name or number",
+                "To forwarded packets",
+            ][..],
+            NO_ACCESS_GROUP_OUT,
+        ),
+        (
+            "no ip access-group in",
+            &[
+                "Negate",
+                "IP",
+                "Apply an access list",
+                "To arriving packets",
+            ][..],
+            NO_ACCESS_GROUP_ANY_IN,
+        ),
+        (
+            "no ip access-group out",
+            &[
+                "Negate",
+                "IP",
+                "Apply an access list",
+                "To forwarded packets",
+            ][..],
+            NO_ACCESS_GROUP_ANY_OUT,
+        ),
+    ] {
+        g.cmd(&[config_if], pattern, help, h(id));
+    }
+    g.cmd(
+        &[line],
+        "access-class <acl:word> in",
+        &[
+            "Restrict access by an access list",
+            "List name or number",
+            "Incoming connections",
+        ],
+        h(ACCESS_CLASS),
+    );
+    g.cmd(
+        &[line],
+        "no access-class <acl:word> in",
+        &[
+            "Negate",
+            "Restrict access by an access list",
+            "List name or number",
+            "Incoming connections",
+        ],
+        h(NO_ACCESS_CLASS),
+    );
+    g.cmd(
+        &[privileged],
+        "show access-lists",
+        &["Show", "Access lists"],
+        h(SHOW_ACL),
+    );
+    g.cmd(
+        &[privileged],
+        "show access-lists <name:word>",
+        &["Show", "Access lists", "List name or number"],
+        h(SHOW_ACL_ONE),
+    );
+    g.cmd(
+        &[privileged],
+        "show ip access-lists",
+        &["Show", "IP information", "Access lists"],
+        h(SHOW_ACL),
+    );
+    g.cmd(
+        &[privileged],
+        "show ip access-lists <name:word>",
+        &[
+            "Show",
+            "IP information",
+            "Access lists",
+            "List name or number",
+        ],
+        h(SHOW_ACL_ONE),
+    );
+    g.cmd(
+        &[privileged],
+        "clear access-list counters",
+        &["Clear", "Access lists", "Match counters"],
+        h(CLEAR_ACL),
+    );
+    g.cmd(
+        &[privileged],
+        "clear access-list counters <name:word>",
+        &[
+            "Clear",
+            "Access lists",
+            "Match counters",
+            "List name or number",
+        ],
+        h(CLEAR_ACL_ONE),
     );
 }
 
@@ -1749,6 +2194,71 @@ impl Shell {
                 } else if !self.with_l3(w, |r| r.dhcp.include(low, high)) {
                     return NO_SUCH_EXCLUSION.to_string();
                 }
+            }
+            ACL_PERMIT | ACL_DENY | ACL_REMARK | ACL_NO_SEQ | ACL_NO_PERMIT | ACL_NO_DENY
+            | NO_ACL_NUMBER => return self.acl_entry_cmd(w, handler, a, &m),
+            ACL_STD | ACL_EXT | NO_ACL_STD | NO_ACL_EXT => {
+                let name = a.word("name").unwrap().to_string();
+                let kind = if matches!(handler, ACL_STD | NO_ACL_STD) {
+                    AclKind::Standard
+                } else {
+                    AclKind::Extended
+                };
+                if matches!(handler, NO_ACL_STD | NO_ACL_EXT) {
+                    let found = self.with_l3(w, |r| {
+                        r.acls.get(&name).is_some_and(|l| l.kind == kind) && r.acls.remove(&name)
+                    });
+                    if !found {
+                        return NO_SUCH_ACL.to_string();
+                    }
+                } else {
+                    if self.with_l3(w, |r| r.acls.open(&name, kind).is_err()) {
+                        return ACL_KIND_CLASH.to_string();
+                    }
+                    let mode = if kind == AclKind::Standard {
+                        m.config_std_nacl
+                    } else {
+                        m.config_ext_nacl
+                    };
+                    self.session.enter(mode, Some(name));
+                }
+            }
+            ACCESS_GROUP_IN
+            | ACCESS_GROUP_OUT
+            | NO_ACCESS_GROUP_IN
+            | NO_ACCESS_GROUP_OUT
+            | NO_ACCESS_GROUP_ANY_IN
+            | NO_ACCESS_GROUP_ANY_OUT => {
+                let Some(i) = self.current_iface(w) else {
+                    return NO_SUCH_INTERFACE.to_string();
+                };
+                let inbound = matches!(
+                    handler,
+                    ACCESS_GROUP_IN | NO_ACCESS_GROUP_IN | NO_ACCESS_GROUP_ANY_IN
+                );
+                let name = matches!(handler, ACCESS_GROUP_IN | ACCESS_GROUP_OUT)
+                    .then(|| a.word("acl").unwrap().to_string());
+                self.with_l3(w, |r| r.set_acl(i, inbound, name));
+            }
+            ACCESS_CLASS | NO_ACCESS_CLASS => {
+                let name = (handler == ACCESS_CLASS).then(|| a.word("acl").unwrap().to_string());
+                let console = self.session.context() == Some("console");
+                self.with_mgmt(w, |mg| {
+                    let l = if console {
+                        &mut mg.console
+                    } else {
+                        &mut mg.vty
+                    };
+                    l.access_class_in = name;
+                });
+            }
+            SHOW_ACL | SHOW_ACL_ONE => {
+                let only = a.word("name").map(str::to_string);
+                return self.with_l3(w, |r| acl_show(&r.acls, only.as_deref()));
+            }
+            CLEAR_ACL | CLEAR_ACL_ONE => {
+                let only = a.word("name").map(str::to_string);
+                self.with_l3(w, |r| r.acls.clear_hits(only.as_deref()));
             }
             DHCP_POOL => {
                 let name = a.word("name").unwrap().to_string();
@@ -2418,6 +2928,16 @@ fn mgmt_head(m: &Mgmt, hostname: &str) -> String {
 }
 
 /// The end of a config: the login banner and the console and vty lines.
+/// The access lists, as configuration text, with a `!` after them.
+fn acl_block(r: &Router) -> String {
+    let t = acl_config_text(&r.acls);
+    if t.is_empty() {
+        t
+    } else {
+        t + "!\n"
+    }
+}
+
 fn mgmt_tail(m: &Mgmt) -> String {
     let mut o = String::new();
     if let Some(b) = &m.banner_motd {
@@ -2431,7 +2951,7 @@ fn mgmt_tail(m: &Mgmt) -> String {
             &m.vty,
         ),
     ] {
-        if line.password.is_none() && !line.login {
+        if line.password.is_none() && !line.login && line.access_class_in.is_none() {
             continue;
         }
         o += &format!("{header}\n");
@@ -2440,6 +2960,9 @@ fn mgmt_tail(m: &Mgmt) -> String {
         }
         if line.login {
             o += " login\n";
+        }
+        if let Some(a) = &line.access_class_in {
+            o += &format!(" access-class {a} in\n");
         }
         o += "!\n";
     }
@@ -2466,6 +2989,12 @@ pub fn running_config(r: &Router) -> String {
         for h in &ifc.helpers {
             o += &format!(" ip helper-address {h}\n");
         }
+        if let Some(n) = &ifc.acl_in {
+            o += &format!(" ip access-group {n} in\n");
+        }
+        if let Some(n) = &ifc.acl_out {
+            o += &format!(" ip access-group {n} out\n");
+        }
         // A subinterface is up unless told otherwise, so only a shut one needs a line.
         if ifc.sub.is_none() {
             o += if ifc.shutdown {
@@ -2481,6 +3010,7 @@ pub fn running_config(r: &Router) -> String {
     for s in r.statics() {
         o += &format!("ip route {} {} {}\n", s.net, dotted(s.len), s.via);
     }
+    o += &acl_block(r);
     o += &mgmt_tail(&r.mgmt);
     o + "end"
 }
@@ -2554,6 +3084,12 @@ pub fn switch_config(s: &L2Switch) -> String {
         for h in &ifc.helpers {
             o += &format!(" ip helper-address {h}\n");
         }
+        if let Some(n) = &ifc.acl_in {
+            o += &format!(" ip access-group {n} in\n");
+        }
+        if let Some(n) = &ifc.acl_out {
+            o += &format!(" ip access-group {n} out\n");
+        }
         if ifc.shutdown {
             o += " shutdown\n";
         }
@@ -2565,6 +3101,7 @@ pub fn switch_config(s: &L2Switch) -> String {
     for r in l3.statics() {
         o += &format!("ip route {} {} {}\n", r.net, dotted(r.len), r.via);
     }
+    o += &acl_block(l3);
     o += &mgmt_tail(&s.mgmt);
     o + "end"
 }

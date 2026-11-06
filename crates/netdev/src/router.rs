@@ -1,6 +1,7 @@
 use crate::fib::{mask, Fib, Route, RouteKind};
 use crate::{
-    record_probe, Ctx, Device, DeviceEvent, DhcpServer, Mgmt, ProbeBody, ProbeReply, Resolver,
+    record_probe, AclPacket, AclSet, Ctx, Device, DeviceEvent, DhcpServer, Mgmt, ProbeBody,
+    ProbeReply, Resolver,
 };
 use kernel::{PortId, SimTime};
 use std::any::Any;
@@ -34,6 +35,11 @@ pub struct Interface {
     /// The link layer is down although the interface is not shut down. A switch sets this on an
     /// SVI whose VLAN has no port in it.
     pub line_down: bool,
+    /// `ip access-group <acl> in`: the access list applied to packets arriving on this interface.
+    pub acl_in: Option<String>,
+    /// `ip access-group <acl> out`: applied to packets forwarded out of it (never to packets the
+    /// router itself sends).
+    pub acl_out: Option<String>,
 }
 
 /// An 802.1Q subinterface: traffic for one VLAN on a physical port, sharing the port's MAC.
@@ -96,6 +102,8 @@ pub struct Router {
     /// The DHCP server: pools, exclusions and leases. Answers clients on interfaces without a
     /// `helper-address`.
     pub dhcp: DhcpServer,
+    /// Access lists, by name or number (see [`Router::acl_permits`]).
+    pub acls: AclSet,
     /// Replies to probes this router sent (pings, traceroutes), oldest first.
     pub probes: Vec<ProbeReply>,
     /// No forwarding-plane unreachable is sent before this time.
@@ -121,6 +129,8 @@ impl Router {
                 svi: None,
                 helpers: Vec::new(),
                 line_down: false,
+                acl_in: None,
+                acl_out: None,
             })
             .collect();
         Router {
@@ -137,6 +147,7 @@ impl Router {
             mgmt: Mgmt::default(),
             startup: None,
             dhcp: DhcpServer::default(),
+            acls: AclSet::default(),
             probes: Vec::new(),
             unreachable_after: SimTime::ZERO,
         }
@@ -160,12 +171,26 @@ impl Router {
         self.default_gateway = None;
         self.mgmt = Mgmt::default();
         self.dhcp = DhcpServer::default();
+        self.acls = AclSet::default();
         self.probes.clear();
         self.unreachable_after = SimTime::ZERO;
         for ifc in &mut self.ifaces {
             ifc.helpers.clear();
+            ifc.acl_in = None;
+            ifc.acl_out = None;
         }
         self.rebuild_fib();
+    }
+
+    /// `ip access-group`: set (or with `None` clear) the list applied to interface `i` in one
+    /// direction.
+    pub fn set_acl(&mut self, i: usize, inbound: bool, name: Option<String>) {
+        let ifc = &mut self.ifaces[i];
+        if inbound {
+            ifc.acl_in = name;
+        } else {
+            ifc.acl_out = name;
+        }
     }
 
     /// Every logical interface: the physical ports, then subinterfaces.
@@ -222,6 +247,8 @@ impl Router {
             svi: None,
             helpers: Vec::new(),
             line_down: false,
+            acl_in: None,
+            acl_out: None,
             sub: Some(SubInterface {
                 parent,
                 number,
@@ -378,6 +405,8 @@ impl Router {
             svi: Some(vlan),
             helpers: Vec::new(),
             line_down: false,
+            acl_in: None,
+            acl_out: None,
         });
         self.ifaces.len() - 1
     }
@@ -760,7 +789,37 @@ impl Router {
         }
     }
 
+    /// Whether the access list `name` lets `p` through. A name with no list behind it permits
+    /// everything, as IOS does.
+    fn acl_permits(&mut self, name: Option<&str>, p: &Ipv4Packet) -> bool {
+        match name.and_then(|n| self.acls.get_mut(n)) {
+            Some(acl) => acl.check(&AclPacket::from_ipv4(p)),
+            None => true,
+        }
+    }
+
+    /// Tell the sender of a packet an access list refused it: ICMP "administratively prohibited"
+    /// (type 3 code 13), from the address of the interface it came in on. Not for broadcasts,
+    /// packets from no address, or later fragments, and no faster than other unreachables.
+    fn acl_refused(&mut self, ctx: &mut Ctx, ingress: PortId, p: &Ipv4Packet) {
+        if p.dst == Ipv4Addr::BROADCAST
+            || p.src == Ipv4Addr::UNSPECIFIED
+            || p.flags_frag & 0x1fff != 0
+            || !self.unreachable_allowed(ctx.now())
+        {
+            return;
+        }
+        self.send_icmp_error(ctx, ingress, p, IcmpErrorKind::DestUnreachable(13));
+    }
+
     fn on_ip(&mut self, ctx: &mut Ctx, ingress: PortId, mut p: Ipv4Packet) {
+        // Inbound access list first: it sees everything that arrives, including packets for the
+        // router itself.
+        let acl_in = self.ifaces[ingress.0 as usize].acl_in.clone();
+        if !self.acl_permits(acl_in.as_deref(), &p) {
+            self.acl_refused(ctx, ingress, &p);
+            return;
+        }
         if p.proto == IpProto::UDP
             && (p.dst == Ipv4Addr::BROADCAST || self.owns(p.dst))
             && self.on_dhcp(ctx, ingress, &p)
@@ -788,13 +847,19 @@ impl Router {
             self.send_icmp_error(ctx, ingress, &p, IcmpErrorKind::TimeExceeded);
             return;
         }
-        if self.fib.lookup(p.dst).is_none() {
+        let Some(out) = self.fib.lookup(p.dst).map(|r| r.port) else {
             if self.unreachable_allowed(ctx.now()) {
                 self.send_icmp_error(ctx, ingress, &p, IcmpErrorKind::DestUnreachable(0));
             }
             return;
-        }
+        };
         p.ttl -= 1;
+        // The outbound access list judges forwarded packets only, after the routing decision.
+        let acl_out = self.ifaces[out.0 as usize].acl_out.clone();
+        if !self.acl_permits(acl_out.as_deref(), &p) {
+            self.acl_refused(ctx, ingress, &p);
+            return;
+        }
         self.route(ctx, p);
     }
 }

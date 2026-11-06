@@ -14,6 +14,9 @@
 pub struct Line {
     pub password: Option<String>,
     pub login: bool,
+    /// `access-class <acl> in`: who may connect. Kept and printed; nothing connects to a line
+    /// yet, so nothing enforces it.
+    pub access_class_in: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
