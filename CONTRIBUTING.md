@@ -38,7 +38,8 @@ Fuzzing is described in `fuzz/README.md`.
 
 The UI cannot be tested end to end by `cargo test`. `testkit/throttle` drives the real web build
 in headless Chromium under CPU throttling (`demo.mjs`, `m2.mjs`, `load.mjs`; see its README).
-Run it by hand when a change touches the app, the engine link or the worker. It is not in CI.
+Run it by hand when a change touches the app, the engine link or the worker. CI runs only
+`check.mjs` (the worker's frame pacing) and `offline.mjs` (the service worker's offline copy).
 
 ## Licence
 
