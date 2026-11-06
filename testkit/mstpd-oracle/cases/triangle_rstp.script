@@ -1,0 +1,12 @@
+mode rstp
+bridge 32768 020000000001 2
+bridge 32768 020000000002 2
+bridge 32768 020000000003 2
+link 0 1 1 1
+link 1 2 2 1
+link 2 2 0 2
+up 0
+up 1
+up 2
+run 60
+dump

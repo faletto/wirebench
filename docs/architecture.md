@@ -50,3 +50,5 @@ A loop with spanning tree off is a storm, which cannot hang the simulation: link
 - `testkit/scenarios/` holds golden console transcripts (`BLESS=1` rewrites them);
   `testkit/determinism.txt` pins trace hashes, checked on three targets in CI.
 - `testkit/throttle/` drives the real web build in Chromium (not in CI).
+- `testkit/mstpd-oracle/` runs spanning tree scripts through mstpd's protocol core and ours and
+  compares where they settle (CI job `stp-oracle`).

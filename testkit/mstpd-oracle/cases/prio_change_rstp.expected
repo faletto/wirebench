@@ -1,0 +1,10 @@
+t=10
+b0 root 32768.020000000001 cost 0 rootport -
+b0p1 designated forwarding
+b1 root 32768.020000000001 cost 19 rootport 1
+b1p1 root forwarding
+t=14
+b0 root 32768.020000000002 cost 19 rootport 1
+b0p1 root forwarding
+b1 root 32768.020000000002 cost 0 rootport -
+b1p1 designated forwarding

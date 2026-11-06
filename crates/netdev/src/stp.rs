@@ -362,10 +362,13 @@ impl Stp {
         }
         let ours = self.designated_vector(i);
         let p = &self.ports[i];
-        let same_sender = p
-            .info
-            .as_ref()
-            .is_some_and(|k| k.vector.bridge == vector.bridge && k.vector.port == vector.port);
+        // The same sender is the same bridge address and port number, whatever their priorities:
+        // a neighbour that changed its bridge or port priority is still the one we heard before,
+        // and its word replaces what it said, even if worse (802.1Q-2005 13.10).
+        let same_sender = p.info.as_ref().is_some_and(|k| {
+            k.vector.bridge.mac == vector.bridge.mac
+                && k.vector.port & 0x0fff == vector.port & 0x0fff
+        });
         let better = match &p.info {
             None => vector <= ours,
             Some(k) => vector <= k.vector || same_sender,
@@ -393,8 +396,9 @@ impl Stp {
         for (j, other) in self.ports.iter_mut().enumerate() {
             if j != i
                 && other.info.as_ref().is_some_and(|k| {
-                    k.vector.bridge == vector.bridge
-                        && (k.vector.root, k.vector.cost) != (vector.root, vector.cost)
+                    k.vector.bridge.mac == vector.bridge.mac
+                        && (k.vector.root, k.vector.cost, k.vector.bridge)
+                            != (vector.root, vector.cost, vector.bridge)
                 })
             {
                 other.info = None;
