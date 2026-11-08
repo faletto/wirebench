@@ -10,6 +10,7 @@ mod dtp;
 mod ethernet;
 mod icmp;
 mod ipv4;
+mod ospf;
 mod summary;
 mod tcp;
 mod udp;
@@ -24,6 +25,12 @@ pub use dtp::{Dtp, DtpMode, DTP_MULTICAST};
 pub use ethernet::{EtherType, EthernetFrame, VlanTag};
 pub use icmp::{IcmpEcho, IcmpError, IcmpErrorKind};
 pub use ipv4::{IpProto, Ipv4Packet};
+pub use ospf::{
+    Dbd, Hello, LsRequest, Lsa, LsaBody, LsaHeader, OspfBody, OspfPacket, RouterLink,
+    ALL_DR_ROUTERS, ALL_SPF_ROUTERS, DBD_INIT, DBD_MASTER, DBD_MORE, INITIAL_SEQ, LINK_P2P,
+    LINK_STUB, LINK_TRANSIT, LSA_ASBR_SUMMARY, LSA_EXTERNAL, LSA_NETWORK, LSA_ROUTER, LSA_SUMMARY,
+    LS_INFINITY, MAX_AGE, MAX_SEQ, OPT_E, ROUTER_B, ROUTER_E,
+};
 pub use summary::summarize;
 pub use tcp::TcpSegment;
 pub use udp::UdpDatagram;

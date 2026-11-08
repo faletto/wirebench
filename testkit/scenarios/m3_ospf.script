@@ -1,0 +1,100 @@
+# r1, r2 and r3 share the LAN 10.0.0.0/24 (through sw1) and each has a PC network of its own.
+# OSPF, area 0, is switched on for everything in 10.0.0.0/8. Router IDs are set by hand.
+@r1
+enable
+configure terminal
+router ospf 1
+router-id 1.1.1.1
+network 10.0.0.0 0.255.255.255 area 0
+exit
+interface g0/0
+ip address 10.0.0.1 255.255.255.0
+no shutdown
+exit
+interface g0/1
+ip address 10.0.1.1 255.255.255.0
+no shutdown
+end
+
+@r2
+enable
+configure terminal
+router ospf 1
+router-id 2.2.2.2
+network 10.0.0.0 0.255.255.255 area 0
+exit
+interface g0/0
+ip address 10.0.0.2 255.255.255.0
+no shutdown
+exit
+interface g0/1
+ip address 10.0.2.1 255.255.255.0
+no shutdown
+end
+
+@r3
+enable
+configure terminal
+router ospf 1
+router-id 3.3.3.3
+network 10.0.0.0 0.255.255.255 area 0
+exit
+interface g0/0
+ip address 10.0.0.3 255.255.255.0
+no shutdown
+exit
+interface g0/1
+ip address 10.0.3.1 255.255.255.0
+no shutdown
+end
+
+@pc1
+ipconfig set 10.0.1.10 255.255.255.0
+ipconfig gateway 10.0.1.1
+@pc2
+ipconfig set 10.0.2.10 255.255.255.0
+ipconfig gateway 10.0.2.1
+@pc3
+ipconfig set 10.0.3.10 255.255.255.0
+ipconfig gateway 10.0.3.1
+
+# The routers wait 40 seconds to see who is already there before choosing a designated router.
+%wait 60
+@r1
+show ip ospf neighbor
+show ip ospf interface
+@r3
+show ip ospf neighbor
+
+# Everyone learned everyone's network, so the PCs can reach each other.
+@r1
+show ip route
+show ip ospf database
+@pc1
+ping 10.0.3.10
+ping 10.0.2.10
+
+# The DR and BDR stay put when a router joins or leaves; a cost change moves a route's metric.
+@r1
+configure terminal
+interface g0/1
+ip ospf cost 20
+end
+%wait 5
+@r2
+show ip route
+
+# A router that loses its PC network withdraws it.
+@r3
+configure terminal
+interface g0/1
+shutdown
+end
+%wait 10
+@r1
+show ip route
+@pc1
+ping 10.0.3.10
+
+@r1
+show running-config

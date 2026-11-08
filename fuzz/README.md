@@ -6,7 +6,7 @@ fuzzing needs a nightly compiler and sanitizer flags.
 | Target | What it feeds | Property checked |
 |---|---|---|
 | `wire_ethernet` | arbitrary bytes to the Ethernet/802.1Q parser | never panics; parse -> emit -> parse is identical |
-| `wire_arp`, `wire_ipv4`, `wire_icmp`, `wire_udp`, `wire_tcp`, `wire_dhcp`, `wire_bpdu`, `wire_dtp` | arbitrary bytes to those parsers | same |
+| `wire_arp`, `wire_ipv4`, `wire_icmp`, `wire_udp`, `wire_tcp`, `wire_ospf`, `wire_dhcp`, `wire_bpdu`, `wire_dtp` | arbitrary bytes to those parsers | same |
 | `wire_dissect` | arbitrary bytes to the packet inspector's dissector, its protocol names and hex dump | never panics; every field's byte range lies inside the frame and inside its parent's |
 | `wire_summary` | arbitrary bytes to the one-line frame summary | never panics |
 | `lab_edit` | arbitrary lab text, then edits to it (add, cable, remove) | never panics; snapshots stay loadable |
