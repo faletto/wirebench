@@ -11,6 +11,7 @@ mod fhrp;
 mod fib;
 mod host;
 mod mgmt;
+mod nat;
 mod ntp;
 mod ospf;
 mod probe;
@@ -47,6 +48,10 @@ pub use host::{DhcpClient, DhcpState, Host, PingResult};
 pub use mgmt::{
     banner_delimiter, check_secret, hash_secret, is_hashed, obscure, password_text, plain_password,
     reveal, stored_secret, Line, Mgmt, Transport, User, SSH_PORT, TELNET_PORT,
+};
+pub use nat::{
+    Entry as NatEntry, Flow as NatFlow, Nat, Pool as NatPool, Rule as NatRule, Side as NatSide,
+    Static as NatStatic, Stats as NatStats, Target as NatTarget,
 };
 pub use ntp::{
     civil_from_unix, unix_from_civil, Assoc as NtpAssoc, Clock, Ntp, SyncState as NtpSync,

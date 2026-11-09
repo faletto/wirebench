@@ -1041,7 +1041,9 @@ impl Remote {
 }
 
 /// Find the device that accepted the connection from `client` to `server`, by looking at the
-/// connection tables. (The shell has no map of the lab, only the world.)
+/// connection tables. (The shell has no map of the lab, only the world.) Normally the far end's
+/// table holds the same four numbers; with NAT in between it holds the translated client address
+/// and port, so failing that the newest connection a device accepted on `server` is taken.
 fn find_server(
     w: &mut World,
     client: (Ipv4Addr, u16),
@@ -1056,23 +1058,33 @@ fn find_server(
         } else {
             continue;
         };
-        let conn = tcp_of(w, kind, dev)
+        if !tcp_of(w, kind, dev).conns().any(|c| c.local == server) {
+            continue;
+        }
+        // Take the connections waiting to be accepted off the list; the last is the newest.
+        let mut waiting = vec![];
+        match kind {
+            Kind::Router => w.with_device::<Router, _>(dev, |r, _| {
+                while let Some(c) = r.tcp.accept() {
+                    waiting.push(c);
+                }
+            }),
+            _ => w.with_device::<L2Switch, _>(dev, |s, _| {
+                while let Some(c) = s.l3_mut().tcp.accept() {
+                    waiting.push(c);
+                }
+            }),
+        }
+        let exact = tcp_of(w, kind, dev)
             .conns()
             .find(|c| c.remote == client && c.local == server)
             .map(|c| c.id);
-        if let Some(conn) = conn {
-            // Take it off the list of connections waiting to be accepted.
-            match kind {
-                Kind::Router => {
-                    w.with_device::<Router, _>(dev, |r, _| while r.tcp.accept().is_some() {})
-                }
-                _ => w.with_device::<L2Switch, _>(
-                    dev,
-                    |s, _| {
-                        while s.l3_mut().tcp.accept().is_some() {}
-                    },
-                ),
-            }
+        let newest = waiting.iter().rev().copied().find(|id| {
+            tcp_of(w, kind, dev)
+                .conn(*id)
+                .is_some_and(|c| c.local == server)
+        });
+        if let Some(conn) = exact.or(newest) {
             return Some(Endpoint { dev, kind, conn });
         }
     }
