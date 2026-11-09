@@ -95,14 +95,30 @@ impl Session {
         }
     }
 
+    /// For `do <command>` typed in a mode other than the do-mode: where the command starts and
+    /// the mode it is read in. Only once there is something after `do` (a space at least).
+    fn do_target(&self, g: &Grammar, line: &str) -> Option<(usize, ModeId)> {
+        let dm = g.do_mode?;
+        let (off, word) = parse::tokenize(line).first().copied()?;
+        let end = off + word.len();
+        (word == "do" && dm != self.mode && line[end..].starts_with(char::is_whitespace))
+            .then_some((end, dm))
+    }
+
     /// `?` help for the text typed so far.
     pub fn help(&self, g: &Grammar, line: &str) -> Vec<Suggestion> {
-        parse::options(g, self.mode, line)
+        match self.do_target(g, line) {
+            Some((end, dm)) => parse::options(g, dm, &line[end..]),
+            None => parse::options(g, self.mode, line),
+        }
     }
 
     /// Tab completion; returns the replacement line.
     pub fn tab(&self, g: &Grammar, line: &str) -> String {
-        parse::complete(g, self.mode, line)
+        match self.do_target(g, line) {
+            Some((end, dm)) => format!("{}{}", &line[..end], parse::complete(g, dm, &line[end..])),
+            None => parse::complete(g, self.mode, line),
+        }
     }
 }
 

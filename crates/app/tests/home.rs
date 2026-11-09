@@ -344,3 +344,54 @@ fn a_cable_dropped_on_a_device_starts_there_and_a_click_ends_it() {
     click(&ctx, &mut app, row);
     assert!(app.cables().contains(&("sw1", "pc3")), "{:?}", app.cables());
 }
+
+fn wheel(ctx: &Context, app: &mut App, at: Pos2) {
+    frame(ctx, app, vec![Event::PointerMoved(at)]);
+    frame(
+        ctx,
+        app,
+        vec![Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -120.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+            modifiers: Modifiers::NONE,
+        }],
+    );
+    for _ in 0..8 {
+        frame(ctx, app, vec![]);
+    }
+}
+
+#[test]
+fn scrolling_over_a_device_window_does_not_zoom_the_topology() {
+    let mut app = App::new();
+    let ctx = ready(&mut app);
+    let at = app.node_centre("r2").unwrap();
+    click(&ctx, &mut app, at);
+    assert_eq!(app.device_window(), Some("r2"));
+    frame(&ctx, &mut app, vec![]);
+    // Find a point covered by the window and one on the bare canvas.
+    let mut inside = None;
+    let mut bare = None;
+    let canvas = app.canvas_rect();
+    for y in (canvas.top() as i32..canvas.bottom() as i32).step_by(10) {
+        for x in (canvas.left() as i32..canvas.right() as i32).step_by(10) {
+            let p = Pos2::new(x as f32, y as f32);
+            match ctx.layer_id_at(p).map(|l| l.order) {
+                Some(egui::Order::Middle) if inside.is_none() => inside = Some(p),
+                Some(egui::Order::Background) if bare.is_none() => bare = Some(p),
+                _ => {}
+            }
+        }
+    }
+    let (inside, bare) = (
+        inside.expect("window covers some point"),
+        bare.expect("canvas visible"),
+    );
+    let z0 = app.canvas_zoom();
+    wheel(&ctx, &mut app, inside);
+    assert_eq!(app.canvas_zoom(), z0, "the window keeps the wheel");
+    wheel(&ctx, &mut app, bare);
+    assert_ne!(app.canvas_zoom(), z0, "the canvas itself still zooms");
+}

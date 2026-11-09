@@ -32,7 +32,10 @@ fn a_client_connects_sends_and_gets_the_answer() {
         .with_device::<Host, _>(a, |h, c| h.tcp_open(c, B_IP, 7))
         .unwrap();
     w.run_to_idle();
-    assert_eq!(w.device::<Host>(a).tcp.state_of(ca), Some(TcpState::Established));
+    assert_eq!(
+        w.device::<Host>(a).tcp.state_of(ca),
+        Some(TcpState::Established)
+    );
     let cb = w.with_device::<Host, _>(b, |h, _| h.tcp.accept()).unwrap();
     w.with_device::<Host, _>(a, |h, c| h.tcp_write(c, ca, b"hello"));
     w.run_to_idle();
@@ -41,7 +44,10 @@ fn a_client_connects_sends_and_gets_the_answer() {
     // The server echoes it back, shouting.
     w.with_device::<Host, _>(b, |h, c| h.tcp_write(c, cb, &got.to_ascii_uppercase()));
     w.run_to_idle();
-    assert_eq!(w.with_device::<Host, _>(a, |h, c| h.tcp_take(c, ca)), b"HELLO");
+    assert_eq!(
+        w.with_device::<Host, _>(a, |h, c| h.tcp_take(c, ca)),
+        b"HELLO"
+    );
 }
 
 #[test]
@@ -122,8 +128,13 @@ fn udp_sockets_receive_and_unbound_ports_get_unreachable() {
     w.with_device::<Host, _>(a, |h, c| h.udp_send(c, B_IP, 4000, 5000, b"datagram"));
     w.with_device::<Host, _>(a, |h, c| h.udp_send(c, B_IP, 4000, 5001, b"nobody"));
     w.run_to_idle();
-    let got = w.with_device::<Host, _>(b, |h, _| h.tcp.udp_recv(5000)).unwrap();
-    assert_eq!(got, (Ipv4Addr::new(10, 0, 0, 1), 4000, b"datagram".to_vec()));
+    let got = w
+        .with_device::<Host, _>(b, |h, _| h.tcp.udp_recv(5000))
+        .unwrap();
+    assert_eq!(
+        got,
+        (Ipv4Addr::new(10, 0, 0, 1), 4000, b"datagram".to_vec())
+    );
     assert_eq!(w.device::<Host>(a).icmp_errors.len(), 1);
 }
 

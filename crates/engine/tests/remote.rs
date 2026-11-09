@@ -29,7 +29,10 @@ impl Term {
     fn run(&mut self, lab: &mut BuiltLab, lines: &[&str]) -> String {
         let mut out = String::new();
         for l in lines {
-            out = self.sh.exec(&mut lab.world, l).unwrap_or_else(|| "<ended>".into());
+            out = self
+                .sh
+                .exec(&mut lab.world, l)
+                .unwrap_or_else(|| "<ended>".into());
         }
         out
     }
@@ -126,7 +129,10 @@ fn telnet_with_the_line_password_reaches_the_far_prompt_and_exit_comes_back() {
     assert_eq!(t.prompt(&lab), "far#");
     // exit from privileged goes down a level, exit again closes the session.
     let out = t.run(&mut lab, &["disable", "exit"]);
-    assert!(out.contains("[Connection to 10.0.0.2 closed by foreign host]"), "{out}");
+    assert!(
+        out.contains("[Connection to 10.0.0.2 closed by foreign host]"),
+        "{out}"
+    );
     assert_eq!(t.prompt(&lab), "r1#");
     // The change really happened on the other router.
     let r2 = lab.world.device::<netdev::Router>(lab.devices[R2].id);
@@ -136,7 +142,16 @@ fn telnet_with_the_line_password_reaches_the_far_prompt_and_exit_comes_back() {
 #[test]
 fn a_line_with_login_but_no_password_refuses_to_let_anyone_in() {
     let mut lab = setup();
-    open(&lab, R2).run(&mut lab, &["enable", "configure terminal", "line vty 0 4", "login", "end"]);
+    open(&lab, R2).run(
+        &mut lab,
+        &[
+            "enable",
+            "configure terminal",
+            "line vty 0 4",
+            "login",
+            "end",
+        ],
+    );
     let mut t = open(&lab, R1);
     let out = t.run(&mut lab, &["telnet 10.0.0.2"]);
     assert!(out.contains("Password required, but none set"), "{out}");
@@ -186,7 +201,10 @@ fn sessions_nest_through_a_switch_to_a_router() {
     set_vty_password(&mut lab, SW1, "swpw");
     set_vty_password(&mut lab, R2, "r2pw");
     let mut t = open(&lab, R1);
-    t.run(&mut lab, &["telnet 10.0.0.3", "swpw", "telnet 10.0.0.2", "r2pw"]);
+    t.run(
+        &mut lab,
+        &["telnet 10.0.0.3", "swpw", "telnet 10.0.0.2", "r2pw"],
+    );
     assert_eq!(t.prompt(&lab), "r2>");
     // Leaving the inner session lands in the switch, then the outer one in r1.
     let out = t.run(&mut lab, &["exit"]);
@@ -207,11 +225,20 @@ fn ssh_needs_a_key_and_a_domain_name_on_the_far_end() {
     );
     let mut far = open(&lab, R2);
     assert_eq!(
-        far.run(&mut lab, &["enable", "configure terminal", "crypto key generate rsa"]),
+        far.run(
+            &mut lab,
+            &["enable", "configure terminal", "crypto key generate rsa"]
+        ),
         "% Please define a domain-name first."
     );
-    let out = far.run(&mut lab, &["ip domain-name lab.example", "crypto key generate rsa"]);
-    assert!(out.starts_with("The name for the keys will be: r2.lab.example"), "{out}");
+    let out = far.run(
+        &mut lab,
+        &["ip domain-name lab.example", "crypto key generate rsa"],
+    );
+    assert!(
+        out.starts_with("The name for the keys will be: r2.lab.example"),
+        "{out}"
+    );
     assert!(out.contains("1024 bit"), "{out}");
 }
 
@@ -269,13 +296,34 @@ fn transport_input_decides_which_protocol_is_listening() {
     let mut lab = setup();
     enable_ssh(&mut lab, R2);
     let mut far = open(&lab, R2);
-    far.run(&mut lab, &["enable", "configure terminal", "line vty 0 4", "transport input ssh", "end"]);
+    far.run(
+        &mut lab,
+        &[
+            "enable",
+            "configure terminal",
+            "line vty 0 4",
+            "transport input ssh",
+            "end",
+        ],
+    );
     let mut t = open(&lab, R1);
-    assert_eq!(t.run(&mut lab, &["telnet 10.0.0.2"]), "% Connection refused by remote host");
+    assert_eq!(
+        t.run(&mut lab, &["telnet 10.0.0.2"]),
+        "% Connection refused by remote host"
+    );
     t.run(&mut lab, &["ssh -l admin 10.0.0.2", "s3cret"]);
     assert_eq!(t.prompt(&lab), "r2#");
     t.run(&mut lab, &["exit"]);
-    far.run(&mut lab, &["enable", "configure terminal", "line vty 0 4", "transport input none", "end"]);
+    far.run(
+        &mut lab,
+        &[
+            "enable",
+            "configure terminal",
+            "line vty 0 4",
+            "transport input none",
+            "end",
+        ],
+    );
     assert_eq!(
         t.run(&mut lab, &["ssh -l admin 10.0.0.2", "s3cret"]),
         "% Connection refused by remote host"
@@ -299,7 +347,10 @@ fn access_class_on_the_vty_lines_refuses_the_callers_it_denies() {
     );
     // r1 (10.0.0.1) is not on the list; the PC (10.0.0.10) is.
     let mut r1 = open(&lab, R1);
-    assert_eq!(r1.run(&mut lab, &["telnet 10.0.0.2"]), "% Connection refused by remote host");
+    assert_eq!(
+        r1.run(&mut lab, &["telnet 10.0.0.2"]),
+        "% Connection refused by remote host"
+    );
     assert_eq!(r1.prompt(&lab), "r1>");
     let mut pc = open(&lab, PC);
     pc.run(&mut lab, &["telnet 10.0.0.2", "cisco"]);
@@ -312,7 +363,10 @@ fn nothing_answering_times_out_and_says_so() {
     let mut t = open(&lab, R1);
     let out = t.run(&mut lab, &["telnet 10.0.0.77"]);
     assert_eq!(out, "% Connection timed out; remote host not responding");
-    assert_eq!(t.run(&mut lab, &["telnet 192.168.9.9"]), "% Destination unreachable; gateway or host down");
+    assert_eq!(
+        t.run(&mut lab, &["telnet 192.168.9.9"]),
+        "% Destination unreachable; gateway or host down"
+    );
 }
 
 #[test]
@@ -321,7 +375,10 @@ fn show_tcp_brief_lists_the_open_session_on_both_ends() {
     let mut t = open(&lab, R1);
     t.run(&mut lab, &["telnet 10.0.0.2"]);
     let far = open(&lab, R2).run(&mut lab, &["show tcp brief"]);
-    assert!(far.contains("10.0.0.2.23") && far.contains("10.0.0.1.") && far.contains("ESTAB"), "{far}");
+    assert!(
+        far.contains("10.0.0.2.23") && far.contains("10.0.0.1.") && far.contains("ESTAB"),
+        "{far}"
+    );
     // Through the session itself too.
     let near = t.run(&mut lab, &["show tcp brief"]);
     assert!(near.contains("ESTAB"), "{near}");
@@ -335,10 +392,22 @@ fn users_domain_and_transport_are_in_the_running_config_and_survive_a_reload() {
     let mut lab = setup();
     enable_ssh(&mut lab, R2);
     let mut far = open(&lab, R2);
-    far.run(&mut lab, &["enable", "configure terminal", "line vty 0 4", "transport input ssh", "end"]);
+    far.run(
+        &mut lab,
+        &[
+            "enable",
+            "configure terminal",
+            "line vty 0 4",
+            "transport input ssh",
+            "end",
+        ],
+    );
     let cfg = far.run(&mut lab, &["show running-config"]);
     assert!(cfg.contains("ip domain-name lab.example"), "{cfg}");
-    assert!(cfg.contains("username admin privilege 15 secret wb1$"), "{cfg}");
+    assert!(
+        cfg.contains("username admin privilege 15 secret wb1$"),
+        "{cfg}"
+    );
     assert!(cfg.contains("username guest password visitor"), "{cfg}");
     assert!(cfg.contains(" login local"), "{cfg}");
     assert!(cfg.contains(" transport input ssh"), "{cfg}");
@@ -348,7 +417,17 @@ fn users_domain_and_transport_are_in_the_running_config_and_survive_a_reload() {
     let mut far = open(&lab, R2);
     let mut r1 = open(&lab, R1);
     // The config came back, and so did the key (it is not part of the config).
-    far.run(&mut lab, &["enable", "configure terminal", "interface g0/0", "ip address 10.0.0.2 255.255.255.0", "no shutdown", "end"]);
+    far.run(
+        &mut lab,
+        &[
+            "enable",
+            "configure terminal",
+            "interface g0/0",
+            "ip address 10.0.0.2 255.255.255.0",
+            "no shutdown",
+            "end",
+        ],
+    );
     r1.run(&mut lab, &["ssh -l admin 10.0.0.2", "s3cret"]);
     assert_eq!(r1.prompt(&lab), "r2#");
 }
@@ -360,7 +439,14 @@ fn the_same_session_gives_the_same_trace() {
         for (d, ip) in [(R1, "10.0.0.1"), (R2, "10.0.0.2")] {
             open(&lab, d).run(
                 &mut lab,
-                &["enable", "configure terminal", "interface g0/0", &format!("ip address {ip} 255.255.255.0"), "no shutdown", "end"],
+                &[
+                    "enable",
+                    "configure terminal",
+                    "interface g0/0",
+                    &format!("ip address {ip} 255.255.255.0"),
+                    "no shutdown",
+                    "end",
+                ],
             );
         }
         let mut t = open(&lab, R1);

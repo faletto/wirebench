@@ -202,11 +202,7 @@ impl Conn {
             if unsent > 0 && room > 0 && !self.fin_sent {
                 let n = unsent.min(MSS).min(room);
                 let data: Vec<u8> = self.send_q.iter().skip(sent).take(n).copied().collect();
-                let tx = self.seg(
-                    self.snd_nxt,
-                    TcpSegment::ACK | TcpSegment::PSH,
-                    data,
-                );
+                let tx = self.seg(self.snd_nxt, TcpSegment::ACK | TcpSegment::PSH, data);
                 self.snd_nxt = self.snd_nxt.wrapping_add(n as u32);
                 self.ack_needed = false;
                 out.push(tx);
@@ -343,16 +339,24 @@ impl Tcp {
 
     fn iss(&mut self, now: SimTime) -> u32 {
         // RFC 9293 3.4.1: a clock that ticks every 4 microseconds.
-        ((now.0 / 4_000) as u32).wrapping_add(self.salt).wrapping_add(self.next_id.wrapping_mul(64_000))
+        ((now.0 / 4_000) as u32)
+            .wrapping_add(self.salt)
+            .wrapping_add(self.next_id.wrapping_mul(64_000))
     }
 
     fn ephemeral(&mut self, remote: (Ipv4Addr, u16)) -> u16 {
         loop {
             let p = self.next_port;
-            self.next_port = if p == u16::MAX { EPHEMERAL_START } else { p + 1 };
-            if !self.conns.values().any(|c| {
-                c.local.1 == p && c.remote == remote && c.state != State::Closed
-            }) {
+            self.next_port = if p == u16::MAX {
+                EPHEMERAL_START
+            } else {
+                p + 1
+            };
+            if !self
+                .conns
+                .values()
+                .any(|c| c.local.1 == p && c.remote == remote && c.state != State::Closed)
+            {
                 return p;
             }
         }
@@ -512,9 +516,7 @@ impl Tcp {
             c.rto = SimTime(c.rto.0 * 2);
             match c.state {
                 State::SynSent => out.push(c.seg(c.iss, TcpSegment::SYN, vec![])),
-                State::SynRcvd => {
-                    out.push(c.seg(c.iss, TcpSegment::SYN | TcpSegment::ACK, vec![]))
-                }
+                State::SynRcvd => out.push(c.seg(c.iss, TcpSegment::SYN | TcpSegment::ACK, vec![])),
                 _ => {
                     // Go back to the first unacknowledged byte and send again.
                     c.snd_nxt = c.snd_una;
@@ -539,7 +541,14 @@ impl Tcp {
 
     /// A TCP segment from `src` to `dst` (both ours). `raw` is the IP payload; segments with a bad
     /// checksum are dropped.
-    pub fn on_ip(&mut self, now: SimTime, src: Ipv4Addr, dst: Ipv4Addr, raw: &[u8], out: &mut Vec<Tx>) {
+    pub fn on_ip(
+        &mut self,
+        now: SimTime,
+        src: Ipv4Addr,
+        dst: Ipv4Addr,
+        raw: &[u8],
+        out: &mut Vec<Tx>,
+    ) {
         if !TcpSegment::checksum_ok(raw, src, dst) {
             return;
         }
@@ -898,7 +907,10 @@ mod tests {
         let (ca, cb) = n.open();
         assert_eq!(n.a.state_of(ca), Some(State::Established));
         assert_eq!(n.b.state_of(cb), Some(State::Established));
-        assert_eq!(n.b.conn(cb).unwrap().remote, (a(), n.a.conn(ca).unwrap().local.1));
+        assert_eq!(
+            n.b.conn(cb).unwrap().remote,
+            (a(), n.a.conn(ca).unwrap().local.1)
+        );
         assert_eq!(n.b.accept(), None);
         // SYN, SYN-ACK, ACK.
         let flags: Vec<u8> = n.log.iter().map(|l| l.1).collect();

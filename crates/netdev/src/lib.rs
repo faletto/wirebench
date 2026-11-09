@@ -71,8 +71,8 @@ pub use stp::{
 pub use switch::{
     L2Switch, MacEntry, PortConfig, PortMode, SpanningConfig, DEFAULT_BRIDGE_PRIORITY,
 };
-pub use vlan::{all_vlans, format_vlan_list, parse_vlan_list, DEFAULT_VLAN, MAX_VLAN};
 pub use tcp::{
     Conn as TcpConn, Failure as TcpFailure, State as TcpState, Tcp, Tx as TcpTx, UdpSocket,
     EPHEMERAL_START as TCP_EPHEMERAL_START, MAX_RETRIES as TCP_MAX_RETRIES,
 };
+pub use vlan::{all_vlans, format_vlan_list, parse_vlan_list, DEFAULT_VLAN, MAX_VLAN};
