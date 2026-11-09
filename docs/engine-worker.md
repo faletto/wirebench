@@ -8,7 +8,7 @@ exists (step 5). Native builds still run the engine in the app's thread through 
 ## Done in step 1: the app talks to the engine only by message
 
 - The engine owns the world **and** the topology. A UI loads, edits and snapshots a lab with
-  `Load`, `AddDevice`, `MoveDevice`, `AddLink`, `RemoveDevice`, `RemoveLink`, `Snapshot` and
+  `Load`, `AddDevice`, `MoveDevice`, `AddLink`, `AddLinkPorts`, `RemoveDevice`, `RemoveLink`, `Snapshot` and
   `Now`, and gets `LabView` (names, kinds, places, cabling) back. `App` holds a `LabView`, not
   a `Topology`, and never sees a `World`.
 - Hops carry their frame; step back is a message (`StepBack`) and the engine keeps the copies.

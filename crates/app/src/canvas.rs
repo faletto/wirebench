@@ -14,9 +14,9 @@ use engine::lab::LabKind;
 pub enum Tool {
     /// Click opens a console, drag moves a device, drag the background pans.
     Select,
-    /// Click empty space to add a device of this kind.
+    /// Click empty space to add one device of this kind (then back to `Select`).
     Place(LabKind),
-    /// Click two devices to cable them.
+    /// Click a device and choose a port, then the same at the other end, to cable them.
     Link,
     /// Click a device or a cable to remove it.
     Delete,
@@ -26,8 +26,10 @@ impl Tool {
     pub fn hint(self) -> &'static str {
         match self {
             Tool::Select => "click a device to open it · drag to move · drag background to pan",
-            Tool::Place(_) => "click empty space to place a device · Esc to stop",
-            Tool::Link => "click two devices to cable them · Esc to cancel",
+            Tool::Place(_) => "click empty space to place one device · Esc to cancel",
+            Tool::Link => {
+                "click a device, pick a port, then the device at the other end · Esc to cancel"
+            }
             Tool::Delete => "click a device or a cable to remove it · Esc to stop",
         }
     }
@@ -80,6 +82,8 @@ pub enum CanvasEvent {
     Moved(usize, [i32; 2]),
     Place([i32; 2]),
     LinkEnd(usize),
+    /// Right-click on a device, at this screen position.
+    Context(usize, Pos2),
     DeleteNode(usize),
     DeleteLink(usize),
 }
@@ -301,6 +305,11 @@ impl Canvas {
                 )
             });
             let resp = resp.on_hover_text(format!("{} ({})", n.name, kind_name(n.kind)));
+            if resp.secondary_clicked() {
+                if let Some(p) = resp.interact_pointer_pos() {
+                    events.push(CanvasEvent::Context(i, p));
+                }
+            }
             match tool {
                 Tool::Select => {
                     if resp.clicked() {

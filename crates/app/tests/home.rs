@@ -318,6 +318,7 @@ fn clicking_a_model_then_the_canvas_places_it() {
     assert_eq!(app.tool(), Tool::Place(LabKind::Router));
     let r1 = app.node_centre("r1").unwrap();
     click(&ctx, &mut app, Pos2::new(r1.x, r1.y + 120.0));
+    assert_eq!(app.tool(), Tool::Select, "one click, one device");
     assert_eq!(app.device_names().last(), Some(&"r3"));
     assert!(app.export_lab().contains("router-4g"));
 }
@@ -335,7 +336,11 @@ fn a_cable_dropped_on_a_device_starts_there_and_a_click_ends_it() {
     let sw = app.node_centre("sw1").unwrap();
     drag(&ctx, &mut app, from, sw);
     assert_eq!(app.tool(), Tool::Link);
+    let row = app.popup_row_centre("Fa0/1").expect("which port?");
+    click(&ctx, &mut app, row);
     let pc = app.node_centre("pc3").unwrap();
     click(&ctx, &mut app, pc);
+    let row = app.popup_row_centre("eth0").expect("which port?");
+    click(&ctx, &mut app, row);
     assert!(app.cables().contains(&("sw1", "pc3")), "{:?}", app.cables());
 }

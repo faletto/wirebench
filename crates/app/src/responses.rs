@@ -35,6 +35,8 @@ pub(super) enum Awaiting {
     Rebuild { note: String, undo: Undo },
     /// A lab is being opened in place of this one.
     Open { source: String, then: Then },
+    /// A device window asked how the ports of device `node` stand.
+    Ports { node: usize },
     /// The panel asked for a device's state.
     PanelState { device: u32 },
     /// Lines were sent from the panel.
@@ -262,6 +264,11 @@ impl App {
                     }
                 }
             },
+            Awaiting::Ports { node } => {
+                if let Some(EngineEvent::Ports { ports, .. }) = main {
+                    self.ports_arrived(node, ports);
+                }
+            }
             Awaiting::PanelState { device } => {
                 if let Some(EngineEvent::State { state, .. }) = main {
                     self.panel_state_arrived(device, state);
@@ -386,6 +393,7 @@ impl App {
             }
             _ => return,
         };
+        self.popup = None;
         match what {
             EditKind::AddDevice { pos } => {
                 let i = view.devices.len() - 1;

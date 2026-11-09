@@ -92,6 +92,8 @@ enum Drag {
 
 #[path = "home.rs"]
 mod home;
+#[path = "ports.rs"]
+mod ports;
 #[path = "responses.rs"]
 mod responses;
 #[path = "settings_panel.rs"]
@@ -100,6 +102,7 @@ mod settings_panel;
 mod workspace;
 pub use home::Resume;
 use home::Screen;
+use ports::{Popup, PopupKind};
 use responses::{Awaiting, EditKind, StepKind, Then, Undo};
 use workspace::Category;
 pub use workspace::DeviceTab;
@@ -115,8 +118,12 @@ pub struct App {
     active: usize,
     canvas: Canvas,
     tool: Tool,
-    /// First device of a cable being drawn with the Link tool.
-    link_from: Option<usize>,
+    /// First end (device, port) of a cable being drawn with the Link tool.
+    link_from: Option<(usize, u16)>,
+    /// The right-click menu or port chooser beside a device.
+    popup: Option<Popup>,
+    /// Rows and buttons of that window as last drawn, with their labels.
+    popup_rows: Vec<(String, egui::Rect)>,
     /// One-line message in the status bar (lab warnings, "no console" hints).
     notice: Option<String>,
     /// Set when a tab becomes active so its terminal grabs keyboard focus.
@@ -277,6 +284,8 @@ impl App {
             notes: view.notes.clone(),
             tool: Tool::Select,
             link_from: None,
+            popup: None,
+            popup_rows: Vec::new(),
             tabs,
             active: 0,
             canvas: Canvas::default(),
@@ -405,6 +414,7 @@ impl App {
     pub fn set_tool(&mut self, tool: Tool) {
         self.tool = tool;
         self.link_from = None;
+        self.popup = None;
         if !matches!(tool, Tool::Place(_)) {
             self.place_template = None;
         }
@@ -1010,16 +1020,21 @@ impl App {
                 CanvasEvent::Moved(i, pos) => self.move_node(i, pos),
                 CanvasEvent::Place(pos) => {
                     if let Tool::Place(kind) = self.tool {
-                        match self.place_template {
+                        // One click, one component: back to selecting.
+                        let template = self.place_template;
+                        self.set_tool(Tool::Select);
+                        match template {
                             Some(t) => self.add_model(t, pos),
                             None => self.add_device(kind, pos),
                         }
                     }
                 }
-                CanvasEvent::LinkEnd(i) => match self.link_from.take() {
-                    None => self.link_from = Some(i),
-                    Some(a) => self.connect(a, i),
-                },
+                // Which port the cable goes into is the person's choice.
+                CanvasEvent::LinkEnd(i) => {
+                    let at = self.popup_spot(i);
+                    self.open_popup(i, at, PopupKind::PickPort);
+                }
+                CanvasEvent::Context(i, at) => self.open_popup(i, at, PopupKind::Menu),
                 // Rebuilds invalidate every index, so nothing after these is applied.
                 CanvasEvent::DeleteNode(i) => return self.delete_device(i),
                 CanvasEvent::DeleteLink(k) => return self.delete_link(k),
@@ -1608,8 +1623,11 @@ impl App {
         }
 
         if ui.input(|i| i.key_pressed(Key::Escape)) {
-            // Esc stops a tool first; with nothing to stop it closes the device window.
-            if self.tool != Tool::Select {
+            // Esc closes a menu first, then stops a tool; with nothing to stop it closes the
+            // device window.
+            if self.popup.is_some() {
+                self.popup = None;
+            } else if self.tool != Tool::Select {
                 self.set_tool(Tool::Select);
             } else {
                 self.window_open = false;

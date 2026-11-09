@@ -50,6 +50,41 @@ fn four_node() -> (World, Topology) {
     (w, t)
 }
 
+#[test]
+fn cabling_to_chosen_ports_refuses_busy_and_missing_ones_and_reports_status() {
+    use engine::lab::PortStatus;
+    let (mut w, mut t) = scratch();
+    let sw = t.add_device(&mut w, LabKind::Switch, [0, 0]).unwrap();
+    let a = t.add_device(&mut w, LabKind::Host, [100, 0]).unwrap();
+    let b = t.add_device(&mut w, LabKind::Host, [200, 0]).unwrap();
+    t.add_link_ports(&mut w, sw, 4, a, 0).unwrap();
+    assert!(text(&t, &w).contains("sw1:Fa0/5"), "{}", text(&t, &w));
+    assert!(matches!(
+        t.add_link_ports(&mut w, sw, 4, b, 0),
+        Err(EditError::PortBusy { .. })
+    ));
+    assert!(matches!(
+        t.add_link_ports(&mut w, sw, 200, b, 0),
+        Err(EditError::NoSuchPort { .. })
+    ));
+    let ports = t.port_infos(&w, sw);
+    assert_eq!(ports[4].status, PortStatus::Up);
+    assert_eq!(ports[4].peer.as_deref(), Some("pc1"));
+    assert_eq!(ports[0].status, PortStatus::Disconnected);
+    // Shutting the switch port takes the cable's line down at both ends.
+    let mut sh = Shell::switch(t.devices[sw].id);
+    for l in [
+        "enable",
+        "configure terminal",
+        "interface fa0/5",
+        "shutdown",
+    ] {
+        sh.exec(&mut w, l);
+    }
+    assert_eq!(t.port_infos(&w, sw)[4].status, PortStatus::Down);
+    assert_eq!(t.port_infos(&w, a)[0].status, PortStatus::Down);
+}
+
 fn ping_twice(w: &mut World, t: &Topology, from: usize, dst: [u8; 4]) -> usize {
     let id = t.devices[from].id;
     for _ in 0..2 {
