@@ -188,7 +188,7 @@ fn a_pc_can_telnet_to_a_router_and_a_switch() {
     t.run(&mut lab, &["telnet 10.0.0.1", "pw1"]);
     assert_eq!(t.prompt(&lab), "r1>");
     t.run(&mut lab, &["exit"]);
-    assert_eq!(t.prompt(&lab), "pc1>");
+    assert_eq!(t.prompt(&lab), "C:\\>");
     let out = t.run(&mut lab, &["telnet 10.0.0.3", "pw3"]);
     assert_eq!(t.prompt(&lab), "sw1>", "{out}");
     let out = t.run(&mut lab, &["show ip ssh"]);

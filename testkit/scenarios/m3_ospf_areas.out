@@ -52,12 +52,12 @@ r3(config)#ip route 0.0.0.0 0.0.0.0 10.0.3.10
 r3(config)#end
 
 == pc1
-pc1>ipconfig set 10.1.1.10 255.255.255.0
-pc1>ipconfig gateway 10.1.1.1
+C:\>ipconfig set 10.1.1.10 255.255.255.0
+C:\>ipconfig gateway 10.1.1.1
 
 == pc3
-pc3>ipconfig set 10.0.3.10 255.255.255.0
-pc3>ipconfig gateway 10.0.3.1
+C:\>ipconfig set 10.0.3.10 255.255.255.0
+C:\>ipconfig gateway 10.0.3.1
 
 -- 100 s pass
 
@@ -182,7 +182,7 @@ O IA  10.1.1.0/24  [110/3] via 10.0.23.2, GigabitEthernet0/0
 O IA  10.1.12.0/24  [110/2] via 10.0.23.2, GigabitEthernet0/0
 
 == pc1
-pc1>ping 10.0.3.10
+C:\>ping 10.0.3.10
 Reply from 10.0.3.10: time=101us
 Reply from 10.0.3.10: time=55us
 Reply from 10.0.3.10: time=55us

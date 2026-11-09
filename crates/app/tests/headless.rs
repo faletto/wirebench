@@ -90,7 +90,7 @@ fn alt_number_switches_device_and_keeps_the_other_session() {
     type_line(&ctx, &mut app, "enable");
     frame(&ctx, &mut app, vec![key(Key::Num3, Modifiers::ALT)]);
     frame(&ctx, &mut app, vec![]);
-    assert_eq!(app.active_prompt(), "pc1>");
+    assert_eq!(app.active_prompt(), "C:\\>");
     type_line(&ctx, &mut app, "ipconfig set 10.0.1.2 255.255.255.0");
     frame(&ctx, &mut app, vec![key(Key::Num1, Modifiers::ALT)]);
     frame(&ctx, &mut app, vec![]);
@@ -158,5 +158,5 @@ fn a_quick_option_digit_works_even_if_option_is_up_by_the_frame() {
     type_line(&ctx, &mut app, "ipconfig");
     let out = app.active_scrollback().join("\n");
     assert!(!out.contains('£'), "the symbol was not typed: {out}");
-    assert!(out.contains("pc1>ipconfig"), "{out}");
+    assert!(out.contains("C:\\>ipconfig"), "{out}");
 }

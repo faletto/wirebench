@@ -1,11 +1,11 @@
 
 == pc1
-pc1>ipconfig set 10.0.0.10 255.255.255.0
-pc1>ipconfig gateway 10.0.0.254
+C:\>ipconfig set 10.0.0.10 255.255.255.0
+C:\>ipconfig gateway 10.0.0.254
 
 == srv
-srv>ipconfig set 10.0.1.10 255.255.255.0
-srv>ipconfig gateway 10.0.1.254
+C:\>ipconfig set 10.0.1.10 255.255.255.0
+C:\>ipconfig gateway 10.0.1.254
 
 == r1
 r1>enable
@@ -97,13 +97,13 @@ GigabitEthernet0/0 - Group 1
   Group name is "hsrp-Gi0/0-1" (default)
 
 == pc1
-pc1>ping 10.0.1.10
+C:\>ping 10.0.1.10
 Reply from 10.0.1.10: time=124us
 Reply from 10.0.1.10: time=55us
 Reply from 10.0.1.10: time=59us
 Reply from 10.0.1.10: time=55us
 Sent 4, received 4
-pc1>ping 10.0.0.254
+C:\>ping 10.0.0.254
 Reply from 10.0.0.254: time=27us
 Reply from 10.0.0.254: time=31us
 Reply from 10.0.0.254: time=27us
@@ -170,7 +170,7 @@ Gi0/0       1    100 P Active  local           10.0.0.1        10.0.0.254
 Gi0/1       1    100   Active  local           unknown         10.0.1.254
 
 == pc1
-pc1>ping 10.0.1.10
+C:\>ping 10.0.1.10
 Reply from 10.0.1.10: time=101us
 Reply from 10.0.1.10: time=59us
 Reply from 10.0.1.10: time=55us
@@ -208,7 +208,7 @@ Gi0/0       1    100 P Standby 10.0.0.1        local           10.0.0.254
 Gi0/1       1    100   Standby 10.0.1.1        local           10.0.1.254
 
 == pc1
-pc1>ping 10.0.1.10
+C:\>ping 10.0.1.10
 Reply from 10.0.1.10: time=59us
 Reply from 10.0.1.10: time=55us
 Reply from 10.0.1.10: time=55us

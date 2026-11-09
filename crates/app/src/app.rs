@@ -376,6 +376,11 @@ impl App {
     }
 
     /// Name of the device whose terminal is showing.
+    /// What is typed on the active terminal's input line.
+    pub fn active_input(&self) -> String {
+        self.tabs[self.active].model.input()
+    }
+
     pub fn active_device(&self) -> &str {
         &self.tabs[self.active].name
     }
@@ -1692,10 +1697,15 @@ fn matching_devices(names: &[&str], filter: &str) -> Vec<usize> {
 fn new_tab(engine: &EngineLink, d: &DeviceView, node: usize) -> (Tab, u64) {
     let id = engine.post(EngineCmd::OpenTerminal { device: d.device });
     let mut model = TermModel::default();
-    model.push_output(&format!(
-        "{}: type ? for help, Tab to complete. Try `enable`, `configure terminal`.",
-        d.name
-    ));
+    if d.kind == engine::protocol::ShellKind::Host {
+        model.no_help = true;
+        model.push_output(&format!("{}: {}", d.name, engine::shell::PC_GREETING));
+    } else {
+        model.push_output(&format!(
+            "{}: type ? for help, Tab to complete. Try `enable`, `configure terminal`.",
+            d.name
+        ));
+    }
     (
         Tab {
             name: d.name.clone(),

@@ -57,29 +57,29 @@ S  10.0.1.0/24  via 10.0.12.1, GigabitEthernet0/0
 C  10.0.2.0/24  directly connected, GigabitEthernet0/1
 C  10.0.12.0/30  directly connected, GigabitEthernet0/0
 --- pc1
-pc1>ipconfig set 10.0.1.2 255.255.255.0
-pc1>ipconfig gateway 10.0.1.1
-pc1>ipconfig
+C:\>ipconfig set 10.0.1.2 255.255.255.0
+C:\>ipconfig gateway 10.0.1.1
+C:\>ipconfig
 Address : 10.0.1.2
 Mask    : 255.255.255.0
 Gateway : 10.0.1.1
 --- pc2
-pc2>ipconfig set 10.0.2.2 255.255.255.0
-pc2>ipconfig gateway 10.0.2.1
+C:\>ipconfig set 10.0.2.2 255.255.255.0
+C:\>ipconfig gateway 10.0.2.1
 --- pc1
-pc1>ping 10.0.2.2
+C:\>ping 10.0.2.2
 Reply from 10.0.2.2: time=76us
 Reply from 10.0.2.2: time=41us
 Reply from 10.0.2.2: time=41us
 Reply from 10.0.2.2: time=41us
 Sent 4, received 4
-pc1>ping 10.0.1.1
+C:\>ping 10.0.1.1
 Reply from 10.0.1.1: time=13us
 Reply from 10.0.1.1: time=13us
 Reply from 10.0.1.1: time=13us
 Reply from 10.0.1.1: time=13us
 Sent 4, received 4
-pc1>ping 10.9.9.9
+C:\>ping 10.9.9.9
 Destination unreachable.
 Destination unreachable.
 Destination unreachable.
@@ -99,7 +99,7 @@ Codes: C connected, S static
 C  10.0.1.0/24  directly connected, GigabitEthernet0/0
 C  10.0.12.0/30  directly connected, GigabitEthernet0/1
 --- pc1
-pc1>ping 10.0.2.2
+C:\>ping 10.0.2.2
 Destination unreachable.
 Destination unreachable.
 Destination unreachable.

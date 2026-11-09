@@ -3,7 +3,9 @@
 
 use crate::trace::{self, Origin};
 use crate::World;
-use clish::{render_error, render_help, Action, Args, Exec, Grammar, ModeId, Session};
+use clish::{
+    render_error, render_help, Action, Args, ErrorKind, Exec, Grammar, ModeId, ParseError, Session,
+};
 use kernel::{DeviceId, PortId, SimTime};
 use netdev::Ctx;
 use netdev::{
@@ -21,6 +23,8 @@ mod disc;
 mod etherchannel;
 mod fhrp;
 mod m3b;
+mod pc;
+pub use pc::GREETING as PC_GREETING;
 mod remote;
 
 // ---- message catalog (shell-level strings) ----
@@ -494,7 +498,7 @@ fn router_grammar() -> (Grammar, Modes) {
 
 fn host_grammar() -> (Grammar, Modes) {
     let mut g = Grammar::new();
-    let m = g.mode("host", "{host}>", None, None);
+    let m = g.mode("host", pc::PROMPT, None, None);
     let h = Action::Handler;
     g.cmd(&[m], "exit", &["Close the terminal"], Action::Exit);
     g.cmd(&[m], "ipconfig", &["Show addressing"], h(IPCONFIG));
@@ -552,6 +556,7 @@ fn host_grammar() -> (Grammar, Modes) {
         h(TRACERT),
     );
     remote::host_remote_commands(&mut g, m);
+    pc::pc_commands(&mut g, m);
     (
         g,
         Modes {
@@ -3031,6 +3036,10 @@ impl Shell {
         if let Some(r) = &self.remote {
             return r.shell.help(line);
         }
+        // A command prompt has no `?`.
+        if self.kind == Kind::Host {
+            return String::new();
+        }
         if self.pending.is_some() {
             return String::new();
         }
@@ -3071,6 +3080,7 @@ impl Shell {
         match self.session.exec(&self.grammar, line) {
             Exec::Empty | Exec::Moved => Some(String::new()),
             Exec::Logout => None,
+            Exec::Error(e) if self.kind == Kind::Host => Some(pc::error_text(line, &e)),
             Exec::Error(e) => Some(render_error(&prompt, &e)),
             Exec::Run { handler, args } => {
                 let out = self.run(w, handler, &args, line);
@@ -3136,6 +3146,7 @@ impl Shell {
             }
             300..=329 => return self.m3b_cmd(w, handler, a),
             430..=469 => return self.remote_cmd(w, handler, a),
+            470..=479 => return self.pc_cmd(w, handler, a),
             330..=349 => return self.channel_cmd(w, handler, a),
             350..=379 => return self.disc_cmd(w, handler, a),
             380..=399 => return self.clock_cmd(w, handler, a),

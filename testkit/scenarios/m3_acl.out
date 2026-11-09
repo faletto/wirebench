@@ -12,19 +12,19 @@ r1(config-if)#no shutdown
 r1(config-if)#end
 
 == pc1
-pc1>ipconfig set 10.0.1.10 255.255.255.0
-pc1>ipconfig gateway 10.0.1.1
+C:\>ipconfig set 10.0.1.10 255.255.255.0
+C:\>ipconfig gateway 10.0.1.1
 
 == pc2
-pc2>ipconfig set 10.0.1.20 255.255.255.0
-pc2>ipconfig gateway 10.0.1.1
+C:\>ipconfig set 10.0.1.20 255.255.255.0
+C:\>ipconfig gateway 10.0.1.1
 
 == srv
-srv>ipconfig set 10.0.2.10 255.255.255.0
-srv>ipconfig gateway 10.0.2.1
+C:\>ipconfig set 10.0.2.10 255.255.255.0
+C:\>ipconfig gateway 10.0.2.1
 
 == pc1
-pc1>ping 10.0.2.10
+C:\>ping 10.0.2.10
 Reply from 10.0.2.10: time=76us
 Reply from 10.0.2.10: time=41us
 Reply from 10.0.2.10: time=41us
@@ -32,7 +32,7 @@ Reply from 10.0.2.10: time=41us
 Sent 4, received 4
 
 == pc2
-pc2>ping 10.0.2.10
+C:\>ping 10.0.2.10
 Reply from 10.0.2.10: time=64us
 Reply from 10.0.2.10: time=41us
 Reply from 10.0.2.10: time=41us
@@ -55,7 +55,7 @@ Extended IP access list KEEP-PC2-OUT
     30 permit ip any any
 
 == pc1
-pc1>ping 10.0.2.10
+C:\>ping 10.0.2.10
 Reply from 10.0.2.10: time=41us
 Reply from 10.0.2.10: time=41us
 Reply from 10.0.2.10: time=41us
@@ -63,7 +63,7 @@ Reply from 10.0.2.10: time=41us
 Sent 4, received 4
 
 == pc2
-pc2>ping 10.0.2.10
+C:\>ping 10.0.2.10
 Destination unreachable.
 Destination unreachable.
 Destination unreachable.
@@ -86,7 +86,7 @@ Extended IP access list KEEP-PC2-OUT
     30 permit ip any any (4 matches)
 
 == pc2
-pc2>ping 10.0.2.10
+C:\>ping 10.0.2.10
 Reply from 10.0.2.10: time=41us
 Reply from 10.0.2.10: time=41us
 Reply from 10.0.2.10: time=41us
@@ -113,7 +113,7 @@ Sending 5, 100-byte ICMP Echos to 10.0.2.10, timeout is 2 seconds:
 Success rate is 100 percent (5/5), round-trip min/avg/max = 13/13/13 usec
 
 == pc1
-pc1>ping 10.0.2.10
+C:\>ping 10.0.2.10
 Destination unreachable.
 Destination unreachable.
 Destination unreachable.
@@ -141,7 +141,7 @@ r1(config-if)#ip access-group NO-SUCH-LIST out
 r1(config-if)#end
 
 == pc1
-pc1>ping 10.0.2.10
+C:\>ping 10.0.2.10
 Reply from 10.0.2.10: time=41us
 Reply from 10.0.2.10: time=41us
 Reply from 10.0.2.10: time=41us
