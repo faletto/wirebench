@@ -57,7 +57,23 @@ message wording is ours where we could not check it. No Packet Tracer material.
 - Layer 3 switches translate between VLAN interfaces (`ip nat inside` on `interface vlan 10`, and so
   on) when `ip routing` is on, with the same commands and `show` output. `ip nat` on a physical
   switch port is refused.
-- Not implemented: application-level gateways (FTP, SIP and the like, which rewrite addresses in the
-  data and the sequence numbers after them). Nothing in the simulator speaks those protocols, so there
-  is nothing to test one against. Also not: `ip nat inside destination`, `match-in-vrf`,
-  `extendable`, and translation of ICMP errors that quote another ICMP error.
+- `syn-timeout` (default 60 s): a TCP entry that a SYN made is kept only that long until the far end
+  answers (an ACK arriving from outside); then the TCP timeout applies. A connection nobody answers
+  therefore does not hold a translation (or a PAT port) for a day.
+- `ip nat translation max-entries <n>`: no new dynamic translation once the table holds `n`
+  (static ones are not counted); existing ones keep working and the packet that needed a new one
+  is dropped. This is the global limit only, not the per-host or per-list ones.
+- `extendable`: without it a static entry may not share its inside or outside address (and port, for
+  port forwards) with another, and the command is refused; with it both are kept. Where several
+  match a packet, the one with a port beats the whole-host one.
+- `ip nat inside destination list <acl> pool <name>` (rotary, TCP only): a SYN from outside to an
+  address the list permits (read against the destination address) is sent to the pool's addresses in
+  turn; the pool must be `type rotary`. The choice is remembered for that client's connection, and
+  the real host's replies leave from the virtual address. The router answers ARP for the virtual
+  address on the outside link. Unlike IOS a rotary pool is not usable by an `inside source` rule
+  (the command does not check it).
+- Not implemented: application-level gateways. Protocols such as FTP (active mode's `PORT`) and SIP
+  carry addresses inside their data, so rewriting only headers breaks them; an ALG rewrites the data
+  (and the sequence numbers after it) as well. Nothing in the simulator speaks those protocols, so
+  there is nothing to build one for or test it against. Also not: `match-in-vrf`, per-host and
+  per-list `max-entries`, and translation of ICMP errors that quote another ICMP error.

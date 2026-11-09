@@ -902,7 +902,7 @@ impl Router {
         // On an outside interface the router also answers for the global addresses it translates
         // (a static mapping's, or one in use), so the neighbour needs no route to them.
         let proxy = self.ifaces[port.0 as usize].nat == Some(NatSide::Outside)
-            && self.nat.is_global(p.target_ip);
+            && (self.nat.is_global(p.target_ip) || self.nat_virtual(p.target_ip));
         if p.target_ip != my_ip && virt.is_none() && !proxy {
             return;
         }
@@ -960,7 +960,7 @@ impl Router {
         // anything else looks at it (the address may be the router's own, for PAT).
         if self.nat.is_configured() && self.ifaces[ingress.0 as usize].nat == Some(NatSide::Outside)
         {
-            if let Some(q) = self.nat.inbound(ctx.now(), &p) {
+            if let Some(q) = self.nat_inbound(ctx.now(), &p) {
                 p = q;
             }
         }
@@ -1205,6 +1205,59 @@ impl Router {
 // ---- address translation ----
 
 impl Router {
+    /// Whether `ip` is a virtual address one of the inside destination rules covers. The rule's
+    /// list is read against the destination, so it is tried as if `ip` were a source.
+    fn nat_virtual(&mut self, ip: Ipv4Addr) -> bool {
+        for rule in self.nat.dest_rules.clone() {
+            let probe = Ipv4Packet {
+                dscp_ecn: 0,
+                ident: 0,
+                flags_frag: 0,
+                ttl: 1,
+                proto: IpProto::TCP,
+                src: ip,
+                dst: ip,
+                payload: vec![],
+            };
+            if self.acls.get(&rule.acl).is_some() && self.acl_permits(Some(&rule.acl), &probe) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// A packet from outside: an existing translation, or for a new connection to a virtual
+    /// address, the next real host of its pool.
+    fn nat_inbound(&mut self, now: SimTime, p: &Ipv4Packet) -> Option<Ipv4Packet> {
+        if let Some(q) = self.nat.inbound(now, p) {
+            return Some(q);
+        }
+        let f = NatFlow::of(p)?;
+        // Only a SYN opens a connection; a stray segment does not.
+        if f.proto != 6
+            || f.flags & (wire::TcpSegment::SYN | wire::TcpSegment::ACK) != wire::TcpSegment::SYN
+        {
+            return None;
+        }
+        for (i, rule) in self.nat.dest_rules.clone().into_iter().enumerate() {
+            // The list names the address being called, not the caller.
+            let mut probe = p.clone();
+            probe.src = p.dst;
+            if self.acls.get(&rule.acl).is_none() || !self.acl_permits(Some(&rule.acl), &probe) {
+                continue;
+            }
+            let addrs = self
+                .nat
+                .pool(&rule.pool)
+                .map(|x| x.addrs())
+                .unwrap_or_default();
+            let real = self.nat.create_dest(now, &f, i, &addrs)?;
+            self.nat.stats.misses += 1;
+            return Nat::apply_in(p, &f, real);
+        }
+        None
+    }
+
     /// Translate a packet from an inside interface leaving by an outside one. Without a rule
     /// that covers it the packet goes on as it is; when the rule has no address left it is dropped
     /// and the sender told host unreachable.

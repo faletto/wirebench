@@ -50,8 +50,9 @@ pub use mgmt::{
     reveal, stored_secret, Line, Mgmt, Transport, User, SSH_PORT, TELNET_PORT,
 };
 pub use nat::{
-    Entry as NatEntry, Flow as NatFlow, Nat, Pool as NatPool, Rule as NatRule, Side as NatSide,
-    Static as NatStatic, Stats as NatStats, Target as NatTarget, Timeouts as NatTimeouts,
+    DestRule as NatDestRule, Entry as NatEntry, Flow as NatFlow, Nat, Pool as NatPool,
+    Rule as NatRule, Side as NatSide, Static as NatStatic, Stats as NatStats, Target as NatTarget,
+    Timeouts as NatTimeouts,
 };
 pub use ntp::{
     civil_from_unix, unix_from_civil, Assoc as NtpAssoc, Clock, Ntp, SyncState as NtpSync,

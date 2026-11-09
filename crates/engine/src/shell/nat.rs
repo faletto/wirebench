@@ -34,6 +34,17 @@ pub(super) const NO_NAT_TIMEOUT_SIMPLE: u32 = 505;
 pub(super) const NO_NAT_TIMEOUT_FINRST: u32 = 509;
 pub(super) const NAT_OUTSIDE_STATIC: u32 = 510;
 pub(super) const NO_NAT_OUTSIDE_STATIC: u32 = 511;
+pub(super) const NAT_POOL_MASK_ROTARY: u32 = 512;
+pub(super) const NAT_POOL_PREFIX_ROTARY: u32 = 513;
+pub(super) const NAT_DEST_RULE: u32 = 514;
+pub(super) const NO_NAT_DEST_RULE: u32 = 515;
+pub(super) const NAT_MAX_ENTRIES: u32 = 516;
+pub(super) const NO_NAT_MAX_ENTRIES: u32 = 517;
+pub(super) const NAT_TIMEOUT_SYN: u32 = 518;
+pub(super) const NO_NAT_TIMEOUT_SYN: u32 = 519;
+pub(super) const NAT_STATIC_EXT: u32 = 520;
+pub(super) const NAT_STATIC_TCP_EXT: u32 = 521;
+pub(super) const NAT_STATIC_UDP_EXT: u32 = 522;
 
 const TCP: u8 = 6;
 const UDP: u8 = 17;
@@ -45,6 +56,9 @@ const NO_POOL: &str = "% No such NAT pool.";
 const NO_RULE: &str = "% That translation rule is not configured.";
 const NO_STATIC: &str = "% That static translation is not configured.";
 const NOT_ROUTER_IF: &str = "% No such interface:";
+const SIMILAR_STATIC: &str =
+    "% A similar static entry already exists; add 'extendable' to keep both.";
+const NOT_ROTARY: &str = "% That pool is not of type rotary.";
 const NOT_ROUTED: &str = "% NAT applies to routed interfaces (on a switch, VLAN interfaces).";
 const NO_ACL_NAT: &str = "% Note: that access list does not exist yet, so nothing is translated.";
 
@@ -365,6 +379,150 @@ pub(super) fn nat_commands(
         ],
         h(NO_NAT_OUTSIDE_STATIC),
     );
+    // Pools handed out in turn, inside destination NAT, limits, and static entries that may share
+    // an address.
+    let pool_head: &[&str] = &[
+        "IP",
+        nat,
+        "Define a pool of global addresses",
+        "Pool name",
+        "First address",
+        "Last address",
+    ];
+    let rotary: Vec<(&str, Vec<&str>, u32)> = vec![
+        (
+            "ip nat pool <name:word> <start:ipv4> <end:ipv4> netmask <mask:mask> type rotary",
+            [pool_head, &["Network mask", "Mask", "Pool type", "Hand out addresses in turn"]].concat(),
+            NAT_POOL_MASK_ROTARY,
+        ),
+        (
+            "ip nat pool <name:word> <start:ipv4> <end:ipv4> prefix-length <len:int(1..32)> type rotary",
+            [pool_head, &["Prefix length", "Length", "Pool type", "Hand out addresses in turn"]].concat(),
+            NAT_POOL_PREFIX_ROTARY,
+        ),
+        (
+            "ip nat inside destination list <acl:word> pool <pool:word>",
+            vec![
+                "IP",
+                nat,
+                "Inside addresses",
+                "Translate the destination of connections from the outside",
+                "Translate calls to the addresses this list permits",
+                "List name or number",
+                "Send them to the hosts of a pool, in turn",
+                "Pool name (type rotary)",
+            ],
+            NAT_DEST_RULE,
+        ),
+        (
+            "no ip nat inside destination list <acl:word> pool <pool:word>",
+            vec![
+                "Negate",
+                "IP",
+                nat,
+                "Inside addresses",
+                "Destination translation",
+                "Access list",
+                "List name or number",
+                "Pool",
+                "Pool name",
+            ],
+            NO_NAT_DEST_RULE,
+        ),
+        (
+            "ip nat translation max-entries <n:int(1..2147483647)>",
+            vec!["IP", nat, "Translation limits", "Most dynamic translations at once", "How many"],
+            NAT_MAX_ENTRIES,
+        ),
+        (
+            "no ip nat translation max-entries",
+            vec!["Negate", "IP", nat, "Translation limits", "Most dynamic translations at once"],
+            NO_NAT_MAX_ENTRIES,
+        ),
+        (
+            "ip nat translation syn-timeout <secs:int(1..2147483)>",
+            vec![
+                "IP",
+                nat,
+                "Translation timers",
+                "Idle time of a TCP translation a SYN made that nothing has answered",
+                "Seconds",
+            ],
+            NAT_TIMEOUT_SYN,
+        ),
+        (
+            "no ip nat translation syn-timeout",
+            vec![
+                "Negate",
+                "IP",
+                nat,
+                "Translation timers",
+                "Idle time of a TCP translation a SYN made that nothing has answered",
+            ],
+            NO_NAT_TIMEOUT_SYN,
+        ),
+    ];
+    for (pattern, help, id) in &rotary {
+        g.cmd(&[config], pattern, help, h(*id));
+    }
+    let ext_help = |what: &'static str, extra: &[&'static str]| -> Vec<&'static str> {
+        // The `no` forms say "Fixed translation" and take a leading "no".
+        let mut v = if what == "Fixed translation" {
+            vec!["Negate", "IP", nat, "Inside addresses", src, what]
+        } else {
+            vec!["IP", nat, "Inside addresses", src, what]
+        };
+        v.extend_from_slice(extra);
+        v.push("Keep other static entries that share an address");
+        v
+    };
+    let ext: Vec<(&str, Vec<&str>, u32)> = vec![
+        (
+            "ip nat inside source static <local:ipv4> <global:ipv4> extendable",
+            ext_help("One fixed address for another", &["Inside local address", "Inside global address"]),
+            NAT_STATIC_EXT,
+        ),
+        (
+            "ip nat inside source static tcp <local:ipv4> <lport:int(1..65535)> <global:ipv4> <gport:int(1..65535)> extendable",
+            ext_help(
+                "One fixed address and port for another",
+                &["TCP", "Inside local address", "Inside local port", "Inside global address", "Inside global port"],
+            ),
+            NAT_STATIC_TCP_EXT,
+        ),
+        (
+            "ip nat inside source static udp <local:ipv4> <lport:int(1..65535)> <global:ipv4> <gport:int(1..65535)> extendable",
+            ext_help(
+                "One fixed address and port for another",
+                &["UDP", "Inside local address", "Inside local port", "Inside global address", "Inside global port"],
+            ),
+            NAT_STATIC_UDP_EXT,
+        ),
+        (
+            "no ip nat inside source static <local:ipv4> <global:ipv4> extendable",
+            ext_help("Fixed translation", &["Inside local address", "Inside global address"]),
+            NO_NAT_STATIC,
+        ),
+        (
+            "no ip nat inside source static tcp <local:ipv4> <lport:int(1..65535)> <global:ipv4> <gport:int(1..65535)> extendable",
+            ext_help(
+                "Fixed translation",
+                &["TCP", "Inside local address", "Inside local port", "Inside global address", "Inside global port"],
+            ),
+            NO_NAT_STATIC_TCP,
+        ),
+        (
+            "no ip nat inside source static udp <local:ipv4> <lport:int(1..65535)> <global:ipv4> <gport:int(1..65535)> extendable",
+            ext_help(
+                "Fixed translation",
+                &["UDP", "Inside local address", "Inside local port", "Inside global address", "Inside global port"],
+            ),
+            NO_NAT_STATIC_UDP,
+        ),
+    ];
+    for (pattern, help, id) in &ext {
+        g.cmd(&[config], pattern, help, h(*id));
+    }
     g.cmd(
         &[user, privileged],
         "show ip nat translations",
@@ -387,8 +545,8 @@ pub(super) fn nat_commands(
 
 fn proto_of(handler: u32) -> u8 {
     match handler {
-        NAT_STATIC_TCP | NO_NAT_STATIC_TCP => TCP,
-        NAT_STATIC_UDP | NO_NAT_STATIC_UDP => UDP,
+        NAT_STATIC_TCP | NO_NAT_STATIC_TCP | NAT_STATIC_TCP_EXT => TCP,
+        NAT_STATIC_UDP | NO_NAT_STATIC_UDP | NAT_STATIC_UDP_EXT => UDP,
         _ => 0,
     }
 }
@@ -407,7 +565,8 @@ impl Shell {
                 };
                 self.with_l3(w, |r| r.set_nat_side(i, side));
             }
-            NAT_POOL_MASK | NAT_POOL_PREFIX => {
+            NAT_POOL_MASK | NAT_POOL_PREFIX | NAT_POOL_MASK_ROTARY | NAT_POOL_PREFIX_ROTARY => {
+                let rotary = handler >= NAT_POOL_MASK_ROTARY;
                 let name = a.word("name").unwrap().to_string();
                 let start = Ipv4Addr(a.ipv4("start").unwrap());
                 let end = Ipv4Addr(a.ipv4("end").unwrap());
@@ -431,6 +590,7 @@ impl Shell {
                         start,
                         end,
                         prefix_len: len,
+                        rotary,
                     });
                     Ok(())
                 });
@@ -497,7 +657,8 @@ impl Shell {
                     return NO_RULE.to_string();
                 }
             }
-            NAT_STATIC | NAT_STATIC_TCP | NAT_STATIC_UDP => {
+            NAT_STATIC | NAT_STATIC_TCP | NAT_STATIC_UDP | NAT_STATIC_EXT | NAT_STATIC_TCP_EXT
+            | NAT_STATIC_UDP_EXT => {
                 let st = NatStatic {
                     proto: proto_of(handler),
                     local: (
@@ -508,13 +669,24 @@ impl Shell {
                         Ipv4Addr(a.ipv4("global").unwrap()),
                         a.int("gport").map_or(0, |p| p as u16),
                     ),
+                    extendable: handler >= NAT_STATIC_EXT,
                 };
-                self.with_l3(w, |r| {
-                    r.nat
-                        .statics
-                        .retain(|s| !(s.proto == st.proto && s.local == st.local));
+                let added = self.with_l3(w, |r| {
+                    let same = |s: &NatStatic| {
+                        s.proto == st.proto && s.local == st.local && s.global == st.global
+                    };
+                    // Without `extendable` an entry may not share an address (or a port on it)
+                    // with another.
+                    if !st.extendable && r.nat.statics.iter().any(|s| !same(s) && s.overlaps(&st)) {
+                        return Err(SIMILAR_STATIC);
+                    }
+                    r.nat.statics.retain(|s| !same(s));
                     r.nat.statics.push(st);
+                    Ok(())
                 });
+                if let Err(e) = added {
+                    return e.to_string();
+                }
             }
             NO_NAT_STATIC | NO_NAT_STATIC_TCP | NO_NAT_STATIC_UDP => {
                 let (proto, local) = (
@@ -576,6 +748,46 @@ impl Shell {
                 if !found {
                     return NO_STATIC.to_string();
                 }
+            }
+            NAT_DEST_RULE => {
+                let acl = a.word("acl").unwrap().to_string();
+                let pool = a.word("pool").unwrap().to_string();
+                let r = self.with_l3(w, |r| match r.nat.pool(&pool) {
+                    None => Err(NO_POOL),
+                    Some(p) if !p.rotary => Err(NOT_ROTARY),
+                    Some(_) => {
+                        r.nat.dest_rules.retain(|x| x.acl != acl);
+                        r.nat.clear_dynamic(Some(&acl));
+                        r.nat.dest_rules.push(netdev::NatDestRule::new(&acl, &pool));
+                        Ok(())
+                    }
+                });
+                if let Err(e) = r {
+                    return e.to_string();
+                }
+            }
+            NO_NAT_DEST_RULE => {
+                let acl = a.word("acl").unwrap().to_string();
+                let found = self.with_l3(w, |r| {
+                    let n = r.nat.dest_rules.len();
+                    r.nat.dest_rules.retain(|x| x.acl != acl);
+                    r.nat.clear_dynamic(Some(&acl));
+                    r.nat.dest_rules.len() != n
+                });
+                if !found {
+                    return NO_RULE.to_string();
+                }
+            }
+            NAT_MAX_ENTRIES | NO_NAT_MAX_ENTRIES => {
+                let n = a.int("n").map(|n| n as usize);
+                self.with_l3(w, |r| r.nat.max_entries = n);
+            }
+            NAT_TIMEOUT_SYN | NO_NAT_TIMEOUT_SYN => {
+                let secs = a.int("secs").map(|s| s as u64);
+                self.with_l3(w, |r| {
+                    r.nat.timeouts.syn =
+                        secs.map_or(netdev::NatTimeouts::default().syn, SimTime::from_secs)
+                });
             }
             SHOW_NAT_TRANSLATIONS => return self.show_nat_translations(w),
             SHOW_NAT_STATISTICS => return self.show_nat_statistics(w),
@@ -714,6 +926,28 @@ impl Shell {
                 }
             }
         }
+        for (n, d) in r.nat.dest_rules.iter().enumerate() {
+            let conns = r.nat.entries().iter().filter(|e| e.acl == d.acl).count();
+            o += &format!(
+                "\n-- Inside Destination\n[Id: {}] access-list {} pool {} refcount {conns}",
+                n + 1,
+                d.acl,
+                d.pool
+            );
+            if let Some(pool) = r.nat.pool(&d.pool) {
+                let total = pool.addrs().len();
+                o += &format!(
+                    "\n pool {}: netmask {}\n\tstart {} end {}\n\ttype rotary, total addresses {total}",
+                    pool.name,
+                    dotted(pool.prefix_len),
+                    pool.start,
+                    pool.end
+                );
+            }
+        }
+        if let Some(m) = r.nat.max_entries {
+            o += &format!("\nMaximum translations: {m}");
+        }
         o
     }
 
@@ -728,11 +962,12 @@ pub(super) fn nat_config(r: &Router) -> String {
     let mut o = String::new();
     for p in &r.nat.pools {
         o += &format!(
-            "ip nat pool {} {} {} netmask {}\n",
+            "ip nat pool {} {} {} netmask {}{}\n",
             p.name,
             p.start,
             p.end,
-            dotted(p.prefix_len)
+            dotted(p.prefix_len),
+            if p.rotary { " type rotary" } else { "" }
         );
     }
     for rule in &r.nat.rules {
@@ -750,8 +985,14 @@ pub(super) fn nat_config(r: &Router) -> String {
             }
         }
     }
+    for d in &r.nat.dest_rules {
+        o += &format!("ip nat inside destination list {} pool {}\n", d.acl, d.pool);
+    }
     for (global, local) in &r.nat.outside {
         o += &format!("ip nat outside source static {global} {local}\n");
+    }
+    if let Some(n) = r.nat.max_entries {
+        o += &format!("ip nat translation max-entries {n}\n");
     }
     let (t, d) = (&r.nat.timeouts, netdev::NatTimeouts::default());
     for (word, now, default) in [
@@ -760,6 +1001,7 @@ pub(super) fn nat_config(r: &Router) -> String {
         ("udp-timeout", t.udp, d.udp),
         ("icmp-timeout", t.icmp, d.icmp),
         ("finrst-timeout", t.finrst, d.finrst),
+        ("syn-timeout", t.syn, d.syn),
     ] {
         if now != default {
             o += &format!("ip nat translation {word} {}\n", now.0 / 1_000_000_000);
@@ -771,11 +1013,15 @@ pub(super) fn nat_config(r: &Router) -> String {
             UDP => " udp",
             _ => "",
         };
+        let ext = if s.extendable { " extendable" } else { "" };
         if s.proto == 0 {
-            o += &format!("ip nat inside source static {} {}\n", s.local.0, s.global.0);
+            o += &format!(
+                "ip nat inside source static {} {}{ext}\n",
+                s.local.0, s.global.0
+            );
         } else {
             o += &format!(
-                "ip nat inside source static{proto} {} {} {} {}\n",
+                "ip nat inside source static{proto} {} {} {} {}{ext}\n",
                 s.local.0, s.local.1, s.global.0, s.global.1
             );
         }

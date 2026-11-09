@@ -513,6 +513,227 @@ fn outside_source_lets_the_inside_reach_an_outside_host_by_another_address() {
 }
 
 #[test]
+fn static_entries_sharing_an_address_need_extendable_and_the_port_forward_wins_for_its_port() {
+    let mut lab = lab();
+    let mut r1 = sh(&lab, R1);
+    for l in ["enable", "configure terminal"] {
+        r1.exec(&mut lab.world, l);
+    }
+    let mut say = |lab: &mut BuiltLab, l: &str| r1.exec(&mut lab.world, l).unwrap();
+    say(&mut lab, "ip nat inside source static 10.0.1.10 192.0.2.6");
+    let refused = say(
+        &mut lab,
+        "ip nat inside source static tcp 10.0.1.11 80 192.0.2.6 8080",
+    );
+    assert!(refused.contains("extendable"), "{refused}");
+    // The same thing twice is not a conflict.
+    assert_eq!(
+        say(&mut lab, "ip nat inside source static 10.0.1.10 192.0.2.6"),
+        ""
+    );
+    assert_eq!(
+        say(
+            &mut lab,
+            "ip nat inside source static tcp 10.0.1.11 80 192.0.2.6 8080 extendable"
+        ),
+        ""
+    );
+    // Port 8080 of the shared address goes to pc2, everything else to pc1.
+    let (pc2, srv) = (lab.devices[PC2].id, lab.devices[SRV].id);
+    lab.world
+        .with_device::<Host, _>(pc2, |h, _| h.tcp.set_listeners(&[80]));
+    let conn = lab
+        .world
+        .with_device::<Host, _>(srv, |h, c| h.tcp_open(c, Ipv4Addr::new(192, 0, 2, 6), 8080))
+        .unwrap();
+    lab.world.run_to_idle();
+    assert_eq!(
+        lab.world.device::<Host>(srv).tcp.state_of(conn),
+        Some(TcpState::Established)
+    );
+    let out = run(&mut lab, R2, &["enable", "ping 192.0.2.6"]);
+    assert!(out.contains("Success rate is 100 percent"), "{out}");
+    let t = translations(&mut lab);
+    assert!(
+        t.contains("192.0.2.6:8080") && t.contains("10.0.1.11:80"),
+        "{t}"
+    );
+    let cfg = running_config(lab.world.device::<Router>(lab.devices[R1].id));
+    assert!(
+        cfg.contains("static tcp 10.0.1.11 80 192.0.2.6 8080 extendable"),
+        "{cfg}"
+    );
+}
+
+#[test]
+fn a_syn_nobody_answers_is_forgotten_after_the_syn_timeout() {
+    let tcp_entries_after = |syn_timeout: Option<&str>| {
+        let mut lab = lab();
+        if let Some(t) = syn_timeout {
+            run(
+                &mut lab,
+                R1,
+                &[
+                    "enable",
+                    "configure terminal",
+                    &format!("ip nat translation syn-timeout {t}"),
+                    "end",
+                ],
+            );
+        }
+        let pc = lab.devices[PC1].id;
+        // Nothing answers at this address: the SYN is sent and sent again.
+        lab.world.with_device::<Host, _>(pc, |h, c| {
+            h.tcp_open(c, Ipv4Addr::new(198, 51, 100, 99), 23)
+        });
+        lab.world.run_until(SimTime::from_secs(2));
+        assert!(translations(&mut lab).contains("tcp"), "made by the SYN");
+        let later = lab.world.kernel.now() + SimTime::from_secs(58);
+        lab.world.run_until(later);
+        translations(&mut lab).matches("tcp").count()
+    };
+    // By default a minute after the last SYN: still there at 60 s. With 3 s: long gone.
+    assert_eq!(tcp_entries_after(None), 1);
+    assert_eq!(tcp_entries_after(Some("3")), 0);
+}
+
+#[test]
+fn max_entries_stops_new_translations_but_not_existing_ones() {
+    let mut lab = lab();
+    run(
+        &mut lab,
+        R1,
+        &[
+            "enable",
+            "configure terminal",
+            "ip nat translation max-entries 1",
+            "end",
+        ],
+    );
+    assert!(run(&mut lab, PC1, &["ping 198.51.100.10"]).contains("received 4"));
+    assert!(run(&mut lab, PC2, &["ping 198.51.100.10"]).contains("received 0"));
+    // pc1's entry still works.
+    assert!(run(&mut lab, PC1, &["ping 198.51.100.10"]).contains("received 4"));
+    let stats = run(&mut lab, R1, &["show ip nat statistics"]);
+    assert!(stats.contains("Maximum translations: 1"), "{stats}");
+    let cfg = running_config(lab.world.device::<Router>(lab.devices[R1].id));
+    assert!(cfg.contains("ip nat translation max-entries 1"), "{cfg}");
+    run(
+        &mut lab,
+        R1,
+        &[
+            "enable",
+            "configure terminal",
+            "no ip nat translation max-entries",
+            "end",
+        ],
+    );
+    assert!(run(&mut lab, PC2, &["ping 198.51.100.10"]).contains("received 4"));
+}
+
+#[test]
+fn inside_destination_nat_spreads_connections_over_a_rotary_pool() {
+    let mut lab = lab();
+    // A public address on the outside link that is really two inside web servers.
+    run(
+        &mut lab,
+        R1,
+        &[
+            "enable",
+            "configure terminal",
+            "interface g0/1",
+            "ip address 203.0.113.1 255.255.255.248",
+            "exit",
+            "ip nat pool WEB 10.0.1.10 10.0.1.11 prefix-length 24",
+            "ip nat pool WEB 10.0.1.10 10.0.1.11 prefix-length 24 type rotary",
+            "access-list 5 permit 203.0.113.5",
+            "ip nat inside destination list 5 pool WEB",
+            "end",
+        ],
+    );
+    run(
+        &mut lab,
+        R2,
+        &[
+            "enable",
+            "configure terminal",
+            "interface g0/0",
+            "ip address 203.0.113.2 255.255.255.248",
+            "end",
+        ],
+    );
+    let (pc1, pc2, srv) = (
+        lab.devices[PC1].id,
+        lab.devices[PC2].id,
+        lab.devices[SRV].id,
+    );
+    for pc in [pc1, pc2] {
+        lab.world
+            .with_device::<Host, _>(pc, |h, _| h.tcp.set_listeners(&[80]));
+    }
+    let mut conns = vec![];
+    for _ in 0..4 {
+        let c = lab
+            .world
+            .with_device::<Host, _>(srv, |h, c| h.tcp_open(c, Ipv4Addr::new(203, 0, 113, 5), 80))
+            .unwrap();
+        lab.world.run_to_idle();
+        conns.push(c);
+    }
+    for c in &conns {
+        assert_eq!(
+            lab.world.device::<Host>(srv).tcp.state_of(*c),
+            Some(TcpState::Established)
+        );
+    }
+    let accepted = |lab: &mut BuiltLab, pc| {
+        let mut n = 0;
+        while lab
+            .world
+            .with_device::<Host, _>(pc, |h, _| h.tcp.accept())
+            .is_some()
+        {
+            n += 1;
+        }
+        n
+    };
+    assert_eq!((accepted(&mut lab, pc1), accepted(&mut lab, pc2)), (2, 2));
+    // Data goes both ways on one of them: the reply leaves from the virtual address.
+    let first = conns[0];
+    lab.world
+        .with_device::<Host, _>(srv, |h, c| h.tcp_write(c, first, b"GET /"));
+    lab.world.run_to_idle();
+    let t = translations(&mut lab);
+    assert_eq!(t.matches("203.0.113.5:80").count(), 4, "{t}");
+    let stats = run(&mut lab, R1, &["show ip nat statistics"]);
+    assert!(
+        stats.contains("-- Inside Destination") && stats.contains("type rotary"),
+        "{stats}"
+    );
+    let cfg = running_config(lab.world.device::<Router>(lab.devices[R1].id));
+    assert!(
+        cfg.contains("ip nat pool WEB 10.0.1.10 10.0.1.11 netmask 255.255.255.0 type rotary"),
+        "{cfg}"
+    );
+    assert!(
+        cfg.contains("ip nat inside destination list 5 pool WEB"),
+        "{cfg}"
+    );
+    // A pool that is not rotary cannot be used.
+    let say = run(
+        &mut lab,
+        R1,
+        &[
+            "enable",
+            "configure terminal",
+            "ip nat pool PLAIN 192.0.2.1 192.0.2.2 netmask 255.255.255.248",
+            "ip nat inside destination list 5 pool PLAIN",
+        ],
+    );
+    assert!(say.contains("not of type rotary"), "{say}");
+}
+
+#[test]
 fn nat_configuration_is_printed_saved_and_comes_back_after_a_reload() {
     let mut lab = lab();
     run(
@@ -523,7 +744,7 @@ fn nat_configuration_is_printed_saved_and_comes_back_after_a_reload() {
             "configure terminal",
             "ip nat pool P 192.0.2.2 192.0.2.4 prefix-length 29",
             "ip nat inside source static 10.0.1.10 192.0.2.5",
-            "ip nat inside source static tcp 10.0.1.11 22 192.0.2.5 2222",
+            "ip nat inside source static tcp 10.0.1.11 22 192.0.2.5 2222 extendable",
             "end",
         ],
     );
@@ -534,7 +755,7 @@ fn nat_configuration_is_printed_saved_and_comes_back_after_a_reload() {
         "ip nat pool P 192.0.2.2 192.0.2.4 netmask 255.255.255.248",
         "ip nat inside source list 1 interface GigabitEthernet0/1 overload",
         "ip nat inside source static 10.0.1.10 192.0.2.5",
-        "ip nat inside source static tcp 10.0.1.11 22 192.0.2.5 2222",
+        "ip nat inside source static tcp 10.0.1.11 22 192.0.2.5 2222 extendable",
     ] {
         assert!(cfg.contains(line), "missing {line:?} in\n{cfg}");
     }

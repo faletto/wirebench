@@ -28,6 +28,8 @@ pub const TCP_TIMEOUT: SimTime = SimTime::from_secs(86_400);
 pub const TCP_FINRST_TIMEOUT: SimTime = SimTime::from_secs(60);
 /// Dynamic one-to-one entries (no ports): `ip nat translation timeout`'s default of a day.
 pub const SIMPLE_TIMEOUT: SimTime = SimTime::from_secs(86_400);
+/// A TCP translation made by a SYN, until the other end has answered.
+pub const SYN_TIMEOUT: SimTime = SimTime::from_secs(60);
 
 const ICMP: u8 = 1;
 const TCP: u8 = 6;
@@ -40,6 +42,8 @@ pub struct Pool {
     pub start: Ipv4Addr,
     pub end: Ipv4Addr,
     pub prefix_len: u8,
+    /// `type rotary`: addresses handed out in turn to new connections (inside destination NAT).
+    pub rotary: bool,
 }
 
 impl Pool {
@@ -72,6 +76,39 @@ pub struct Static {
     pub proto: u8,
     pub local: (Ipv4Addr, u16),
     pub global: (Ipv4Addr, u16),
+    /// `extendable`: may share its local or global address with another static entry.
+    pub extendable: bool,
+}
+
+impl Static {
+    /// Whether `other` could be confused with this: same protocol (or one covers all), and an
+    /// overlapping inside address and port, or outside address and port.
+    pub fn overlaps(&self, other: &Static) -> bool {
+        let proto = self.proto == 0 || other.proto == 0 || self.proto == other.proto;
+        let side = |a: (Ipv4Addr, u16), b: (Ipv4Addr, u16)| {
+            a.0 == b.0 && (a.1 == 0 || b.1 == 0 || a.1 == b.1)
+        };
+        proto && (side(self.local, other.local) || side(self.global, other.global))
+    }
+}
+
+/// `ip nat inside destination list <acl> pool <name>`: connections from outside to an address the
+/// list permits go to the pool's addresses in turn.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DestRule {
+    pub acl: String,
+    pub pool: String,
+    next: usize,
+}
+
+impl DestRule {
+    pub fn new(acl: &str, pool: &str) -> Self {
+        DestRule {
+            acl: acl.to_string(),
+            pool: pool.to_string(),
+            next: 0,
+        }
+    }
 }
 
 /// One translation in the table.
@@ -88,17 +125,28 @@ pub struct Entry {
     pub expires: SimTime,
     /// A FIN or RST has crossed: whatever follows only keeps it for [`TCP_FINRST_TIMEOUT`].
     pub closing: bool,
+    /// Made by a SYN and not yet answered: kept for the shorter `syn` timeout.
+    pub syn: bool,
+    /// Made by inside destination NAT: matched on the far end too, because many clients share
+    /// one real address and port.
+    pub dest: bool,
 }
 
 impl Entry {
     /// A packet used this entry: push its expiry out, or bring it close if the connection ends.
-    fn touch(&mut self, now: SimTime, proto: u8, flags: u8, t: &Timeouts) {
+    fn touch(&mut self, now: SimTime, proto: u8, flags: u8, t: &Timeouts, inbound: bool) {
         if proto == TCP && flags & (TcpSegment::FIN | TcpSegment::RST) != 0 {
             self.closing = true;
+        }
+        // An answer from the far end (an ACK coming in) means the connection is up.
+        if proto == TCP && inbound && flags & TcpSegment::ACK != 0 {
+            self.syn = false;
         }
         self.expires = now
             + if self.closing {
                 t.finrst
+            } else if self.syn {
+                t.syn
             } else {
                 t.of(self.proto)
             };
@@ -169,6 +217,9 @@ pub struct Nat {
     pub statics: Vec<Static>,
     /// `ip nat outside source static <global> <local>`: (outside global, outside local).
     pub outside: Vec<(Ipv4Addr, Ipv4Addr)>,
+    pub dest_rules: Vec<DestRule>,
+    /// `ip nat translation max-entries`: no new dynamic translation past this many.
+    pub max_entries: Option<usize>,
     pub timeouts: Timeouts,
     table: Vec<Entry>,
     pub stats: Stats,
@@ -181,6 +232,8 @@ pub struct Timeouts {
     pub udp: SimTime,
     pub tcp: SimTime,
     pub finrst: SimTime,
+    /// A TCP translation that a SYN made and nothing has answered yet.
+    pub syn: SimTime,
     /// One-to-one dynamic entries, which cover every protocol.
     pub simple: SimTime,
 }
@@ -192,6 +245,7 @@ impl Default for Timeouts {
             udp: UDP_TIMEOUT,
             tcp: TCP_TIMEOUT,
             finrst: TCP_FINRST_TIMEOUT,
+            syn: SYN_TIMEOUT,
             simple: SIMPLE_TIMEOUT,
         }
     }
@@ -227,7 +281,10 @@ fn last_port(wanted: u16) -> u16 {
 impl Nat {
     /// Whether anything is configured; the router skips NAT entirely when not.
     pub fn is_configured(&self) -> bool {
-        !self.rules.is_empty() || !self.statics.is_empty() || !self.outside.is_empty()
+        !self.rules.is_empty()
+            || !self.statics.is_empty()
+            || !self.outside.is_empty()
+            || !self.dest_rules.is_empty()
     }
 
     pub fn pool(&self, name: &str) -> Option<&Pool> {
@@ -239,6 +296,7 @@ impl Nat {
         self.rules
             .iter()
             .any(|r| matches!(&r.target, Target::Pool(n) if n == name))
+            || self.dest_rules.iter().any(|r| r.pool == name)
     }
 
     /// Whether `ip` is a global address some translation uses: the router answers ARP for it.
@@ -280,20 +338,27 @@ impl Nat {
         self.expire(now);
         let timeouts = self.timeouts;
         let hit = self.table.iter_mut().find(|e| {
+            if e.dest {
+                // The reply from a real host: the same conversation, seen from the inside.
+                return e.proto == f.proto && e.local == f.src && e.remote == Some(f.dst);
+            }
             (e.proto == f.proto && e.local == f.src) || (e.proto == 0 && e.local.0 == f.src.0)
         });
         if let Some(e) = hit {
             e.remote = Some(f.dst);
-            e.touch(now, f.proto, f.flags, &timeouts);
+            e.touch(now, f.proto, f.flags, &timeouts, false);
             return Some(e.global);
         }
+        // Of the entries that match, a port forward beats a whole-host entry.
         self.statics
             .iter()
-            .find(|s| {
+            .filter(|s| {
                 s.local.0 == f.src.0
                     && (s.proto == 0 || s.proto == f.proto)
                     && (s.local.1 == 0 || s.local.1 == f.src.1)
             })
+            .rev()
+            .max_by_key(|s| u8::from(s.proto != 0) + u8::from(s.local.1 != 0))
             .map(|s| s.global)
     }
 
@@ -307,6 +372,9 @@ impl Nat {
         addrs: &[Ipv4Addr],
         overload: bool,
     ) -> Option<(Ipv4Addr, u16)> {
+        if self.max_entries.is_some_and(|m| self.table.len() >= m) {
+            return None;
+        }
         let (proto, local, global) = if overload {
             let wanted = f.src.1;
             let mut found = None;
@@ -331,16 +399,63 @@ impl Nat {
                 .find(|a| !self.global_taken(0, (*a, 0)))?;
             (0, (f.src.0, 0), (a, 0))
         };
+        // A TCP entry that a SYN made is kept briefly until the other end answers.
+        let syn =
+            f.proto == TCP && f.flags & (TcpSegment::SYN | TcpSegment::ACK) == TcpSegment::SYN;
         self.table.push(Entry {
             proto,
             local,
             global,
             remote: Some(f.dst),
             acl: acl.to_string(),
-            expires: now + self.timeouts.of(proto),
+            expires: now
+                + if syn {
+                    self.timeouts.syn
+                } else {
+                    self.timeouts.of(proto)
+                },
             closing: false,
+            syn,
+            dest: false,
         });
         Some(global)
+    }
+
+    /// A new connection from outside to a virtual address `f.dst` that destination rule `rule`
+    /// covers: pick the next real address from `addrs` and remember the choice. Returns the real
+    /// address and port. None if the table is full or there are no addresses.
+    pub fn create_dest(
+        &mut self,
+        now: SimTime,
+        f: &Flow,
+        rule: usize,
+        addrs: &[Ipv4Addr],
+    ) -> Option<(Ipv4Addr, u16)> {
+        if addrs.is_empty() || self.max_entries.is_some_and(|m| self.table.len() >= m) {
+            return None;
+        }
+        let r = self.dest_rules.get_mut(rule)?;
+        let real = addrs[r.next % addrs.len()];
+        r.next = r.next.wrapping_add(1);
+        let acl = r.acl.clone();
+        let local = (real, f.dst.1);
+        self.table.push(Entry {
+            proto: f.proto,
+            local,
+            global: f.dst,
+            remote: Some(f.src),
+            acl,
+            expires: now + self.timeouts.syn,
+            closing: false,
+            syn: true,
+            dest: true,
+        });
+        Some(local)
+    }
+
+    /// Rewrite a packet from outside to go to the real host `local`.
+    pub fn apply_in(p: &Ipv4Packet, f: &Flow, local: (Ipv4Addr, u16)) -> Option<Ipv4Packet> {
+        rewrite(p, f.src, local)
     }
 
     /// Rewrite a packet from inside to carry `global` as its source.
@@ -437,20 +552,25 @@ impl Nat {
     fn find_in(&mut self, now: SimTime, f: &Flow) -> Option<(Ipv4Addr, u16)> {
         let timeouts = self.timeouts;
         let hit = self.table.iter_mut().find(|e| {
+            if e.dest {
+                return e.proto == f.proto && e.global == f.dst && e.remote == Some(f.src);
+            }
             (e.proto == f.proto && e.global == f.dst) || (e.proto == 0 && e.global.0 == f.dst.0)
         });
         if let Some(e) = hit {
             e.remote = Some(f.src);
-            e.touch(now, f.proto, f.flags, &timeouts);
+            e.touch(now, f.proto, f.flags, &timeouts, true);
             return Some(e.local);
         }
         self.statics
             .iter()
-            .find(|s| {
+            .filter(|s| {
                 s.global.0 == f.dst.0
                     && (s.proto == 0 || s.proto == f.proto)
                     && (s.global.1 == 0 || s.global.1 == f.dst.1)
             })
+            .rev()
+            .max_by_key(|s| u8::from(s.proto != 0) + u8::from(s.global.1 != 0))
             .map(|s| s.local)
     }
 
@@ -683,6 +803,7 @@ mod tests {
             proto: UDP,
             local: (ip(10, 0, 0, 5), 5000),
             global: (ip(203, 0, 113, 1), 6000),
+            extendable: false,
         });
         // A datagram from the internet arrived, was translated, and nothing listens: the inside
         // host answers with port unreachable, quoting the packet as it saw it.
@@ -755,6 +876,7 @@ mod tests {
             proto: 0,
             local: (ip(10, 0, 0, 5), 0),
             global: (ip(203, 0, 113, 5), 0),
+            extendable: false,
         });
         let out = tcp((ip(10, 0, 0, 5), 80), (ip(198, 51, 100, 5), 3333), 0);
         let f = Flow::of(&out).unwrap();
@@ -771,6 +893,7 @@ mod tests {
             proto: TCP,
             local: (ip(10, 0, 0, 5), 80),
             global: (ip(203, 0, 113, 1), 8080),
+            extendable: false,
         });
         let to = |port| tcp((ip(198, 51, 100, 5), 3333), (ip(203, 0, 113, 1), port), 0);
         let q = n.inbound(NOW, &to(8080)).unwrap();
@@ -845,5 +968,103 @@ mod tests {
         // The quoted packet shows the inside address again.
         assert_eq!(&e.original[12..16], &[10, 0, 0, 1]);
         assert_eq!(u16::from_be_bytes([e.original[20], e.original[21]]), 4000);
+    }
+
+    #[test]
+    fn a_syn_entry_waits_the_short_time_until_the_far_end_answers() {
+        let mut n = Nat::default();
+        n.timeouts.syn = SimTime::from_secs(10);
+        let g = ip(203, 0, 113, 1);
+        let server = (ip(198, 51, 100, 5), 80);
+        let syn = tcp((ip(10, 0, 0, 1), 4000), server, TcpSegment::SYN);
+        let f = Flow::of(&syn).unwrap();
+        n.create(NOW, &f, "1", &[g], true);
+        // Nobody answers: gone after the SYN timeout, not a day.
+        n.expire(NOW + SimTime::from_secs(11));
+        assert!(n.entries().is_empty());
+        // An answer comes in: now it is an ordinary connection.
+        let gl = n.create(NOW, &f, "1", &[g], true).unwrap();
+        let synack = tcp(server, gl, TcpSegment::SYN | TcpSegment::ACK);
+        n.inbound(NOW + SimTime::from_secs(1), &synack).unwrap();
+        n.expire(NOW + SimTime::from_secs(60));
+        assert_eq!(n.entries().len(), 1);
+    }
+
+    #[test]
+    fn no_new_dynamic_entry_past_max_entries_but_existing_ones_still_work() {
+        let mut n = Nat {
+            max_entries: Some(1),
+            ..Nat::default()
+        };
+        let g = ip(203, 0, 113, 1);
+        let f =
+            |h: u8| Flow::of(&tcp((ip(10, 0, 0, h), 4000), (ip(198, 51, 100, 5), 80), 0)).unwrap();
+        assert!(n.create(NOW, &f(1), "1", &[g], true).is_some());
+        assert!(n.create(NOW, &f(2), "1", &[g], true).is_none());
+        assert!(n.find_out(NOW, &f(1)).is_some());
+        // Static entries are not counted.
+        n.statics.push(Static {
+            proto: 0,
+            local: (ip(10, 0, 0, 9), 0),
+            global: (ip(203, 0, 113, 9), 0),
+            extendable: false,
+        });
+        assert!(n.find_out(NOW, &f(9)).is_some());
+    }
+
+    #[test]
+    fn statics_that_share_an_address_overlap_unless_their_ports_differ() {
+        let st = |proto, l: (u8, u16), g: (u8, u16)| Static {
+            proto,
+            local: (ip(10, 0, 0, l.0), l.1),
+            global: (ip(203, 0, 113, g.0), g.1),
+            extendable: false,
+        };
+        // One inside host, two forwards on different ports: no clash.
+        assert!(!st(TCP, (5, 80), (1, 8080)).overlaps(&st(TCP, (5, 22), (1, 2222))));
+        // The same inside port twice, or a whole-host entry beside a forward: clash.
+        assert!(st(TCP, (5, 80), (1, 8080)).overlaps(&st(TCP, (5, 80), (2, 9090))));
+        assert!(st(0, (5, 0), (1, 0)).overlaps(&st(TCP, (5, 22), (2, 22))));
+        // Different protocols on the same ports do not.
+        assert!(!st(TCP, (5, 80), (1, 80)).overlaps(&st(UDP, (5, 80), (1, 80))));
+        // Different hosts and addresses do not.
+        assert!(!st(TCP, (5, 80), (1, 80)).overlaps(&st(TCP, (6, 80), (2, 80))));
+    }
+
+    #[test]
+    fn destination_nat_hands_connections_to_the_real_hosts_in_turn_and_back() {
+        let mut n = Nat::default();
+        n.dest_rules.push(DestRule::new("5", "WEB"));
+        let virt = ip(203, 0, 113, 5);
+        let real = [ip(10, 0, 0, 1), ip(10, 0, 0, 2)];
+        let client = |port| (ip(198, 51, 100, 7), port);
+        let mut chosen = vec![];
+        for port in [5000u16, 5001, 5002] {
+            let p = tcp(client(port), (virt, 80), TcpSegment::SYN);
+            let f = Flow::of(&p).unwrap();
+            let local = n.create_dest(NOW, &f, 0, &real).unwrap();
+            let q = Nat::apply_in(&p, &f, local).unwrap();
+            assert_eq!(q.src, client(port).0);
+            assert!(TcpSegment::checksum_ok(&q.payload, q.src, q.dst));
+            chosen.push(q.dst);
+        }
+        assert_eq!(chosen, vec![real[0], real[1], real[0]]);
+        // Later segments of the first connection find the same host.
+        let more = tcp(client(5000), (virt, 80), TcpSegment::ACK);
+        assert_eq!(n.inbound(NOW, &more).unwrap().dst, real[0]);
+        // The real host's reply leaves from the virtual address.
+        let reply = tcp(
+            (real[0], 80),
+            client(5000),
+            TcpSegment::SYN | TcpSegment::ACK,
+        );
+        let rf = Flow::of(&reply).unwrap();
+        let g = n.find_out(NOW, &rf).unwrap();
+        let out = Nat::apply_out(&reply, &rf, g).unwrap();
+        assert_eq!((out.src, out.dst), (virt, client(5000).0));
+        assert!(TcpSegment::checksum_ok(&out.payload, out.src, out.dst));
+        // A reply for another client's connection does not match the first one's entry.
+        let other = tcp((real[0], 80), client(7777), TcpSegment::ACK);
+        assert!(n.find_out(NOW, &Flow::of(&other).unwrap()).is_none());
     }
 }
