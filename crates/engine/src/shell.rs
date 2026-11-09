@@ -15,6 +15,7 @@ use netdev::{
 use std::sync::Arc;
 use wire::{IcmpErrorKind, Ipv4Addr};
 
+mod disc;
 mod etherchannel;
 mod m3b;
 
@@ -466,6 +467,7 @@ fn router_grammar() -> (Grammar, Modes) {
     );
     ospf_commands(&mut g, privileged, config, config_if, config_router);
     probe_commands(&mut g, privileged);
+    disc::discovery_commands(&mut g, user, privileged, config, config_if);
     (
         g,
         Modes {
@@ -945,6 +947,7 @@ fn switch_grammar() -> (Grammar, Modes) {
     span_commands(&mut g, user, privileged, config, config_if);
     m3b::port_security_commands(&mut g, user, privileged, config, config_if);
     etherchannel::channel_commands(&mut g, user, privileged, config, config_if);
+    disc::discovery_commands(&mut g, user, privileged, config, config_if);
     (
         g,
         Modes {
@@ -3040,8 +3043,10 @@ impl Shell {
 
     /// After a command: a switch looks at its cables and gets spanning tree going if it is on.
     fn settle(&self, w: &mut World) {
-        if self.kind == Kind::Switch {
-            w.with_device::<L2Switch, _>(self.device, |s, ctx| s.refresh(ctx));
+        match self.kind {
+            Kind::Switch => w.with_device::<L2Switch, _>(self.device, |s, ctx| s.refresh(ctx)),
+            Kind::Router => w.with_device::<Router, _>(self.device, |r, ctx| r.disc_kick(ctx)),
+            Kind::Host => {}
         }
     }
 
@@ -3070,6 +3075,7 @@ impl Shell {
             }
             300..=329 => return self.m3b_cmd(w, handler, a),
             330..=349 => return self.channel_cmd(w, handler, a),
+            350..=379 => return self.disc_cmd(w, handler, a),
             ACL_PERMIT | ACL_DENY | ACL_REMARK | ACL_NO_SEQ | ACL_NO_PERMIT | ACL_NO_DENY
             | NO_ACL_NUMBER => return self.acl_entry_cmd(w, handler, a, &m),
             ACL_STD | ACL_EXT | NO_ACL_STD | NO_ACL_EXT => {
@@ -3849,6 +3855,7 @@ fn mgmt_tail(m: &Mgmt) -> String {
 
 pub fn running_config(r: &Router) -> String {
     let mut o = mgmt_head(&r.mgmt, &r.name);
+    o += &disc::disc_global_lines(&r.disc);
     o += &dhcp_config(r);
     for (i, ifc) in r.interfaces().iter().enumerate() {
         o += &format!("interface {}\n", iface_name(r, i));
@@ -3874,6 +3881,9 @@ pub fn running_config(r: &Router) -> String {
             o += &format!(" ip access-group {n} out\n");
         }
         o += &ospf_if_lines(&ifc.ospf);
+        if i < r.n_ports() as usize {
+            o += &disc::disc_port_lines(&r.disc, i);
+        }
         // A subinterface is up unless told otherwise, so only a shut one needs a line.
         if ifc.sub.is_none() {
             o += if ifc.shutdown {
@@ -3908,6 +3918,7 @@ pub fn switch_config(s: &L2Switch) -> String {
     }
     o += &spanning_config(s);
     o += &m3b::errdisable_lines(s);
+    o += &disc::disc_global_lines(&s.disc);
     if s.l3().routing() {
         o += "ip routing\n!\n";
     }
@@ -3920,11 +3931,12 @@ pub fn switch_config(s: &L2Switch) -> String {
     }
     for p in 0..s.n_ports() {
         let c = s.port(kernel::PortId(p)).expect("port in range");
-        if *c == default {
+        if *c == default && !s.disc.port_changed(p as usize) {
             continue;
         }
         o += &format!("interface FastEthernet0/{}\n", p + 1);
         o += &port_body(c);
+        o += &disc::disc_port_lines(&s.disc, p as usize);
         o += "!\n";
     }
     let l3 = s.l3();

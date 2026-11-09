@@ -1,6 +1,7 @@
 use crate::channel::{
     bundle_cost, ChannelMode, ChannelPort, JoinError, LoadBalance, Membership, MAX_MEMBERS,
 };
+use crate::discovery::{Discovery, Identity, PortInfo as DiscPort};
 use crate::psec::{PortSecurity, PsecState, Verdict as PsecVerdict};
 use crate::stp::{Action as StpAction, Mode as StpMode, Stp};
 use crate::vlan::{all_vlans, DEFAULT_VLAN};
@@ -148,6 +149,8 @@ pub struct L2Switch {
     load_balance: LoadBalance,
     lacp_secs: u32,
     lacp_dirty: bool,
+    /// CDP and LLDP.
+    pub disc: Discovery,
 }
 
 /// DTP is repeated this often, and a neighbour not heard from for three times as long is gone.
@@ -185,6 +188,7 @@ impl L2Switch {
             load_balance: LoadBalance::default(),
             lacp_secs: 0,
             lacp_dirty: false,
+            disc: Discovery::new(n_ports as usize),
         }
     }
 
@@ -215,6 +219,7 @@ impl L2Switch {
         self.rep = vec![None; n];
         self.load_balance = LoadBalance::default();
         self.lacp_dirty = false;
+        self.disc = Discovery::new(n);
     }
 
     /// Set before creating SVIs; their MACs are `02:bb:00:<unit>:<vlan>`.
@@ -665,6 +670,7 @@ impl L2Switch {
         if !self.upkeep_needed() && !initiates {
             self.trees.clear();
             self.link_up = vec![false; self.ports.len()];
+            self.ensure_tick(ctx);
             return;
         }
         let mut changed_links = false;
@@ -715,6 +721,54 @@ impl L2Switch {
         if busy && self.stp_timer.is_none() {
             self.stp_timer = Some(ctx.schedule_background(SimTime::from_secs(1), STP_TIMER));
         }
+        self.ensure_tick(ctx);
+    }
+
+    /// Keep the one-second tick going while neighbour discovery is running.
+    fn ensure_tick(&mut self, ctx: &mut Ctx) {
+        if self.disc.wants_tick() && self.stp_timer.is_none() {
+            self.stp_timer = Some(ctx.schedule_background(SimTime::from_secs(1), STP_TIMER));
+        }
+    }
+
+    /// What this switch tells its neighbours about itself.
+    fn disc_identity(&self, ctx: &Ctx) -> Identity {
+        let svi_addr = self
+            .l3
+            .interfaces()
+            .iter()
+            .find_map(|i| i.svi.and(i.addr.map(|a| a.0)));
+        let mut caps = wire::cdp_cap::SWITCH;
+        if self.l3.routing() {
+            caps |= wire::cdp_cap::ROUTER;
+        }
+        Identity {
+            name: self.name.clone(),
+            platform: "wirebench L2 switch".to_string(),
+            software: "wirebench simulated switch".to_string(),
+            caps,
+            ports: (0..self.ports.len())
+                .map(|i| DiscPort {
+                    long: format!("FastEthernet0/{}", i + 1),
+                    short: format!("Fa0/{}", i + 1),
+                    mac: self.dtp_mac(PortId(i as u16)),
+                    live: ctx.port_up(PortId(i as u16)) && !self.admin_down(PortId(i as u16)),
+                    addr: svi_addr,
+                })
+                .collect(),
+        }
+    }
+
+    fn disc_tick(&mut self, ctx: &mut Ctx) {
+        if !self.disc.wants_tick() {
+            return;
+        }
+        let id = self.disc_identity(ctx);
+        let mut out = vec![];
+        self.disc.tick(ctx.now(), &id, &mut out);
+        for (p, frame) in out {
+            ctx.transmit(PortId(p as u16), frame);
+        }
     }
 
     /// Whether the one-second tick has anything to do: spanning tree is running, or some
@@ -731,7 +785,9 @@ impl L2Switch {
     }
 
     fn stp_tick(&mut self, ctx: &mut Ctx) {
+        self.disc_tick(ctx);
         if !self.upkeep_needed() {
+            self.ensure_tick(ctx);
             return;
         }
         // Neighbours not heard for three intervals are gone; the rest hear from us every interval.
@@ -1342,6 +1398,15 @@ impl Device for L2Switch {
         if frame.len() < 14 {
             return;
         }
+        // CDP and LLDP are about the neighbour on this wire. LLDP is never bridged; CDP is bridged
+        // only while this switch is not running it.
+        if self.disc.consumes(&frame) && !self.admin_down(port) {
+            self.disc.receive(ctx.now(), port.0 as usize, &frame);
+            return;
+        }
+        if frame[0..6] == wire::LLDP_MULTICAST.0 {
+            return;
+        }
         // LACP stays on the wire it arrived on; no bridge forwards it.
         if frame[0..6] == wire::SLOW_PROTOCOLS.0 {
             self.on_lacp(ctx, port, &frame);
@@ -1349,7 +1414,7 @@ impl Device for L2Switch {
         }
         // From here a bundle is one port: the one that stands for it.
         let port = self.bundle_of(port).map_or(port, |(_, r)| r);
-        if frame[0..6] == DTP_MULTICAST.0 && frame[12..14] != DOT1Q {
+        if frame[0..6] == DTP_MULTICAST.0 && frame[12..14] != DOT1Q && !wire::Cdp::is_cdp(&frame) {
             self.on_dtp(ctx, port, &frame);
             return;
         }
@@ -1400,6 +1465,9 @@ impl Device for L2Switch {
 
     fn clone_box(&self) -> Option<Box<dyn Device>> {
         Some(Box::new(self.clone()))
+    }
+    fn start(&mut self, ctx: &mut Ctx) {
+        self.ensure_tick(ctx);
     }
     fn as_any(&self) -> &dyn Any {
         self

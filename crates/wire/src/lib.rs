@@ -5,6 +5,7 @@ mod arp;
 mod bpdu;
 mod checksum;
 mod dhcp;
+mod discovery;
 mod dissect;
 mod dtp;
 mod ethernet;
@@ -21,6 +22,9 @@ pub use arp::{ArpOp, ArpPacket};
 pub use bpdu::{Bpdu, BpduKind, BpduRole, BridgeId, PVST_MULTICAST};
 pub use checksum::internet_checksum;
 pub use dhcp::{DhcpMessage, DhcpOp, DhcpType};
+pub use discovery::{
+    cap as cdp_cap, lldp_cap, Cdp, Lldp, CDP_MULTICAST, LLDP_MULTICAST, LLDP_TYPE,
+};
 pub use dissect::{dissect, hexdump, protocols, Node};
 pub use dtp::{Dtp, DtpMode, DTP_MULTICAST};
 pub use ethernet::{EtherType, EthernetFrame, VlanTag};

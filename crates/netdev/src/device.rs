@@ -74,4 +74,6 @@ pub trait Device: Any {
     }
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
+    /// The device has just been added to a world: start any periodic upkeep it has.
+    fn start(&mut self, _ctx: &mut Ctx) {}
 }

@@ -1,3 +1,4 @@
+use crate::discovery::{Discovery, Identity, PortInfo as DiscPort};
 use crate::fib::{mask, Fib, Route, RouteKind};
 use crate::{
     record_probe, AclPacket, AclSet, Ctx, Device, DeviceEvent, DhcpServer, Mgmt, Ospf, OspfIfCfg,
@@ -18,6 +19,8 @@ const ARP_TIMEOUT: SimTime = SimTime::from_secs(1);
 const UNREACHABLE_GAP: SimTime = SimTime::from_millis(500);
 /// The timer token of OSPF's one-second upkeep (ARP's tokens are 32-bit addresses).
 const OSPF_TICK: u64 = 1 << 40;
+/// The timer token of the neighbour discovery upkeep.
+const DISC_TICK: u64 = 1 << 41;
 const ARP_TTL: SimTime = SimTime::from_secs(4 * 3600);
 
 /// A logical interface. The first `n_ports` are the physical ports, in port order; subinterfaces
@@ -112,6 +115,9 @@ pub struct Router {
     /// `router ospf`: the protocol state, if configured.
     pub ospf: Option<Ospf>,
     ospf_timer: bool,
+    /// CDP and LLDP.
+    pub disc: Discovery,
+    disc_timer: bool,
     /// Source MAC of the frame being handled (OSPF learns its neighbours' addresses from it).
     rx_src_mac: MacAddr,
     /// Replies to probes this router sent (pings, traceroutes), oldest first.
@@ -161,6 +167,8 @@ impl Router {
             acls: AclSet::default(),
             ospf: None,
             ospf_timer: false,
+            disc: Discovery::new(n_ports as usize),
+            disc_timer: false,
             rx_src_mac: MacAddr::default(),
             probes: Vec::new(),
             unreachable_after: SimTime::ZERO,
@@ -187,6 +195,7 @@ impl Router {
         self.dhcp = DhcpServer::default();
         self.acls = AclSet::default();
         self.ospf = None;
+        self.disc = Discovery::new(self.n_ports as usize);
         self.probes.clear();
         self.unreachable_after = SimTime::ZERO;
         for ifc in &mut self.ifaces {
@@ -1109,6 +1118,12 @@ impl Router {
 
     /// An ARP resolution timer fired (the token is the next hop's address).
     pub fn on_timer(&mut self, ctx: &mut Ctx, token: u64) {
+        if token == DISC_TICK {
+            self.disc_timer = false;
+            self.disc_tick(ctx);
+            self.disc_kick(ctx);
+            return;
+        }
         if token == OSPF_TICK {
             self.ospf_tick(ctx);
             return;
@@ -1123,6 +1138,10 @@ impl Device for Router {
     fn handle(&mut self, ctx: &mut Ctx, ev: DeviceEvent) {
         match ev {
             DeviceEvent::FrameRx { port, frame } => {
+                if self.disc.consumes(&frame) {
+                    self.disc.receive(ctx.now(), port.0 as usize, &frame);
+                    return;
+                }
                 let Ok(f) = EthernetFrame::parse(&frame) else {
                     return;
                 };
@@ -1135,6 +1154,10 @@ impl Device for Router {
             DeviceEvent::Timer { token, .. } => self.on_timer(ctx, token),
         }
         self.flush(ctx);
+    }
+
+    fn start(&mut self, ctx: &mut Ctx) {
+        self.disc_kick(ctx);
     }
 
     fn clone_box(&self) -> Option<Box<dyn Device>> {
@@ -1187,6 +1210,40 @@ impl Router {
     /// Change one interface's OSPF settings.
     pub fn set_ospf_cfg(&mut self, i: usize, f: impl FnOnce(&mut OspfIfCfg)) {
         f(&mut self.ifaces[i].ospf);
+    }
+
+    /// Start the one-second neighbour discovery upkeep if it is wanted and not running.
+    pub fn disc_kick(&mut self, ctx: &mut Ctx) {
+        if self.disc.wants_tick() && !self.disc_timer {
+            self.disc_timer = true;
+            ctx.schedule_background(SimTime::from_secs(1), DISC_TICK);
+        }
+    }
+
+    fn disc_tick(&mut self, ctx: &mut Ctx) {
+        if !self.disc.wants_tick() {
+            return;
+        }
+        let id = Identity {
+            name: self.name.clone(),
+            platform: "wirebench router".to_string(),
+            software: "wirebench simulated router".to_string(),
+            caps: wire::cdp_cap::ROUTER,
+            ports: (0..self.n_ports as usize)
+                .map(|i| DiscPort {
+                    long: format!("GigabitEthernet0/{i}"),
+                    short: format!("Gi0/{i}"),
+                    mac: self.ifaces[i].mac,
+                    live: ctx.port_up(PortId(i as u16)) && !self.ifaces[i].shutdown,
+                    addr: self.ifaces[i].addr.map(|a| a.0),
+                })
+                .collect(),
+        };
+        let mut out = vec![];
+        self.disc.tick(ctx.now(), &id, &mut out);
+        for (p, frame) in out {
+            ctx.transmit(PortId(p as u16), frame);
+        }
     }
 
     /// Start OSPF's one-second upkeep if the protocol is configured and it is not running.

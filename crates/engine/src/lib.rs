@@ -65,7 +65,10 @@ impl World {
 
     pub fn add_device(&mut self, d: impl Device) -> DeviceId {
         self.devices.push(Box::new(d));
-        DeviceId(self.devices.len() as u32 - 1)
+        let id = DeviceId(self.devices.len() as u32 - 1);
+        let mut ctx = Ctx::new(&mut self.kernel, id);
+        self.devices[id.0 as usize].start(&mut ctx);
+        id
     }
 
     pub fn connect(&mut self, a: (DeviceId, u16), b: (DeviceId, u16), cfg: LinkConfig) -> LinkId {

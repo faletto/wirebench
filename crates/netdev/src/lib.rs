@@ -6,6 +6,7 @@ mod arp;
 mod channel;
 mod device;
 mod dhcp_server;
+mod discovery;
 mod fib;
 mod host;
 mod mgmt;
@@ -30,6 +31,10 @@ pub use channel::{
 };
 pub use device::{Ctx, Device, DeviceEvent};
 pub use dhcp_server::{client_key, Binding, BindingState, DhcpServer, Pool};
+pub use discovery::{
+    Discovery, Identity as DiscoveryIdentity, Neighbour, PortInfo as DiscoveryPort,
+    DEFAULT_CDP_HOLD, DEFAULT_CDP_TIMER, DEFAULT_LLDP_HOLD, DEFAULT_LLDP_TIMER,
+};
 pub use fib::{mask, Fib, Route, RouteKind};
 pub use host::{DhcpClient, DhcpState, Host, PingResult};
 pub use mgmt::{
