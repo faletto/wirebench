@@ -58,9 +58,20 @@ impl Transport {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct User {
     pub name: String,
-    /// Stored the way an enable secret or password is (see the module comment).
+    /// With `hashed`, the stored form of a secret; otherwise the password as typed.
     pub secret: String,
+    pub hashed: bool,
     pub privilege: u8,
+}
+
+impl User {
+    pub fn check(&self, attempt: &str) -> bool {
+        if self.hashed {
+            check_secret(&self.secret, attempt)
+        } else {
+            self.secret == attempt
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -209,7 +209,10 @@ impl L2Switch {
             r.clock = clock;
             r
         };
+        // The key pair lives in private storage on a real device: reload and erase keep it.
+        let rsa = self.mgmt.rsa_bits;
         self.mgmt = Mgmt::default();
+        self.mgmt.rsa_bits = rsa;
         self.spanning = SpanningConfig::default();
         self.trees.clear();
         self.stp_pending.clear();
