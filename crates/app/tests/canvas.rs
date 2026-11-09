@@ -131,6 +131,13 @@ b = "sw:Fa0/1"
     let at = app.node_centre("pc").unwrap();
     click(&ctx, &mut app, at);
     assert_eq!(app.active_device(), "pc");
+    assert_eq!(
+        app.device_window(),
+        Some("pc"),
+        "the click opened its window"
+    );
+    // The window may sit over the switch; close it as a person would.
+    app.close_device_window();
     let at = app.node_centre("sw").unwrap();
     click(&ctx, &mut app, at);
     assert_eq!(app.active_device(), "sw");

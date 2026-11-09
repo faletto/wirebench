@@ -4,7 +4,8 @@
 //! differ per device kind and every node carries a text label, so nothing depends on colour.
 
 use egui::{
-    Align2, CornerRadius, FontId, Pos2, Rect, Role, Sense, Stroke, StrokeKind, Ui, Vec2, WidgetInfo,
+    Align2, Color32, CornerRadius, FontId, Pos2, Rect, Role, Sense, Shape, Stroke, StrokeKind, Ui,
+    Vec2, WidgetInfo,
 };
 use engine::lab::LabKind;
 
@@ -54,9 +55,24 @@ pub struct FlightDraw<'a> {
     pub label: &'a str,
 }
 
+/// What can be dragged out of the component bar onto the canvas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaletteItem {
+    /// A device made from this template (`router-2g`, `switch-l2-24`, `host-pc`, ...).
+    Device {
+        kind: LabKind,
+        template: &'static str,
+    },
+    /// A cable: dropped on a device, it starts there and the next device clicked ends it.
+    Cable,
+}
+
 /// Something the user did on the canvas, for the app to act on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CanvasEvent {
+    /// Something from the component bar was let go over the canvas, at this world position,
+    /// over this device if it was over one.
+    Drop(PaletteItem, [i32; 2], Option<usize>),
     Open(usize),
     /// The pointer went down on a device and a drag began; `Moved` follows if it travels.
     DragStart,
@@ -204,6 +220,22 @@ impl Canvas {
         let painter = ui.painter_at(rect);
         let v = ui.visuals().clone();
         painter.rect_filled(rect, CornerRadius::ZERO, v.extreme_bg_color);
+        draw_grid(
+            &painter,
+            rect,
+            &self.view,
+            origin,
+            v.weak_text_color().gamma_multiply(0.35),
+        );
+        if nodes.is_empty() {
+            painter.text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                "Drag a router, switch or PC up from the bar below to start",
+                FontId::proportional(18.0),
+                v.weak_text_color(),
+            );
+        }
 
         self.last_centres = nodes
             .iter()
@@ -312,6 +344,26 @@ impl Canvas {
                 self.view.zoom,
             );
         }
+        // Something from the component bar let go here (and not over a window on top).
+        let released = ui.input(|i| i.pointer.any_released());
+        if released {
+            if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
+                let on_top = ui.ctx().layer_id_at(p) == Some(ui.layer_id());
+                if rect.contains(p) && on_top {
+                    if let Some(item) = egui::DragAndDrop::take_payload::<PaletteItem>(ui.ctx()) {
+                        let w = self.view.to_world(origin, p);
+                        let over = nodes
+                            .iter()
+                            .position(|n| node_rect(&self.view, origin, n.pos).contains(p));
+                        events.push(CanvasEvent::Drop(
+                            *item,
+                            [w.x.round() as i32, w.y.round() as i32],
+                            over,
+                        ));
+                    }
+                }
+            }
+        }
         // Frames in flight: a dot with a caption, so meaning never rests on colour alone.
         for f in flights {
             let (Some(&a), Some(&b)) = (self.last_centres.get(f.from), self.last_centres.get(f.to))
@@ -346,7 +398,152 @@ fn dist_to_segment(p: Pos2, a: Pos2, b: Pos2) -> f32 {
     (p - (a + ab * t)).length()
 }
 
-fn kind_name(k: LabKind) -> &'static str {
+/// A faint dot grid that moves and scales with the view, so panning is visible.
+fn draw_grid(painter: &egui::Painter, rect: Rect, view: &View, origin: Pos2, colour: Color32) {
+    let step = 40.0 * view.zoom;
+    if step < 12.0 {
+        return;
+    }
+    let start = origin + view.pan;
+    let first = |lo: f32, s: f32| lo + (s - lo).rem_euclid(step) - step;
+    let mut y = first(rect.min.y, start.y);
+    while y < rect.max.y {
+        let mut x = first(rect.min.x, start.x);
+        while x < rect.max.x {
+            painter.circle_filled(Pos2::new(x, y), 1.2, colour);
+            x += step;
+        }
+        y += step;
+    }
+}
+
+/// The colour that goes with a kind of device. The shape and the label carry the kind as well, so
+/// nothing depends on telling colours apart.
+pub fn kind_colour(k: LabKind) -> Color32 {
+    match k {
+        LabKind::Router => Color32::from_rgb(46, 112, 196),
+        LabKind::Switch => Color32::from_rgb(28, 140, 122),
+        LabKind::Host => Color32::from_rgb(98, 104, 128),
+    }
+}
+
+/// A device's symbol filling `r`: a disc with four arrows for a router, a slab with two opposed
+/// arrows for a switch, a screen on a stand for a PC. Own drawings, no vendor artwork.
+pub fn draw_device_icon(
+    painter: &egui::Painter,
+    r: Rect,
+    kind: LabKind,
+    fill: Color32,
+    outline: Stroke,
+) {
+    let ink = Stroke::new((r.height() * 0.06).clamp(1.0, 3.0), Color32::WHITE);
+    let c = r.center();
+    match kind {
+        LabKind::Router => {
+            let radius = r.height() * 0.5;
+            painter.circle_filled(c, radius, fill);
+            painter.circle_stroke(c, radius, outline);
+            // Two arrows in, two out, on the diagonals.
+            let a = radius * 0.62;
+            let head = radius * 0.22;
+            for (dir, inward) in [
+                (Vec2::new(1.0, -1.0), false),
+                (Vec2::new(-1.0, 1.0), false),
+                (Vec2::new(-1.0, -1.0), true),
+                (Vec2::new(1.0, 1.0), true),
+            ] {
+                let d = dir.normalized();
+                let (from, to) = if inward {
+                    (c + d * a, c + d * radius * 0.18)
+                } else {
+                    (c + d * radius * 0.18, c + d * a)
+                };
+                arrow(painter, from, to, head, ink);
+            }
+        }
+        LabKind::Switch => {
+            let slab = Rect::from_center_size(c, Vec2::new(r.width(), r.height() * 0.72));
+            painter.rect_filled(slab, CornerRadius::same(5), fill);
+            painter.rect_stroke(slab, CornerRadius::same(5), outline, StrokeKind::Inside);
+            let w = slab.width() * 0.32;
+            let dy = slab.height() * 0.2;
+            let head = slab.height() * 0.16;
+            arrow(
+                painter,
+                c + Vec2::new(-w, -dy),
+                c + Vec2::new(w, -dy),
+                head,
+                ink,
+            );
+            arrow(
+                painter,
+                c + Vec2::new(w, dy),
+                c + Vec2::new(-w, dy),
+                head,
+                ink,
+            );
+        }
+        LabKind::Host => {
+            let screen = Rect::from_min_max(
+                r.min + Vec2::new(r.width() * 0.14, 0.0),
+                r.max - Vec2::new(r.width() * 0.14, r.height() * 0.24),
+            );
+            painter.rect_filled(screen, CornerRadius::same(4), fill);
+            painter.rect_stroke(screen, CornerRadius::same(4), outline, StrokeKind::Inside);
+            let glass = screen.shrink(r.height() * 0.1);
+            painter.rect_filled(glass, CornerRadius::same(2), fill.gamma_multiply(0.55));
+            let neck = Rect::from_min_max(
+                Pos2::new(c.x - r.width() * 0.05, screen.max.y),
+                Pos2::new(c.x + r.width() * 0.05, r.max.y - r.height() * 0.08),
+            );
+            painter.rect_filled(neck, CornerRadius::ZERO, fill);
+            let foot = Rect::from_center_size(
+                Pos2::new(c.x, r.max.y - r.height() * 0.05),
+                Vec2::new(r.width() * 0.42, r.height() * 0.1),
+            );
+            painter.rect_filled(foot, CornerRadius::same(2), fill);
+        }
+    }
+}
+
+fn arrow(painter: &egui::Painter, from: Pos2, to: Pos2, head: f32, stroke: Stroke) {
+    painter.line_segment([from, to], stroke);
+    let d = (to - from).normalized();
+    let n = Vec2::new(-d.y, d.x);
+    let back = to - d * head;
+    painter.add(Shape::convex_polygon(
+        vec![to, back + n * head * 0.6, back - n * head * 0.6],
+        stroke.color,
+        Stroke::NONE,
+    ));
+}
+
+/// A cable's symbol filling `r`: a curved wire between two plugs.
+pub fn draw_cable_icon(painter: &egui::Painter, r: Rect, colour: Color32) {
+    let a = Pos2::new(r.min.x + r.width() * 0.15, r.max.y - r.height() * 0.2);
+    let b = Pos2::new(r.max.x - r.width() * 0.15, r.min.y + r.height() * 0.2);
+    let bend = egui::epaint::CubicBezierShape::from_points_stroke(
+        [
+            a,
+            Pos2::new(r.center().x, r.max.y),
+            Pos2::new(r.center().x, r.min.y),
+            b,
+        ],
+        false,
+        Color32::TRANSPARENT,
+        Stroke::new((r.height() * 0.08).clamp(1.5, 4.0), colour),
+    );
+    painter.add(bend);
+    for p in [a, b] {
+        painter.rect_filled(
+            Rect::from_center_size(p, Vec2::splat(r.height() * 0.2)),
+            CornerRadius::same(2),
+            colour,
+        );
+    }
+}
+
+pub fn kind_name(k: LabKind) -> &'static str {
     match k {
         LabKind::Router => "router",
         LabKind::Switch => "switch",
@@ -357,71 +554,32 @@ fn kind_name(k: LabKind) -> &'static str {
 fn draw_node(painter: &egui::Painter, ui: &Ui, r: Rect, n: &Node, emphasised: bool, zoom: f32) {
     let v = ui.visuals();
     let fill = if n.has_console {
-        v.widgets.inactive.bg_fill
+        kind_colour(n.kind)
     } else {
-        v.faint_bg_color
+        kind_colour(n.kind).gamma_multiply(0.45)
     };
-    let ink = if n.has_console {
-        v.text_color()
-    } else {
-        v.weak_text_color()
-    };
+    // Selection is a halo as well as a thicker outline, so it shows on any fill.
+    if n.selected {
+        painter.rect_filled(
+            r.expand(6.0 * zoom),
+            CornerRadius::same(10),
+            v.selection.bg_fill.gamma_multiply(0.5),
+        );
+    }
     let outline = if n.selected {
         Stroke::new(3.0, v.selection.stroke.color)
     } else if emphasised {
         Stroke::new(2.0, v.widgets.hovered.fg_stroke.color)
     } else {
-        Stroke::new(1.5, ink)
+        Stroke::new(1.0, fill.gamma_multiply(0.6))
     };
-    // Shape carries the device kind: circle router, wide box switch, box with stand for a PC.
-    match n.kind {
-        LabKind::Router => {
-            let radius = r.height() * 0.5;
-            painter.circle_filled(r.center(), radius, fill);
-            painter.circle_stroke(r.center(), radius, outline);
-        }
-        LabKind::Switch => {
-            painter.rect_filled(r, CornerRadius::same(3), fill);
-            painter.rect_stroke(r, CornerRadius::same(3), outline, StrokeKind::Inside);
-        }
-        LabKind::Host => {
-            let screen = Rect::from_min_max(
-                r.min + Vec2::new(r.width() * 0.12, 0.0),
-                r.max - Vec2::new(r.width() * 0.12, r.height() * 0.22),
-            );
-            painter.rect_filled(screen, CornerRadius::same(4), fill);
-            painter.rect_stroke(screen, CornerRadius::same(4), outline, StrokeKind::Inside);
-            let stand = Rect::from_center_size(
-                Pos2::new(r.center().x, r.max.y - r.height() * 0.08),
-                Vec2::new(r.width() * 0.4, r.height() * 0.1),
-            );
-            painter.rect_filled(stand, CornerRadius::same(2), ink);
-        }
-    }
-    let glyph = match n.kind {
-        LabKind::Router => "R",
-        LabKind::Switch => "S",
-        LabKind::Host => "PC",
-    };
-    let size = (13.0 * zoom).clamp(8.0, 26.0);
-    let glyph_at = if n.kind == LabKind::Host {
-        r.center() - Vec2::new(0.0, r.height() * 0.1)
-    } else {
-        r.center()
-    };
-    painter.text(
-        glyph_at,
-        Align2::CENTER_CENTER,
-        glyph,
-        FontId::monospace(size),
-        ink,
-    );
+    draw_device_icon(painter, r, n.kind, fill, outline);
     painter.text(
         Pos2::new(r.center().x, r.max.y + 3.0 * zoom),
         Align2::CENTER_TOP,
         &n.name,
-        FontId::proportional((12.0 * zoom).clamp(9.0, 22.0)),
-        v.text_color(),
+        FontId::proportional((13.0 * zoom).clamp(9.0, 24.0)),
+        v.strong_text_color(),
     );
 }
 

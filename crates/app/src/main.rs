@@ -14,8 +14,12 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |_cc| {
             let mut app = app::App::new();
-            if let Some(p) = path {
-                app.open_path(&p);
+            // Without a file to open, start at the home screen.
+            match path {
+                Some(p) => {
+                    app.open_path(&p);
+                }
+                None => app.start_at_home(),
             }
             // Autosaves go to the user's data directory; unsaved work from a crashed or
             // closed session is offered back in a banner.

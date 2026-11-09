@@ -65,6 +65,8 @@ pub enum Pending {
     Open,
     /// Replace the lab with recovered autosave.
     Restore,
+    /// Replace the lab with a new one, an example, or the last session (from the home screen).
+    Replace,
     Close,
 }
 
@@ -88,11 +90,19 @@ enum Drag {
     Recorded,
 }
 
+#[path = "home.rs"]
+mod home;
 #[path = "responses.rs"]
 mod responses;
 #[path = "settings_panel.rs"]
 mod settings_panel;
+#[path = "workspace.rs"]
+mod workspace;
+pub use home::Resume;
+use home::Screen;
 use responses::{Awaiting, EditKind, StepKind, Then, Undo};
+use workspace::Category;
+pub use workspace::DeviceTab;
 
 #[derive(Debug)]
 pub struct App {
@@ -161,6 +171,34 @@ pub struct App {
     frame_ms: f32,
     /// Milliseconds from the start of loading to the first drawn frame (see `clock`).
     ready_ms: Option<f64>,
+    /// The home screen or the lab.
+    screen: Screen,
+    /// The lab has been shown in this session, so the home screen offers to go back to it.
+    entered: bool,
+    /// The active device's window is open.
+    window_open: bool,
+    /// Where to put the device window when it next draws (it was just opened).
+    window_place: Option<Pos2>,
+    device_tab: DeviceTab,
+    /// "Router, 3 ports": what the device in the window is.
+    window_model: String,
+    /// The simulation panel is showing.
+    sim_open: bool,
+    /// The category open in the component bar.
+    palette: Category,
+    /// The model the Place tool adds (none: the default for its kind).
+    place_template: Option<&'static str>,
+    /// Where the canvas was drawn last frame, to place the device window beside a device.
+    canvas_rect: egui::Rect,
+    /// The name typed for a new lab on the home screen.
+    new_title: String,
+    /// The lab waiting to replace this one once the unsaved-changes question is answered, and
+    /// what to call it.
+    replace_with: Option<(String, String)>,
+    /// The lab that was open last time, for the home screen's Continue.
+    last_session: Option<Autosave>,
+    /// The component bar's cards as last drawn.
+    model_rects: Vec<(crate::canvas::PaletteItem, egui::Rect)>,
 }
 
 impl Default for App {
@@ -277,6 +315,20 @@ impl App {
             picker_filter: String::new(),
             frame_ms: 0.0,
             ready_ms: None,
+            screen: Screen::Workspace,
+            entered: true,
+            window_open: false,
+            window_place: None,
+            device_tab: DeviceTab::Console,
+            window_model: String::new(),
+            sim_open: false,
+            palette: Category::Routers,
+            place_template: None,
+            canvas_rect: egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 500.0)),
+            new_title: String::new(),
+            replace_with: None,
+            last_session: None,
+            model_rects: Vec::new(),
         };
         app.pump();
         app.changes = Changes::clean(app.export_lab());
@@ -329,7 +381,15 @@ impl App {
         self.notice.as_deref()
     }
 
+    /// Open the device on tab `tab` in its window.
     pub fn select(&mut self, tab: usize) {
+        if tab < self.tabs.len() {
+            self.open_window(tab);
+        }
+    }
+
+    /// Make `tab` the active device without opening its window.
+    fn set_active(&mut self, tab: usize) {
         if tab < self.tabs.len() && tab != self.active {
             self.active = tab;
             self.focus_pending = true;
@@ -345,6 +405,9 @@ impl App {
     pub fn set_tool(&mut self, tool: Tool) {
         self.tool = tool;
         self.link_from = None;
+        if !matches!(tool, Tool::Place(_)) {
+            self.place_template = None;
+        }
     }
 
     /// The lab as the engine has it now, parsed (for the undo history).
@@ -360,6 +423,22 @@ impl App {
         self.post(
             EngineCmd::AddDevice {
                 kind: shell_kind(kind),
+                pos,
+            },
+            Awaiting::Edit {
+                what: EditKind::AddDevice { pos },
+                before,
+            },
+        );
+        self.pump();
+    }
+
+    /// Add a device made from `template` (`router-2g`, `switch-l2-24`, ...) at a canvas position.
+    pub fn add_model(&mut self, template: &str, pos: [i32; 2]) {
+        let before = self.snapshot_lab();
+        self.post(
+            EngineCmd::AddModel {
+                template: template.to_string(),
                 pos,
             },
             Awaiting::Edit {
@@ -495,6 +574,14 @@ impl App {
         self.frame_ms = old.frame_ms;
         self.ready_ms = old.ready_ms;
         self.wall = old.wall;
+        self.sim_open = old.sim_open;
+        self.palette = old.palette;
+        self.device_tab = old.device_tab;
+        self.canvas_rect = old.canvas_rect;
+        self.last_session = old.last_session.take();
+        // A lab that opened is shown.
+        self.screen = Screen::Workspace;
+        self.entered = true;
     }
 
     // ---- files ----
@@ -629,33 +716,6 @@ impl App {
         }
     }
 
-    fn file_controls(&mut self, ui: &mut Ui) {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.file_path)
-                    .desired_width(150.0)
-                    .hint_text("lab.toml"),
-            )
-            .on_hover_text("File used by Save and Open");
-            if ui.button("Save").clicked() {
-                self.save_action();
-            }
-            if ui.button("Open").clicked() {
-                self.request_open();
-            }
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            if ui.button("Save").clicked() {
-                self.save_action();
-            }
-            if ui.button("Open…").clicked() {
-                self.request_open();
-            }
-        }
-    }
-
     // ---- unsaved changes, autosave, shortcuts ----
 
     /// Whether the lab differs from what was last saved or opened.
@@ -681,6 +741,9 @@ impl App {
         self.recovery = store
             .load()
             .filter(|a| a.text != current && labfile::load(&a.text).is_ok());
+        self.last_session = store
+            .last_session()
+            .filter(|a| labfile::load(&a.text).is_ok());
         self.store = store;
     }
 
@@ -731,6 +794,7 @@ impl App {
         // Unresolved recovered work is still the only copy; leave it for the banner.
         if self.recovery.is_none() {
             self.store.clear();
+            self.remember_session();
         }
     }
 
@@ -787,7 +851,7 @@ impl App {
             return;
         };
         match choice {
-            Choice::Cancel => {}
+            Choice::Cancel => self.replace_with = None,
             Choice::Save => {
                 if self.save_action() {
                     self.proceed(what);
@@ -806,6 +870,7 @@ impl App {
         match what {
             Pending::Open => self.do_open(),
             Pending::Restore => self.do_restore(),
+            Pending::Replace => self.do_replace(),
             Pending::Close => {
                 self.close_confirmed = true;
                 if let Some(ctx) = &self.ctx {
@@ -834,6 +899,7 @@ impl App {
                 if let Err(e) = self.store.save(&a) {
                     self.notice = Some(format!("autosave failed: {e}"));
                 }
+                self.remember_session();
                 // Even on failure: do not retry every frame.
                 self.changes.autosaved();
             }
@@ -847,6 +913,7 @@ impl App {
         let action = match what {
             Pending::Open => "open another lab",
             Pending::Restore => "replace it with the recovered work",
+            Pending::Replace => "open another lab",
             Pending::Close => "close wirebench",
         };
         let mut choice = None;
@@ -931,8 +998,6 @@ impl App {
                     Some(t) => {
                         self.notice = None;
                         self.select(t);
-                        // Clicking the already-active device still returns focus to its terminal.
-                        self.focus_pending = true;
                     }
                     None => {
                         self.notice = Some(format!("{} has no console yet", self.nodes[i].name))
@@ -945,7 +1010,10 @@ impl App {
                 CanvasEvent::Moved(i, pos) => self.move_node(i, pos),
                 CanvasEvent::Place(pos) => {
                     if let Tool::Place(kind) = self.tool {
-                        self.add_device(kind, pos);
+                        match self.place_template {
+                            Some(t) => self.add_model(t, pos),
+                            None => self.add_device(kind, pos),
+                        }
                     }
                 }
                 CanvasEvent::LinkEnd(i) => match self.link_from.take() {
@@ -955,41 +1023,10 @@ impl App {
                 // Rebuilds invalidate every index, so nothing after these is applied.
                 CanvasEvent::DeleteNode(i) => return self.delete_device(i),
                 CanvasEvent::DeleteLink(k) => return self.delete_link(k),
+                // An add answers with a rebuilt view, so nothing after it is applied either.
+                CanvasEvent::Drop(item, pos, over) => return self.dropped(item, pos, over),
             }
         }
-    }
-
-    fn tool_bar(&mut self, ui: &mut Ui) {
-        ui.horizontal_wrapped(|ui| {
-            for (tool, label) in [
-                (Tool::Select, "Select"),
-                (Tool::Place(LabKind::Host), "+ PC"),
-                (Tool::Place(LabKind::Switch), "+ Switch"),
-                (Tool::Place(LabKind::Router), "+ Router"),
-                (Tool::Link, "Cable"),
-                (Tool::Delete, "Delete"),
-            ] {
-                if ui.selectable_label(self.tool == tool, label).clicked() {
-                    self.set_tool(tool);
-                }
-            }
-            ui.separator();
-            let undo = self.history.undo_label().map(|l| format!("Undo {l}"));
-            let redo = self.history.redo_label().map(|l| format!("Redo {l}"));
-            let r = ui.add_enabled(self.can_undo(), egui::Button::new("Undo"));
-            if r.on_hover_text(undo.unwrap_or_else(|| "nothing to undo".into()))
-                .clicked()
-            {
-                self.undo();
-            }
-            let r = ui.add_enabled(self.can_redo(), egui::Button::new("Redo"));
-            if r.on_hover_text(redo.unwrap_or_else(|| "nothing to redo".into()))
-                .clicked()
-            {
-                self.redo();
-            }
-            ui.weak(self.tool.hint());
-        });
     }
 
     // ---- simulation mode ----
@@ -1221,10 +1258,9 @@ impl App {
                         ui.selectable_value(&mut self.sim.src, Some(i), &self.nodes[i].name);
                     }
                 });
+            ui.label("to");
             ui.add(egui::TextEdit::singleline(&mut self.sim.dst).desired_width(96.0));
-        });
-        let dst = parse_ipv4(&self.sim.dst);
-        ui.horizontal_wrapped(|ui| {
+            let dst = parse_ipv4(&self.sim.dst);
             let can_ping = dst.is_some() && self.sim.src.is_some();
             if ui
                 .add_enabled(can_ping, egui::Button::new("Queue ping"))
@@ -1235,22 +1271,45 @@ impl App {
                     self.sim_queue_ping(&name, d);
                 }
             }
-            if ui.button("Step").clicked() {
+        });
+        ui.horizontal_wrapped(|ui| {
+            use crate::chrome::tool_button;
+            use crate::icons::Icon;
+            ui.spacing_mut().item_spacing.x = 0.0;
+            if tool_button(ui, Icon::Step, "Step", false, true)
+                .on_hover_text("Follow the next frame one hop")
+                .clicked()
+            {
                 self.anim.playing = false;
                 self.sim_step_hop();
             }
-            let play = if self.anim.playing { "Pause" } else { "Play" };
-            if ui.button(play).clicked() {
+            let (icon, play) = if self.anim.playing {
+                (Icon::Pause, "Pause")
+            } else {
+                (Icon::Play, "Play")
+            };
+            if tool_button(ui, icon, play, self.anim.playing, true)
+                .on_hover_text("Step by itself, one hop at a time")
+                .clicked()
+            {
                 self.set_playing(!self.anim.playing);
             }
-            if ui.button("Run").clicked() {
+            if tool_button(ui, Icon::Run, "Run", false, true)
+                .on_hover_text("Run until nothing is left to do, without animating")
+                .clicked()
+            {
                 self.sim_run();
             }
-            let back = ui.add_enabled(self.sim_can_back(), egui::Button::new("Back"));
-            if back.on_hover_text("Undo the last step").clicked() {
+            if tool_button(ui, Icon::Back, "Back", false, self.sim_can_back())
+                .on_hover_text("Undo the last step")
+                .clicked()
+            {
                 self.sim_back();
             }
-            if ui.button("Clear").clicked() {
+            if tool_button(ui, Icon::Clear, "Clear", false, true)
+                .on_hover_text("Clear the log")
+                .clicked()
+            {
                 self.sim.hops.clear();
                 self.sim.marks.clear();
                 self.busy = false;
@@ -1481,12 +1540,13 @@ impl App {
         }
         // Ctrl/Cmd+S saves and Ctrl/Cmd+O opens, taken before any widget can see them (the web
         // build also stops the browser's own Save Page / Open File dialogs).
-        if self.confirm.is_none() {
+        if self.confirm.is_none() && ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::O)) {
+            self.request_open();
+        }
+        let working = self.confirm.is_none() && self.screen == Screen::Workspace;
+        if working {
             if ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::S)) {
                 self.save_action();
-            }
-            if ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::O)) {
-                self.request_open();
             }
             // Redo is checked first: Cmd+Shift+Z also satisfies Cmd+Z.
             let redo_keys = Modifiers::COMMAND | Modifiers::SHIFT;
@@ -1531,122 +1591,46 @@ impl App {
             Key::Num9,
         ];
         for (n, key) in keys.into_iter().enumerate() {
-            if ui.input(|i| i.modifiers.alt && i.key_pressed(key)) {
+            // The modifiers the key event carries, not the ones held at the start of the frame:
+            // in the browser a quick Option+digit can be let go before the frame that sees it.
+            // The text it typed ("™" on a Mac) is dropped so it does not land in a console.
+            let pressed = working
+                && ui.input_mut(|i| {
+                    let hit = i.consume_key(Modifiers::ALT, key);
+                    if hit {
+                        i.events.retain(|e| !matches!(e, egui::Event::Text(_)));
+                    }
+                    hit
+                });
+            if pressed {
                 self.select(n);
             }
         }
 
         if ui.input(|i| i.key_pressed(Key::Escape)) {
-            self.set_tool(Tool::Select);
-        }
-        egui::Panel::top("tabs").show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.strong(&self.title);
-                if self.is_dirty() {
-                    ui.label("● unsaved changes");
-                }
-                ui.separator();
-                self.file_controls(ui);
-                ui.separator();
-                if self.tabs.len() > TAB_LIMIT {
-                    self.device_picker(ui);
-                } else {
-                    for i in 0..self.tabs.len() {
-                        let label = format!("{} ({})", self.tabs[i].name, i + 1);
-                        if ui.selectable_label(self.active == i, label).clicked() {
-                            self.select(i);
-                        }
-                    }
-                }
-            });
-        });
-        self.recovery_banner(ui);
-        egui::Panel::top("canvas")
-            .resizable(true)
-            .default_size(230.0)
-            .show(ui, |ui| {
-                self.tool_bar(ui);
-                let active_node = self.tabs.get(self.active).map(|t| t.node);
-                let nodes: Vec<Node> = self
-                    .nodes
-                    .iter()
-                    .enumerate()
-                    .map(|(i, n)| Node {
-                        name: n.name.clone(),
-                        kind: n.kind,
-                        pos: n.pos,
-                        selected: Some(i) == active_node || self.link_from == Some(i),
-                        has_console: n.tab.is_some(),
-                    })
-                    .collect();
-                let flights: Vec<FlightDraw> = self
-                    .anim
-                    .flights
-                    .iter()
-                    .filter_map(|f| {
-                        Some(FlightDraw {
-                            from: f.from,
-                            to: f.to,
-                            t: f.progress(self.wall)?,
-                            label: &f.label,
-                        })
-                    })
-                    .collect();
-                let events = self.canvas.show(
-                    ui,
-                    &Scene {
-                        nodes: &nodes,
-                        links: &self.links,
-                        notes: &self.notes,
-                        tool: self.tool,
-                        link_from: self.link_from,
-                        flights: &flights,
-                    },
-                );
-                self.handle_canvas(events);
-            });
-        egui::Panel::left("settings")
-            .resizable(true)
-            .default_size(250.0)
-            .show(ui, |ui| self.settings_panel(ui));
-        egui::Panel::right("sim")
-            .resizable(true)
-            .default_size(300.0)
-            .show(ui, |ui| self.sim_panel(ui));
-        egui::Panel::bottom("status").show(ui, |ui| {
-            let now = self.sim_now;
-            ui.horizontal_wrapped(|ui| {
-                ui.label(format!("virtual time {:.3} ms", now as f64 / 1e6));
-                ui.separator();
-                if let Some(ms) = self.ready_ms {
-                    ui.label(format!("ready in {ms:.0} ms"));
-                    ui.separator();
-                }
-                ui.label(format!("frame cost {:.1} ms", self.frame_ms));
-                ui.separator();
-                match &self.notice {
-                    Some(n) => ui.label(n),
-                    None => ui.weak("click a device or Alt+1..9 to switch · Tab complete · ? help · scroll to zoom, drag to pan"),
-                };
-            });
-        });
-        let active = self.active;
-        let focus = std::mem::take(&mut self.focus_pending);
-        egui::CentralPanel::default().show(ui, |ui| {
-            let Some(t) = self.tabs.get_mut(active) else {
-                ui.weak("No devices. Use + PC, + Switch or + Router, then click the canvas.");
-                return;
-            };
-            let id = ui.make_persistent_id(("terminal", t.device));
-            let prompt = t.prompt.clone();
-            let actions = widget::show(ui, id, &mut t.model, &prompt, focus);
-            // While a question is on screen, keystrokes answer it rather than run commands.
-            if self.confirm.is_none() {
-                for a in actions {
-                    self.apply(active, a);
-                }
+            // Esc stops a tool first; with nothing to stop it closes the device window.
+            if self.tool != Tool::Select {
+                self.set_tool(Tool::Select);
+            } else {
+                self.window_open = false;
             }
-        });
+        }
+        match self.screen {
+            Screen::Home => self.home_screen(ui),
+            Screen::Workspace => {
+                self.top_bar(ui);
+                self.recovery_banner(ui);
+                self.status_bar(ui);
+                self.component_bar(ui);
+                if self.sim_open {
+                    egui::Panel::right("sim")
+                        .resizable(true)
+                        .default_size(340.0)
+                        .show(ui, |ui| self.sim_panel(ui));
+                }
+                self.canvas_ui(ui);
+            }
+        }
         let ctx = ui.ctx().clone();
         self.confirm_dialog(&ctx);
         self.autosave_tick(&ctx);

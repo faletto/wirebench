@@ -117,6 +117,15 @@ fn template(t: &str) -> Option<Template> {
         .map(Template::Switch)
 }
 
+/// The kind of device a template makes, if it is one.
+pub fn template_kind(t: &str) -> Option<LabKind> {
+    Some(match template(t)? {
+        Template::Router(_) => LabKind::Router,
+        Template::Host => LabKind::Host,
+        Template::Switch(_) => LabKind::Switch,
+    })
+}
+
 /// Switch ports are `Fa0/1..` (1-based), after FastEthernet.
 fn switch_port(name: &str, n_ports: u16) -> Option<u16> {
     let s = name.to_ascii_lowercase();
@@ -346,9 +355,13 @@ pub fn load_and_build(text: &str, trace: Trace) -> Result<BuiltLab, String> {
 pub enum EditError {
     TooManyDevices,
     SameDevice,
-    NoFreePort { device: String },
+    NoFreePort {
+        device: String,
+    },
     NoSuchDevice,
     NoSuchLink,
+    /// Not a template this build knows (`router-2g`, `switch-l2-24`, `host-pc`, ...).
+    UnknownTemplate(String),
 }
 
 impl std::fmt::Display for EditError {
@@ -359,6 +372,7 @@ impl std::fmt::Display for EditError {
             EditError::NoFreePort { device } => write!(f, "{device} has no free port"),
             EditError::NoSuchDevice => write!(f, "no such device"),
             EditError::NoSuchLink => write!(f, "no such cable"),
+            EditError::UnknownTemplate(t) => write!(f, "unknown device model `{t}`"),
         }
     }
 }
@@ -425,13 +439,30 @@ impl Topology {
         kind: LabKind,
         pos: [i32; 2],
     ) -> Result<usize, EditError> {
+        let template = match kind {
+            LabKind::Host => "host-pc",
+            LabKind::Router => "router-3g",
+            LabKind::Switch => "switch-l2-8",
+        };
+        self.add_model(world, template, pos)
+    }
+
+    /// Add a device made from `template` (`router-2g`, `switch-l2-24`, ...) with the first unused
+    /// name for its kind. Returns its index.
+    pub fn add_model(
+        &mut self,
+        world: &mut World,
+        template: &str,
+        pos: [i32; 2],
+    ) -> Result<usize, EditError> {
         if self.devices.len() >= 255 {
             return Err(EditError::TooManyDevices);
         }
-        let (prefix, template) = match kind {
-            LabKind::Host => ("pc", "host-pc"),
-            LabKind::Router => ("r", "router-3g"),
-            LabKind::Switch => ("sw", "switch-l2-8"),
+        let prefix = match template_kind(template) {
+            Some(LabKind::Host) => "pc",
+            Some(LabKind::Router) => "r",
+            Some(LabKind::Switch) => "sw",
+            None => return Err(EditError::UnknownTemplate(template.to_string())),
         };
         let n = (1..)
             .find(|n| {
@@ -451,7 +482,7 @@ impl Topology {
         let unit = (0..=255u8)
             .find(|u| !self.devices.iter().any(|d| d.unit == *u))
             .expect("fewer than 256 devices");
-        let (id, kind, ports) = instantiate(world, &d, unit).expect("default templates are valid");
+        let (id, kind, ports) = instantiate(world, &d, unit).expect("the template was checked");
         self.devices.push(LabDevice {
             name: d.name.clone(),
             id,

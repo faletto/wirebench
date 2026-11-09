@@ -78,6 +78,8 @@ pub(super) enum Then {
     Path(String),
     /// It is the autosave being recovered; if it will not load, the offer stands.
     Recovered(crate::autosave::Autosave),
+    /// A new lab, an example or the last session, from the home screen.
+    Fresh,
 }
 
 /// How far one request to step goes.
@@ -234,7 +236,7 @@ impl App {
                     *self = fresh;
                     match then {
                         Then::Nothing => {}
-                        Then::Inbox => self.after_open(),
+                        Then::Inbox | Then::Fresh => self.after_open(),
                         Then::Path(path) => {
                             self.file_path = path;
                             self.after_open();
@@ -246,6 +248,7 @@ impl App {
                             self.notice = Some("recovered unsaved work; Save to keep it".into());
                         }
                     }
+                    self.remember_session();
                 }
                 other => {
                     let why = match other {
@@ -401,7 +404,7 @@ impl App {
                 });
                 self.changes.mark_edited(self.wall);
                 self.notice = Some(format!("added {}", d.name));
-                self.select(self.tabs.len() - 1);
+                self.set_active(self.tabs.len() - 1);
             }
             EditKind::AddLink { a, b } => {
                 self.history.record(

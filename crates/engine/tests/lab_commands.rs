@@ -277,3 +277,28 @@ fn the_engine_pushes_the_lab_text_after_what_can_change_it_and_only_when_it_did(
     // The output still comes first.
     assert!(matches!(evs[0], EngineEvent::Output { .. }));
 }
+
+#[test]
+fn a_device_can_be_added_from_a_named_model() {
+    let mut r = Rig::new();
+    r.view(EngineCmd::Load { lab: LAB.into() });
+    let v = r.view(EngineCmd::AddModel {
+        template: "switch-l2-24".into(),
+        pos: [10, 20],
+    });
+    let sw = v.devices.last().unwrap();
+    assert_eq!((sw.name.as_str(), sw.kind), ("sw1", ShellKind::Switch));
+    assert!(r.text().contains("switch-l2-24"));
+    let v = r.view(EngineCmd::AddModel {
+        template: "router-4g".into(),
+        pos: [30, 20],
+    });
+    assert_eq!(v.devices.last().unwrap().kind, ShellKind::Router);
+    assert_eq!(
+        r.error(EngineCmd::AddModel {
+            template: "toaster-9".into(),
+            pos: [0, 0],
+        }),
+        "unknown device model `toaster-9`"
+    );
+}

@@ -6,9 +6,11 @@ mod app;
 pub mod autosave;
 mod canvas;
 mod changes;
+mod chrome;
 pub mod clock;
 mod files;
 mod history;
+mod icons;
 mod inspector;
 mod link;
 mod settings;
@@ -18,8 +20,8 @@ pub mod widget;
 #[cfg(target_arch = "wasm32")]
 mod worker;
 
-pub use app::{App, Choice, Pending};
-pub use canvas::Tool;
+pub use app::{App, Choice, DeviceTab, Pending, Resume};
+pub use canvas::{PaletteItem, Tool};
 pub use files::{Inbox, Incoming};
 pub use sim::HopRow;
 pub use term::TermModel;
@@ -46,6 +48,7 @@ pub fn start_web(canvas_id: &str) {
                 Box::new(|_cc| {
                     let mut app = web_app();
                     app.set_store(Box::new(autosave::LocalStorageStore));
+                    app.start_at_home();
                     Ok(Box::new(app))
                 }),
             )
