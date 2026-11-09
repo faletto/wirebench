@@ -18,6 +18,7 @@ mod psec;
 mod router;
 mod stp;
 mod switch;
+mod tcp;
 mod vlan;
 
 pub use acl::{
@@ -45,7 +46,7 @@ pub use fib::{mask, Fib, Route, RouteKind};
 pub use host::{DhcpClient, DhcpState, Host, PingResult};
 pub use mgmt::{
     banner_delimiter, check_secret, hash_secret, is_hashed, obscure, password_text, plain_password,
-    reveal, stored_secret, Line, Mgmt,
+    reveal, stored_secret, Line, Mgmt, Transport, User, SSH_PORT, TELNET_PORT,
 };
 pub use ntp::{
     civil_from_unix, unix_from_civil, Assoc as NtpAssoc, Clock, Ntp, SyncState as NtpSync,
@@ -71,3 +72,7 @@ pub use switch::{
     L2Switch, MacEntry, PortConfig, PortMode, SpanningConfig, DEFAULT_BRIDGE_PRIORITY,
 };
 pub use vlan::{all_vlans, format_vlan_list, parse_vlan_list, DEFAULT_VLAN, MAX_VLAN};
+pub use tcp::{
+    Conn as TcpConn, Failure as TcpFailure, State as TcpState, Tcp, Tx as TcpTx, UdpSocket,
+    EPHEMERAL_START as TCP_EPHEMERAL_START, MAX_RETRIES as TCP_MAX_RETRIES,
+};
