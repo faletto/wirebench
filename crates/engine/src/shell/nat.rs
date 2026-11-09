@@ -45,6 +45,7 @@ const NO_POOL: &str = "% No such NAT pool.";
 const NO_RULE: &str = "% That translation rule is not configured.";
 const NO_STATIC: &str = "% That static translation is not configured.";
 const NOT_ROUTER_IF: &str = "% No such interface:";
+const NOT_ROUTED: &str = "% NAT applies to routed interfaces (on a switch, VLAN interfaces).";
 const NO_ACL_NAT: &str = "% Note: that access list does not exist yet, so nothing is translated.";
 
 pub(super) fn nat_commands(
@@ -394,18 +395,17 @@ fn proto_of(handler: u32) -> u8 {
 
 impl Shell {
     pub(super) fn nat_cmd(&mut self, w: &mut World, handler: u32, a: &Args) -> String {
-        let id = self.device;
         match handler {
             NAT_INSIDE | NAT_OUTSIDE | NO_NAT_SIDE => {
                 let Some(i) = self.current_iface(w) else {
-                    return String::new();
+                    return NOT_ROUTED.to_string();
                 };
                 let side = match handler {
                     NAT_INSIDE => Some(NatSide::Inside),
                     NAT_OUTSIDE => Some(NatSide::Outside),
                     _ => None,
                 };
-                w.with_device::<Router, _>(id, |r, _| r.set_nat_side(i, side));
+                self.with_l3(w, |r| r.set_nat_side(i, side));
             }
             NAT_POOL_MASK | NAT_POOL_PREFIX => {
                 let name = a.word("name").unwrap().to_string();
@@ -421,7 +421,7 @@ impl Shell {
                 if start.to_u32() & mask(len) != end.to_u32() & mask(len) {
                     return POOL_MASK.to_string();
                 }
-                let r = w.with_device::<Router, _>(id, |r, _| {
+                let r = self.with_l3(w, |r| {
                     if r.nat.pool_in_use(&name) {
                         return Err(POOL_IN_USE);
                     }
@@ -440,7 +440,7 @@ impl Shell {
             }
             NO_NAT_POOL => {
                 let name = a.word("name").unwrap().to_string();
-                let r = w.with_device::<Router, _>(id, |r, _| {
+                let r = self.with_l3(w, |r| {
                     if r.nat.pool(&name).is_none() {
                         return Err(NO_POOL);
                     }
@@ -465,13 +465,13 @@ impl Shell {
                     }
                 } else {
                     let pool = a.word("pool").unwrap().to_string();
-                    if w.device::<Router>(id).nat.pool(&pool).is_none() {
+                    if self.l3(w).nat.pool(&pool).is_none() {
                         return NO_POOL.to_string();
                     }
                     NatTarget::Pool(pool)
                 };
-                let known = w.device::<Router>(id).acls.get(&acl).is_some();
-                w.with_device::<Router, _>(id, |r, _| {
+                let known = self.l3(w).acls.get(&acl).is_some();
+                self.with_l3(w, |r| {
                     // One rule per access list: a new one replaces the old.
                     r.nat.rules.retain(|x| x.acl != acl);
                     r.nat.clear_dynamic(Some(&acl));
@@ -487,7 +487,7 @@ impl Shell {
             }
             NO_NAT_RULE_POOL | NO_NAT_RULE_IF => {
                 let acl = a.word("acl").unwrap().to_string();
-                let found = w.with_device::<Router, _>(id, |r, _| {
+                let found = self.with_l3(w, |r| {
                     let n = r.nat.rules.len();
                     r.nat.rules.retain(|x| x.acl != acl);
                     r.nat.clear_dynamic(Some(&acl));
@@ -509,7 +509,7 @@ impl Shell {
                         a.int("gport").map_or(0, |p| p as u16),
                     ),
                 };
-                w.with_device::<Router, _>(id, |r, _| {
+                self.with_l3(w, |r| {
                     r.nat
                         .statics
                         .retain(|s| !(s.proto == st.proto && s.local == st.local));
@@ -524,7 +524,7 @@ impl Shell {
                         a.int("lport").map_or(0, |p| p as u16),
                     ),
                 );
-                let found = w.with_device::<Router, _>(id, |r, _| {
+                let found = self.with_l3(w, |r| {
                     let n = r.nat.statics.len();
                     r.nat
                         .statics
@@ -540,7 +540,7 @@ impl Shell {
                 let reset = handler >= NO_NAT_TIMEOUT_SIMPLE;
                 let kind = if reset { handler - 5 } else { handler };
                 let secs = a.int("secs").map(|s| s as u64);
-                w.with_device::<Router, _>(id, |r, _| {
+                self.with_l3(w, |r| {
                     let d = netdev::NatTimeouts::default();
                     let t = &mut r.nat.timeouts;
                     let (slot, default) = match kind {
@@ -558,7 +558,7 @@ impl Shell {
                     Ipv4Addr(a.ipv4("global").unwrap()),
                     Ipv4Addr(a.ipv4("local").unwrap()),
                 );
-                w.with_device::<Router, _>(id, |r, _| {
+                self.with_l3(w, |r| {
                     r.nat.outside.retain(|(g, _)| *g != pair.0);
                     r.nat.outside.push(pair);
                 });
@@ -568,7 +568,7 @@ impl Shell {
                     Ipv4Addr(a.ipv4("global").unwrap()),
                     Ipv4Addr(a.ipv4("local").unwrap()),
                 );
-                let found = w.with_device::<Router, _>(id, |r, _| {
+                let found = self.with_l3(w, |r| {
                     let n = r.nat.outside.len();
                     r.nat.outside.retain(|p| *p != pair);
                     r.nat.outside.len() != n
@@ -580,31 +580,23 @@ impl Shell {
             SHOW_NAT_TRANSLATIONS => return self.show_nat_translations(w),
             SHOW_NAT_STATISTICS => return self.show_nat_statistics(w),
             CLEAR_NAT => {
-                w.with_device::<Router, _>(id, |r, _| r.nat.clear_dynamic(None));
+                self.with_l3(w, |r| r.nat.clear_dynamic(None));
             }
             _ => {}
         }
         String::new()
     }
 
-    /// The logical interface `name` stands for, if it exists: `g0/1` or a subinterface.
+    /// The logical interface `name` stands for, if it exists: `g0/1`, a subinterface, or on a
+    /// switch `Vlan10`.
     fn router_iface_index(&self, w: &World, name: &str) -> Option<usize> {
-        let r = w.device::<Router>(self.device);
-        let (p, sub) = parse_router_ifname(name, r.n_ports() as usize)?;
-        match sub {
-            None => Some(p),
-            Some(num) => r.interfaces().iter().position(|i| {
-                i.sub
-                    .is_some_and(|s| s.parent.0 as usize == p && s.number == num)
-            }),
-        }
+        self.l3_iface_by_name(w, name)
     }
 
     fn show_nat_translations(&self, w: &mut World) -> String {
         let now = w.kernel.now();
-        let id = self.device;
-        w.with_device::<Router, _>(id, |r, _| r.nat.expire(now));
-        let r = w.device::<Router>(id);
+        self.with_l3(w, |r| r.nat.expire(now));
+        let r = self.l3(w);
         let tuple = |ip: Ipv4Addr, port: u16| {
             if port == 0 {
                 ip.to_string()
@@ -657,9 +649,8 @@ impl Shell {
 
     fn show_nat_statistics(&self, w: &mut World) -> String {
         let now = w.kernel.now();
-        let id = self.device;
-        w.with_device::<Router, _>(id, |r, _| r.nat.expire(now));
-        let r = w.device::<Router>(id);
+        self.with_l3(w, |r| r.nat.expire(now));
+        let r = self.l3(w);
         let statics = r.nat.statics.len();
         let dynamic = r.nat.entries().len();
         let extended = r.nat.entries().iter().filter(|e| e.proto != 0).count()

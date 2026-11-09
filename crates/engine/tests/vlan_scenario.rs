@@ -322,12 +322,12 @@ fn the_m3a_exit_demo_shows_what_it_claims() {
         .count();
     assert_eq!(shared, 2, "{nat}");
     assert!(
-        nat.lines().nth(2).unwrap().contains("192.0.2.5")
+        nat.lines().nth(2).unwrap().contains("203.0.113.5")
             && nat.lines().nth(2).unwrap().contains("10.0.1.10"),
         "{nat}"
     );
     // The internet reaches pc1's public address and nothing else inside.
-    let isp = after("isp#ping 192.0.2.5");
+    let isp = after("isp#ping 203.0.113.5");
     assert!(isp.contains("Success rate is 100 percent (5/5)"), "{isp}");
     assert!(isp.contains("Success rate is 0 percent (0/5)"), "{isp}");
     // The VTY access list lets the corporate network in and keeps the internet out.

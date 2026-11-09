@@ -8,8 +8,8 @@
 |---|---|---|
 | ACLs | `netdev/src/acl.rs`, `provenance/acls.md` | Standard and extended, numbered and named, in/out on interfaces; `access-class` is enforced on the vty lines (Telnet/SSH) |
 | TCP header | `wire/src/tcp.rs` | Header parse and emit with checksum; the stack is below |
-| NAT and PAT | `netdev/src/nat.rs`, `engine/src/shell/nat.rs`, `provenance/nat.md` | `ip nat inside/outside`, static (one-to-one and port forwards), pools, `overload` (PAT, also through an interface address), ICMP errors translated inbound so traceroute works, `show ip nat translations/statistics`, `clear ip nat translation *`. Example lab "NAT: two PCs, one public address" |
-| M3a exit demo | `testkit/scenarios/m3_exit_demo.{lab.toml,script,out}` | Five routers: four on one OSPF segment (r2 originates a default route), NAT at the edge towards an "internet" router, a static public address for one PC, `access-class` on the VTY lines keeping the internet out. Golden transcript plus assertions in `engine/tests/vlan_scenario.rs`. Missing: the FRR comparison below |
+| NAT and PAT | `netdev/src/nat.rs`, `engine/src/shell/nat.rs`, `provenance/nat.md` | `ip nat inside/outside`, static (one-to-one and port forwards), `ip nat outside source static`, pools, `overload` (PAT, also through an interface address), configurable timeouts, ARP answered for translated addresses, ICMP errors translated both ways so traceroute and port-unreachable work, `show ip nat translations/statistics`, `clear ip nat translation *`; on routers and on layer 3 switches (VLAN interfaces). Example lab "NAT: two PCs, one public address" |
+| M3a exit demo | `testkit/scenarios/m3_exit_demo.{lab.toml,script,out}` | Five routers: four on one OSPF segment (r2 originates a default route), NAT at the edge towards an "internet" router, a static public address for one PC (answered by proxy ARP, no route on the internet router), `access-class` on the VTY lines keeping the internet out. Golden transcript plus assertions in `engine/tests/vlan_scenario.rs`. Missing: the FRR comparison below |
 | OSPFv2 | `netdev/src/ospf.rs`, `wire/src/ospf.rs`, `provenance/ospf.md`, `provenance/ospf-wire.md` | Neighbours, DR/BDR, database exchange, flooding, aging, multiple areas with border routers and summary LSAs, E1/E2 external routes, `default-information originate`; goldens `m3_ospf`, `m3_ospf_areas` |
 | TCP and UDP sockets | `netdev/src/tcp.rs`, `provenance/tcp-udp.md` | Handshake, streams, retransmission, close, resets on hosts, routers and switches; UDP port table. No options, congestion control or out-of-order buffering |
 | Telnet and SSH | `engine/src/shell/remote.rs`, `wire/src/{telnet,ssh}.rs`, `provenance/remote-login.md` | `telnet` / `ssh -l` clients on every device; vty login (`login`, `login local`, `username`, `transport input`, `access-class`, `crypto key generate rsa`). SSH framing is real but unencrypted |
@@ -42,10 +42,8 @@ switch port now drops the link at both ends (before, the neighbour still saw it 
   `provenance/ospf.md` (SPF delay, ECMP, ABR rule without a backbone attachment, MinLSArrival).
 - OSPF: redistribution, stub and NSSA areas, virtual links, `area range`, equal-cost paths,
   authentication.
-- NAT leftovers: `ip nat outside source`, `ip nat translation timeout`, `extendable`, translating
-  ICMP errors on the way out, ALGs for FTP and similar, answering ARP for translated global
-  addresses on the outside link (today the neighbour routes the block to the NAT router), NAT on
-  layer 3 switches.
+- NAT leftovers: application-level gateways (FTP and the like; nothing to test them against yet),
+  `ip nat inside destination` (load balancing), `extendable`, `syn-timeout`, `max-entries`.
 - The M3a exit demo is built and runs; the one part of it still open is the FRR comparison above.
 - Packet inspector support for the new frame types (LACPDU, CDP, LLDP, NTP, HSRP/VRRP).
 - PAgP, if ever wanted (Cisco-only; not planned).

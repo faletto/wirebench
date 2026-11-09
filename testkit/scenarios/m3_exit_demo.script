@@ -33,16 +33,17 @@ ip nat inside
 no shutdown
 exit
 interface g0/1
-ip address 203.0.113.1 255.255.255.252
+ip address 203.0.113.1 255.255.255.248
 ip nat outside
 no shutdown
 exit
 ip route 0.0.0.0 0.0.0.0 203.0.113.2
 # Everything in 10.0.0.0/8 is translated through the outside address (PAT), except pc1, which
-# has a fixed public address of its own so the internet can reach it.
+# has a fixed public address of its own, on the outside link, so the internet can reach it: r2
+# answers ARP for it, so the internet router needs no route.
 access-list 1 permit 10.0.0.0 0.255.255.255
 ip nat inside source list 1 interface g0/1 overload
-ip nat inside source static 10.0.1.10 192.0.2.5
+ip nat inside source static 10.0.1.10 203.0.113.5
 # Only the corporate network may log in to r2's VTY lines.
 access-list 20 permit 10.0.0.0 0.255.255.255
 line vty 0 4
@@ -88,15 +89,13 @@ enable
 configure terminal
 hostname isp
 interface g0/0
-ip address 203.0.113.2 255.255.255.252
+ip address 203.0.113.2 255.255.255.248
 no shutdown
 exit
 interface g0/1
 ip address 198.51.100.1 255.255.255.0
 no shutdown
 exit
-# The internet router knows the public block r2 translates into.
-ip route 192.0.2.0 255.255.255.248 203.0.113.1
 line vty 0 4
 password isp
 login
@@ -129,9 +128,9 @@ ping 198.51.100.10
 show ip nat translations
 show ip nat statistics
 
-# The internet reaches pc1 at 192.0.2.5, and nothing else inside.
+# The internet reaches pc1 at 203.0.113.5, and nothing else inside.
 @r5
-ping 192.0.2.5
+ping 203.0.113.5
 ping 10.0.3.10
 ping 203.0.113.1
 

@@ -966,6 +966,7 @@ fn switch_grammar() -> (Grammar, Modes) {
     clock::clock_commands(&mut g, user, privileged, config);
     fhrp::fhrp_commands(&mut g, user, privileged, config_if);
     remote::remote_commands(&mut g, user, privileged, config, config_line);
+    nat::nat_commands(&mut g, user, privileged, config, config_if);
     (
         g,
         Modes {
@@ -4057,6 +4058,11 @@ pub fn switch_config(s: &L2Switch) -> String {
         for h in &ifc.helpers {
             o += &format!(" ip helper-address {h}\n");
         }
+        match ifc.nat {
+            Some(netdev::NatSide::Inside) => o += " ip nat inside\n",
+            Some(netdev::NatSide::Outside) => o += " ip nat outside\n",
+            None => {}
+        }
         if let Some(n) = &ifc.acl_in {
             o += &format!(" ip access-group {n} in\n");
         }
@@ -4078,6 +4084,7 @@ pub fn switch_config(s: &L2Switch) -> String {
         o += &format!("ip route {} {} {}\n", r.net, dotted(r.len), r.via);
     }
     o += &acl_block(l3);
+    o += &nat::nat_config(l3);
     o += &mgmt_tail(&s.mgmt);
     o + "end"
 }

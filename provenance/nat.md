@@ -36,12 +36,28 @@ message wording is ours where we could not check it. No Packet Tracer material.
   entries 24 h. Entries are dropped when next looked at, not by a timer, so NAT never keeps the
   simulation from going idle.
 - With no pool address left the packet is dropped and the sender gets ICMP host unreachable.
-- Only TCP, UDP and ICMP echo are translated. ICMP errors are translated on their way in (so
-  traceroute through PAT works, with the quoted packet showing the inside address) but not on the way
-  out. Addresses inside the data (FTP and the like) are not touched. Other protocols and later
+- Only TCP, UDP and ICMP echo are translated, plus ICMP errors about them (on the way in, so
+  traceroute through PAT works with the quoted packet showing the inside address; on the way out,
+  see below). Addresses inside the data (FTP and the like) are not touched. Other protocols and later
   fragments pass untranslated.
-- The router does not answer ARP for global addresses it translates; the neighbouring router needs a
-  route to them (the demo uses a static route for the public block), as with a routed block from an
-  ISP.
-- `ip nat outside source`, `ip nat inside destination`, `match-in-vrf`, `ip nat translation timeout`
-  and `extendable` are not implemented. Switches do not translate.
+- On an `outside` interface the router answers ARP for the global addresses it translates: a static
+  mapping's, and any in use by a dynamic entry (not unused pool addresses). The neighbour therefore
+  needs no route to them when they sit on the outside link's subnet; for a routed block it still
+  needs one, as with an ISP.
+- `ip nat translation timeout | tcp-timeout | udp-timeout | icmp-timeout | finrst-timeout <secs>` set
+  the idle times; `no` restores the default. `0` and `never` are not accepted. Only non-default values
+  are printed. `syn-timeout` and `max-entries` are not implemented.
+- `ip nat outside source static <global> <local>`: a packet arriving from outside whose source is the
+  global address is given the local one; a packet from inside to the local address is given the global
+  one as destination after routing (so the local address must be routable towards the outside
+  interface). Only the static form exists.
+- An ICMP error sent by an inside host to the outside (port unreachable from a forwarded port, say)
+  leaves from the translated address, and the packet it quotes shows the global address and port
+  again. If the host has no translation the error is left alone.
+- Layer 3 switches translate between VLAN interfaces (`ip nat inside` on `interface vlan 10`, and so
+  on) when `ip routing` is on, with the same commands and `show` output. `ip nat` on a physical
+  switch port is refused.
+- Not implemented: application-level gateways (FTP, SIP and the like, which rewrite addresses in the
+  data and the sequence numbers after them). Nothing in the simulator speaks those protocols, so there
+  is nothing to test one against. Also not: `ip nat inside destination`, `match-in-vrf`,
+  `extendable`, and translation of ICMP errors that quote another ICMP error.
