@@ -78,6 +78,12 @@ const OSPF_AREAS: Scenario = Scenario {
     golden: "../../testkit/scenarios/m3_ospf_areas.out",
 };
 
+const EXIT_DEMO: Scenario = Scenario {
+    lab: include_str!("../../../testkit/scenarios/m3_exit_demo.lab.toml"),
+    script: include_str!("../../../testkit/scenarios/m3_exit_demo.script"),
+    golden: "../../testkit/scenarios/m3_exit_demo.out",
+};
+
 const PSEC: Scenario = Scenario {
     lab: include_str!("../../../testkit/scenarios/m3b_psec.lab.toml"),
     script: include_str!("../../../testkit/scenarios/m3b_psec.script"),
@@ -291,4 +297,53 @@ fn the_router_is_the_only_way_between_vlans() {
     assert_eq!(t.matches("Sent 4, received 4").count(), 3, "{t}");
     // Subinterface 20 shut, then the parent shut: both fail.
     assert_eq!(t.matches("Sent 4, received 0").count(), 2, "{t}");
+}
+
+#[test]
+fn the_m3a_exit_demo_matches_its_golden_transcript() {
+    check_golden(&EXIT_DEMO);
+}
+
+/// What the exit demo is supposed to show, said in assertions as well as in the golden file.
+#[test]
+fn the_m3a_exit_demo_shows_what_it_claims() {
+    let t = transcript(&EXIT_DEMO);
+    let after =
+        |marker: &str| -> &str { &t[t.find(marker).unwrap_or_else(|| panic!("{marker}"))..] };
+    // OSPF carried r2's default route to the other routers.
+    assert!(t.contains("O E2  0.0.0.0/0  [110/1] via 10.0.0.2"), "{t}");
+    // All three PCs reach the server, two of them through one shared address.
+    assert_eq!(t.matches("Sent 4, received 4").count(), 3, "{t}");
+    let nat = after("r2#show ip nat translations");
+    let shared = nat
+        .lines()
+        .take(5)
+        .filter(|l| l.starts_with("icmp 203.0.113.1:"))
+        .count();
+    assert_eq!(shared, 2, "{nat}");
+    assert!(
+        nat.lines().nth(2).unwrap().contains("192.0.2.5")
+            && nat.lines().nth(2).unwrap().contains("10.0.1.10"),
+        "{nat}"
+    );
+    // The internet reaches pc1's public address and nothing else inside.
+    let isp = after("isp#ping 192.0.2.5");
+    assert!(isp.contains("Success rate is 100 percent (5/5)"), "{isp}");
+    assert!(isp.contains("Success rate is 0 percent (0/5)"), "{isp}");
+    // The VTY access list lets the corporate network in and keeps the internet out.
+    assert!(after("C:\\>telnet 10.0.0.2").contains("r2>"), "{t}");
+    assert!(
+        after("isp#telnet 203.0.113.1")
+            .starts_with("isp#telnet 203.0.113.1\n% Connection refused by remote host"),
+        "{t}"
+    );
+    // A session through the NAT: the far router sees r2's outside address, not r1's.
+    let brief = after("isp>show tcp brief");
+    let line = brief.lines().nth(2).unwrap();
+    assert!(
+        line.contains("203.0.113.2.23")
+            && line.contains("203.0.113.1.")
+            && !line.contains("10.0.0.1"),
+        "{line}"
+    );
 }

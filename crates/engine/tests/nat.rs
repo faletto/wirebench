@@ -355,6 +355,26 @@ fn entries_time_out_and_clear_removes_them() {
 }
 
 #[test]
+fn the_nat_example_lab_works_as_its_notes_say() {
+    let mut lab = load_and_build(
+        include_str!("../../../labs/examples/nat-pat.lab.toml"),
+        Trace::new(),
+    )
+    .unwrap();
+    let dev = |lab: &BuiltLab, name: &str| lab.devices.iter().position(|d| d.name == name).unwrap();
+    let (pc1, pc2, r1) = (dev(&lab, "pc1"), dev(&lab, "pc2"), dev(&lab, "r1"));
+    // Let the switch's ports come up.
+    let t = lab.world.kernel.now() + SimTime::from_secs(40);
+    lab.world.run_until(t);
+    for pc in [pc1, pc2] {
+        let out = run(&mut lab, pc, &["ping 198.51.100.10"]);
+        assert!(out.contains("received 4"), "{out}");
+    }
+    let out = run(&mut lab, r1, &["enable", "show ip nat translations"]);
+    assert_eq!(out.matches("203.0.113.1:").count(), 2, "{out}");
+}
+
+#[test]
 fn nat_configuration_is_printed_saved_and_comes_back_after_a_reload() {
     let mut lab = lab();
     run(

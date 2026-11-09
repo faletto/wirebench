@@ -1,0 +1,103 @@
+format  = "labsim-lab"
+version = 1
+
+[meta]
+title  = "NAT: two PCs sharing one public address"
+author = "wirebench"
+seed   = 1
+
+[[device]]
+name     = "pc1"
+template = "host-pc"
+pos      = [40, 70]
+[device.host]
+ipv4    = "10.0.1.10/24"
+gateway = "10.0.1.1"
+
+[[device]]
+name     = "pc2"
+template = "host-pc"
+pos      = [40, 230]
+[device.host]
+ipv4    = "10.0.1.11/24"
+gateway = "10.0.1.1"
+
+[[device]]
+name     = "sw1"
+template = "switch-l2-8"
+pos      = [200, 150]
+
+[[device]]
+name     = "r1"
+template = "router-2g"
+pos      = [370, 150]
+startup_config = """
+hostname r1
+!
+interface GigabitEthernet0/0
+ ip address 10.0.1.1 255.255.255.0
+ ip nat inside
+ no shutdown
+!
+interface GigabitEthernet0/1
+ ip address 203.0.113.1 255.255.255.252
+ ip nat outside
+ no shutdown
+!
+ip route 0.0.0.0 0.0.0.0 203.0.113.2
+access-list 1 permit 10.0.1.0 0.0.0.255
+!
+ip nat inside source list 1 interface GigabitEthernet0/1 overload
+"""
+
+[[device]]
+name     = "isp"
+template = "router-2g"
+pos      = [540, 150]
+startup_config = """
+hostname isp
+!
+interface GigabitEthernet0/0
+ ip address 203.0.113.2 255.255.255.252
+ no shutdown
+!
+interface GigabitEthernet0/1
+ ip address 198.51.100.1 255.255.255.0
+ no shutdown
+"""
+
+[[device]]
+name     = "srv"
+template = "host-pc"
+pos      = [700, 150]
+[device.host]
+ipv4    = "198.51.100.10/24"
+gateway = "198.51.100.1"
+
+[[link]]
+a = "pc1:eth0"
+b = "sw1:Fa0/1"
+
+[[link]]
+a = "pc2:eth0"
+b = "sw1:Fa0/2"
+
+[[link]]
+a = "sw1:Fa0/8"
+b = "r1:Gi0/0"
+
+[[link]]
+a = "r1:Gi0/1"
+b = "isp:Gi0/0"
+
+[[link]]
+a = "isp:Gi0/1"
+b = "srv:eth0"
+
+[[annotation]]
+text = "r1 translates (PAT): everything from 10.0.1.0/24 leaves as 203.0.113.1, told apart by port"
+pos  = [100, 20]
+
+[[annotation]]
+text = "Try: ping 198.51.100.10 from both PCs, then show ip nat translations on r1. The isp has no route to 10.0.1.0/24."
+pos  = [100, 300]
