@@ -5,6 +5,7 @@ use crate::trace::{self, Origin};
 use crate::World;
 use clish::{render_error, render_help, Action, Args, Exec, Grammar, ModeId, Session};
 use kernel::{DeviceId, PortId, SimTime};
+use netdev::Ctx;
 use netdev::{
     acl_config_text, acl_kind_of_number, acl_show, all_vlans, banner_delimiter, format_vlan_list,
     mask, parse_acl_rule, parse_vlan_list, password_text, plain_password, stored_secret,
@@ -20,6 +21,7 @@ mod disc;
 mod etherchannel;
 mod fhrp;
 mod m3b;
+mod remote;
 
 // ---- message catalog (shell-level strings) ----
 const UNKNOWN_INTERFACE: &str = "% No such interface:";
@@ -472,6 +474,7 @@ fn router_grammar() -> (Grammar, Modes) {
     disc::discovery_commands(&mut g, user, privileged, config, config_if);
     clock::clock_commands(&mut g, user, privileged, config);
     fhrp::fhrp_commands(&mut g, user, privileged, config_if);
+    remote::remote_commands(&mut g, user, privileged, config, config_line);
     (
         g,
         Modes {
@@ -548,6 +551,7 @@ fn host_grammar() -> (Grammar, Modes) {
         ],
         h(TRACERT),
     );
+    remote::host_remote_commands(&mut g, m);
     (
         g,
         Modes {
@@ -954,6 +958,7 @@ fn switch_grammar() -> (Grammar, Modes) {
     disc::discovery_commands(&mut g, user, privileged, config, config_if);
     clock::clock_commands(&mut g, user, privileged, config);
     fhrp::fhrp_commands(&mut g, user, privileged, config_if);
+    remote::remote_commands(&mut g, user, privileged, config, config_line);
     (
         g,
         Modes {
@@ -2698,6 +2703,20 @@ enum Pending {
     ReloadSave,
     ReloadConfirm,
     EraseConfirm,
+    /// A remote login (telnet) asked for a username.
+    VtyUser {
+        tries: u8,
+    },
+    /// A remote login asked for a password: the line's, or `user`'s.
+    VtyPassword {
+        tries: u8,
+        user: Option<String>,
+    },
+    /// `ssh -l user host` asked for the password to send.
+    SshPassword {
+        user: String,
+        dst: Ipv4Addr,
+    },
 }
 
 /// One terminal on one device.
@@ -2709,6 +2728,10 @@ pub struct Shell {
     session: Session,
     pub device: DeviceId,
     pending: Option<Pending>,
+    /// The terminal on another device this one is logged in to (`telnet`, `ssh`).
+    remote: Option<Box<remote::Remote>>,
+    /// Set by a login that failed for good: the connection should be closed.
+    close_requested: bool,
 }
 
 impl std::fmt::Debug for Shell {
@@ -2730,6 +2753,8 @@ impl Shell {
             session: Session::new(modes.user),
             device,
             pending: None,
+            remote: None,
+            close_requested: false,
         }
     }
 
@@ -2742,6 +2767,8 @@ impl Shell {
             session: Session::new(modes.user),
             device,
             pending: None,
+            remote: None,
+            close_requested: false,
         }
     }
 
@@ -2754,12 +2781,23 @@ impl Shell {
             session: Session::new(modes.user),
             device,
             pending: None,
+            remote: None,
+            close_requested: false,
         }
     }
 
     pub fn prompt(&self, w: &World) -> String {
+        if let Some(r) = &self.remote {
+            return r.shell.prompt(w);
+        }
         match &self.pending {
-            Some(Pending::Enable { .. } | Pending::Login { .. }) => return PASSWORD_PROMPT.into(),
+            Some(Pending::VtyUser { .. }) => return remote::USERNAME_PROMPT.into(),
+            Some(
+                Pending::Enable { .. }
+                | Pending::Login { .. }
+                | Pending::VtyPassword { .. }
+                | Pending::SshPassword { .. },
+            ) => return PASSWORD_PROMPT.into(),
             Some(Pending::Banner { .. }) => return String::new(),
             Some(Pending::ReloadSave) => return ASK_SAVE.into(),
             Some(Pending::ReloadConfirm) => return ASK_RELOAD.into(),
@@ -2940,6 +2978,12 @@ impl Shell {
                     String::new()
                 }
             }
+            Pending::VtyUser { .. } | Pending::VtyPassword { .. } => {
+                self.answer_vty(w, pending, line)
+            }
+            Pending::SshPassword { user, dst } => {
+                self.answer_ssh_password(w, user, dst, line)
+            }
             Pending::Banner { delim, mut text } => {
                 match line.find(delim) {
                     Some(end) => {
@@ -2986,6 +3030,9 @@ impl Shell {
     }
 
     pub fn help(&self, line: &str) -> String {
+        if let Some(r) = &self.remote {
+            return r.shell.help(line);
+        }
         if self.pending.is_some() {
             return String::new();
         }
@@ -2993,6 +3040,9 @@ impl Shell {
     }
 
     pub fn tab(&self, line: &str) -> String {
+        if let Some(r) = &self.remote {
+            return r.shell.tab(line);
+        }
         if self.pending.is_some() {
             return line.to_string();
         }
@@ -3009,6 +3059,13 @@ impl Shell {
     }
 
     pub fn exec(&mut self, w: &mut World, line: &str) -> Option<String> {
+        if let Some(mut r) = self.remote.take() {
+            let (out, over) = r.exec(w, line);
+            if !over {
+                self.remote = Some(r);
+            }
+            return Some(out);
+        }
         if let Some(p) = self.pending.take() {
             return Some(self.answer(w, p, line));
         }
@@ -3080,6 +3137,7 @@ impl Shell {
                 return self.ospf_cmd(w, handler, a, &m)
             }
             300..=329 => return self.m3b_cmd(w, handler, a),
+            430..=469 => return self.remote_cmd(w, handler, a),
             330..=349 => return self.channel_cmd(w, handler, a),
             350..=379 => return self.disc_cmd(w, handler, a),
             380..=399 => return self.clock_cmd(w, handler, a),
@@ -3816,6 +3874,7 @@ fn mgmt_head(m: &Mgmt, hostname: &str) -> String {
     if m.enable_protected() {
         o += "!\n";
     }
+    o += &remote::remote_head_lines(m);
     o
 }
 
@@ -3843,15 +3902,24 @@ fn mgmt_tail(m: &Mgmt) -> String {
             &m.vty,
         ),
     ] {
-        if line.password.is_none() && !line.login && line.access_class_in.is_none() {
+        if line.password.is_none()
+            && !line.login
+            && line.access_class_in.is_none()
+            && line.transport == netdev::Transport::default()
+        {
             continue;
         }
         o += &format!("{header}\n");
         if let Some(p) = &line.password {
             o += &format!(" password {}\n", password_text(p, m.encrypt_passwords));
         }
-        if line.login {
+        if line.login_local {
+            o += " login local\n";
+        } else if line.login {
             o += " login\n";
+        }
+        if line.transport != netdev::Transport::default() {
+            o += &format!(" transport input {}\n", line.transport.words());
         }
         if let Some(a) = &line.access_class_in {
             o += &format!(" access-class {a} in\n");

@@ -9,8 +9,6 @@
 
 use crate::ParseError;
 
-pub const SSH_PORT: u16 = 22;
-
 pub const MSG_DISCONNECT: u8 = 1;
 pub const MSG_USERAUTH_REQUEST: u8 = 50;
 pub const MSG_USERAUTH_FAILURE: u8 = 51;

@@ -227,7 +227,10 @@ impl Router {
         self.outbox.clear();
         self.routing = true;
         self.default_gateway = None;
+        // The key pair lives in private storage on a real device: reload and erase keep it.
+        let rsa = self.mgmt.rsa_bits;
         self.mgmt = Mgmt::default();
+        self.mgmt.rsa_bits = rsa;
         self.dhcp = DhcpServer::default();
         self.acls = AclSet::default();
         self.ospf = None;
@@ -1215,7 +1218,7 @@ impl Router {
             self.route(ctx, pkt);
         }
         if let Some(d) = self.tcp.next_deadline() {
-            if self.tcp_armed.map_or(true, |a| d < a || a <= ctx.now()) {
+            if self.tcp_armed.is_none_or(|a| d < a || a <= ctx.now()) {
                 self.tcp_armed = Some(d);
                 ctx.schedule(SimTime(d.0.saturating_sub(ctx.now().0)), TCP_TICK);
             }

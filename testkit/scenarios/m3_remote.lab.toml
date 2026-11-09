@@ -1,0 +1,40 @@
+format = "labsim-lab"
+version = 1
+
+[meta]
+title = "Remote login: a PC, two routers and a switch on one segment"
+
+[[device]]
+name = "pc1"
+template = "host-pc"
+pos = [0, 60]
+
+[device.host]
+ipv4 = "10.0.0.10/24"
+
+[[device]]
+name = "r1"
+template = "router-2g"
+pos = [180, 0]
+
+[[device]]
+name = "sw1"
+template = "switch-l2-8"
+pos = [180, 120]
+
+[[device]]
+name = "r2"
+template = "router-2g"
+pos = [360, 60]
+
+[[link]]
+a = "pc1:eth0"
+b = "sw1:Fa0/1"
+
+[[link]]
+a = "r1:Gi0/0"
+b = "sw1:Fa0/2"
+
+[[link]]
+a = "r2:Gi0/0"
+b = "sw1:Fa0/3"

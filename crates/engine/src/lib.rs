@@ -125,6 +125,10 @@ impl World {
         })
     }
 
+    pub fn device_count(&self) -> usize {
+        self.devices.len()
+    }
+
     pub fn is_device<T: Device>(&self, id: DeviceId) -> bool {
         self.devices[id.0 as usize].as_any().is::<T>()
     }

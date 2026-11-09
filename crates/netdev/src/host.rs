@@ -185,7 +185,7 @@ impl Host {
             self.send_ip(ctx, tx.dst, IpProto::TCP, tx.seg.emit(tx.src, tx.dst));
         }
         if let Some(d) = self.tcp.next_deadline() {
-            if self.tcp_armed.map_or(true, |a| d < a || a <= ctx.now()) {
+            if self.tcp_armed.is_none_or(|a| d < a || a <= ctx.now()) {
                 self.tcp_armed = Some(d);
                 ctx.schedule(SimTime(d.0.saturating_sub(ctx.now().0)), TCP_TICK);
             }
