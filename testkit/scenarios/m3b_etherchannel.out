@@ -1,0 +1,400 @@
+
+== pc1
+pc1>ipconfig set 10.0.0.1 255.255.255.0
+
+== pc3
+pc3>ipconfig set 10.0.0.3 255.255.255.0
+
+== pc2
+pc2>ipconfig set 10.0.0.2 255.255.255.0
+
+== pc4
+pc4>ipconfig set 10.0.0.4 255.255.255.0
+
+== sw1
+sw1>enable
+sw1#configure terminal
+sw1(config)#spanning-tree mode rapid-pvst
+sw1(config)#interface range fa0/1 - 2
+sw1(config-if)#switchport mode trunk
+sw1(config-if)#channel-group 1 mode active
+Creating a port-channel interface Port-channel 1
+sw1(config-if)#end
+
+== sw2
+sw2>enable
+sw2#configure terminal
+sw2(config)#spanning-tree mode rapid-pvst
+sw2(config)#interface range fa0/1-2
+sw2(config-if)#switchport mode trunk
+sw2(config-if)#channel-group 1 mode passive
+Creating a port-channel interface Port-channel 1
+sw2(config-if)#end
+
+-- 40 s pass
+
+== sw1
+sw1#show etherchannel summary
+Flags:  D - down        P - bundled in port-channel
+        I - stand-alone s - suspended
+        H - Hot-standby (LACP only)
+        R - Layer3      S - Layer2
+        U - in use      f - failed to allocate aggregator
+
+        M - not in use, minimum links not met
+        u - unsuitable for bundling
+        w - waiting to be aggregated
+        d - default port
+
+
+Number of channel-groups in use: 1
+Number of aggregators:           1
+
+Group  Port-channel  Protocol    Ports
+------+-------------+-----------+-----------------------------------------------
+1      Po1(SU)       LACP        Fa0/1(P)    Fa0/2(P)
+sw1#show lacp neighbor
+Flags:  S - Device is requesting Slow LACPDUs
+        F - Device is requesting Fast LACPDUs
+        A - Device is in Active mode       P - Device is in Passive mode
+
+Channel group 1 neighbors
+
+Partner's information:
+
+                  LACP port                        Admin  Oper   Port    Port
+Port      Flags   Priority  Dev ID           Age    key    Key    Number  State
+Fa0/1     SP      32768     02bb.ff03.0000   9s     0x0    0x1    0x1      0x3C
+Fa0/2     SP      32768     02bb.ff03.0000   9s     0x0    0x1    0x2      0x3C
+sw1#show lacp internal
+Flags:  S - Device is requesting Slow LACPDUs
+        F - Device is requesting Fast LACPDUs
+        A - Device is in Active mode       P - Device is in Passive mode
+
+Channel group 1
+                            LACP port     Admin     Oper    Port        Port
+Port      Flags   State     Priority      Key       Key     Number      State
+Fa0/1     SA      bndl      32768         0x0       0x1     0x1         0x3D
+Fa0/2     SA      bndl      32768         0x0       0x1     0x2         0x3D
+sw1#show spanning-tree
+VLAN0001
+  Spanning tree enabled protocol rstp
+  Root ID    Priority    32769
+             Address     02bb.ff02.0000
+             This bridge is the root
+             Hello Time   2 sec  Max Age 20 sec  Forward Delay 15 sec
+
+  Bridge ID  Priority    32769  (priority 32768 sys-id-ext 1)
+             Address     02bb.ff02.0000
+             Hello Time   2 sec  Max Age 20 sec  Forward Delay 15 sec
+             Aging Time  300 sec
+
+Interface           Role Sts Cost      Prio.Nbr Type
+------------------- ---- --- --------- -------- --------------------------------
+Po1                 Desg FWD 12        128.1    P2p
+Fa0/7               Desg FWD 19        128.7    P2p
+Fa0/8               Desg FWD 19        128.8    P2p
+sw1#show interfaces trunk
+Port        Mode         Encapsulation  Status        Native vlan
+Po1         on           802.1q         trunking      1
+
+Port        Vlans allowed on trunk
+Po1         1-4094
+
+Port        Vlans allowed and active in management domain
+Po1         1
+
+== sw2
+sw2#show etherchannel summary
+Flags:  D - down        P - bundled in port-channel
+        I - stand-alone s - suspended
+        H - Hot-standby (LACP only)
+        R - Layer3      S - Layer2
+        U - in use      f - failed to allocate aggregator
+
+        M - not in use, minimum links not met
+        u - unsuitable for bundling
+        w - waiting to be aggregated
+        d - default port
+
+
+Number of channel-groups in use: 1
+Number of aggregators:           1
+
+Group  Port-channel  Protocol    Ports
+------+-------------+-----------+-----------------------------------------------
+1      Po1(SU)       LACP        Fa0/1(P)    Fa0/2(P)
+sw2#show spanning-tree
+VLAN0001
+  Spanning tree enabled protocol rstp
+  Root ID    Priority    32769
+             Address     02bb.ff02.0000
+             Cost        12
+             Port        1 (Port-channel1)
+             Hello Time   2 sec  Max Age 20 sec  Forward Delay 15 sec
+
+  Bridge ID  Priority    32769  (priority 32768 sys-id-ext 1)
+             Address     02bb.ff03.0000
+             Hello Time   2 sec  Max Age 20 sec  Forward Delay 15 sec
+             Aging Time  300 sec
+
+Interface           Role Sts Cost      Prio.Nbr Type
+------------------- ---- --- --------- -------- --------------------------------
+Po1                 Root FWD 12        128.1    P2p
+Fa0/7               Desg FWD 19        128.7    P2p
+Fa0/8               Desg FWD 19        128.8    P2p
+
+== pc1
+pc1>ping 10.0.0.2
+Reply from 10.0.0.2: time=76us
+Reply from 10.0.0.2: time=41us
+Reply from 10.0.0.2: time=41us
+Reply from 10.0.0.2: time=41us
+Sent 4, received 4
+
+== pc3
+pc3>ping 10.0.0.4
+Reply from 10.0.0.4: time=76us
+Reply from 10.0.0.4: time=41us
+Reply from 10.0.0.4: time=41us
+Reply from 10.0.0.4: time=41us
+Sent 4, received 4
+
+== sw1
+sw1#show mac address-table
+Vlan  Mac Address     Port
+1     0200.0000.0001  Fa0/7
+1     0200.0000.0101  Fa0/8
+1     0200.0000.0401  Po1
+1     0200.0000.0501  Po1
+sw1#configure terminal
+sw1(config)#interface fa0/1
+sw1(config-if)#shutdown
+sw1(config-if)#end
+
+-- 5 s pass
+sw1#show etherchannel summary
+Flags:  D - down        P - bundled in port-channel
+        I - stand-alone s - suspended
+        H - Hot-standby (LACP only)
+        R - Layer3      S - Layer2
+        U - in use      f - failed to allocate aggregator
+
+        M - not in use, minimum links not met
+        u - unsuitable for bundling
+        w - waiting to be aggregated
+        d - default port
+
+
+Number of channel-groups in use: 1
+Number of aggregators:           1
+
+Group  Port-channel  Protocol    Ports
+------+-------------+-----------+-----------------------------------------------
+1      Po1(SU)       LACP        Fa0/1(D)    Fa0/2(P)
+sw1#show spanning-tree
+VLAN0001
+  Spanning tree enabled protocol rstp
+  Root ID    Priority    32769
+             Address     02bb.ff02.0000
+             This bridge is the root
+             Hello Time   2 sec  Max Age 20 sec  Forward Delay 15 sec
+
+  Bridge ID  Priority    32769  (priority 32768 sys-id-ext 1)
+             Address     02bb.ff02.0000
+             Hello Time   2 sec  Max Age 20 sec  Forward Delay 15 sec
+             Aging Time  300 sec
+
+Interface           Role Sts Cost      Prio.Nbr Type
+------------------- ---- --- --------- -------- --------------------------------
+Po1                 Desg FWD 19        128.1    P2p
+Fa0/7               Desg FWD 19        128.7    P2p
+Fa0/8               Desg FWD 19        128.8    P2p
+sw1#show mac address-table
+Vlan  Mac Address     Port
+1     0200.0000.0001  Fa0/7
+1     0200.0000.0101  Fa0/8
+
+== sw2
+sw2#show etherchannel summary
+Flags:  D - down        P - bundled in port-channel
+        I - stand-alone s - suspended
+        H - Hot-standby (LACP only)
+        R - Layer3      S - Layer2
+        U - in use      f - failed to allocate aggregator
+
+        M - not in use, minimum links not met
+        u - unsuitable for bundling
+        w - waiting to be aggregated
+        d - default port
+
+
+Number of channel-groups in use: 1
+Number of aggregators:           1
+
+Group  Port-channel  Protocol    Ports
+------+-------------+-----------+-----------------------------------------------
+1      Po1(SU)       LACP        Fa0/1(D)    Fa0/2(P)
+sw2#show spanning-tree
+VLAN0001
+  Spanning tree enabled protocol rstp
+  Root ID    Priority    32769
+             Address     02bb.ff02.0000
+             Cost        19
+             Port        1 (Port-channel1)
+             Hello Time   2 sec  Max Age 20 sec  Forward Delay 15 sec
+
+  Bridge ID  Priority    32769  (priority 32768 sys-id-ext 1)
+             Address     02bb.ff03.0000
+             Hello Time   2 sec  Max Age 20 sec  Forward Delay 15 sec
+             Aging Time  300 sec
+
+Interface           Role Sts Cost      Prio.Nbr Type
+------------------- ---- --- --------- -------- --------------------------------
+Po1                 Root FWD 19        128.1    P2p
+Fa0/7               Desg FWD 19        128.7    P2p
+Fa0/8               Desg FWD 19        128.8    P2p
+sw2#show mac address-table
+Vlan  Mac Address     Port
+1     0200.0000.0401  Fa0/7
+1     0200.0000.0501  Fa0/8
+
+== pc1
+pc1>ping 10.0.0.2
+Reply from 10.0.0.2: time=41us
+Reply from 10.0.0.2: time=41us
+Reply from 10.0.0.2: time=41us
+Reply from 10.0.0.2: time=41us
+Sent 4, received 4
+
+== sw1
+sw1#configure terminal
+sw1(config)#interface fa0/1
+sw1(config-if)#no shutdown
+sw1(config-if)#end
+
+-- 40 s pass
+sw1#show etherchannel summary
+Flags:  D - down        P - bundled in port-channel
+        I - stand-alone s - suspended
+        H - Hot-standby (LACP only)
+        R - Layer3      S - Layer2
+        U - in use      f - failed to allocate aggregator
+
+        M - not in use, minimum links not met
+        u - unsuitable for bundling
+        w - waiting to be aggregated
+        d - default port
+
+
+Number of channel-groups in use: 1
+Number of aggregators:           1
+
+Group  Port-channel  Protocol    Ports
+------+-------------+-----------+-----------------------------------------------
+1      Po1(SU)       LACP        Fa0/1(P)    Fa0/2(P)
+sw1#configure terminal
+sw1(config)#interface port-channel 1
+sw1(config-if)#switchport trunk allowed vlan 1,20
+sw1(config-if)#end
+sw1#show running-config
+hostname sw1
+!
+spanning-tree mode rapid-pvst
+!
+interface Port-channel1
+ switchport mode trunk
+ switchport trunk allowed vlan 1,20
+!
+interface FastEthernet0/1
+ switchport mode trunk
+ switchport trunk allowed vlan 1,20
+ channel-group 1 mode active
+!
+interface FastEthernet0/2
+ switchport mode trunk
+ switchport trunk allowed vlan 1,20
+ channel-group 1 mode active
+!
+end
+sw1#configure terminal
+sw1(config)#interface range fa0/1 - 2
+sw1(config-if)#channel-group 1 mode on
+Command rejected (Channel protocol mismatch for channel-group 1).
+sw1(config-if)#no channel-group
+sw1(config-if)#channel-group 1 mode on
+sw1(config-if)#end
+
+-- 100 s pass
+sw1#show etherchannel summary
+Flags:  D - down        P - bundled in port-channel
+        I - stand-alone s - suspended
+        H - Hot-standby (LACP only)
+        R - Layer3      S - Layer2
+        U - in use      f - failed to allocate aggregator
+
+        M - not in use, minimum links not met
+        u - unsuitable for bundling
+        w - waiting to be aggregated
+        d - default port
+
+
+Number of channel-groups in use: 1
+Number of aggregators:           1
+
+Group  Port-channel  Protocol    Ports
+------+-------------+-----------+-----------------------------------------------
+1      Po1(SU)       -           Fa0/1(P)    Fa0/2(P)
+
+== sw2
+sw2#show etherchannel summary
+Flags:  D - down        P - bundled in port-channel
+        I - stand-alone s - suspended
+        H - Hot-standby (LACP only)
+        R - Layer3      S - Layer2
+        U - in use      f - failed to allocate aggregator
+
+        M - not in use, minimum links not met
+        u - unsuitable for bundling
+        w - waiting to be aggregated
+        d - default port
+
+
+Number of channel-groups in use: 1
+Number of aggregators:           1
+
+Group  Port-channel  Protocol    Ports
+------+-------------+-----------+-----------------------------------------------
+1      Po1(SD)       LACP        Fa0/1(I)    Fa0/2(I)
+
+== pc1
+pc1>ping 10.0.0.2
+No reply (timed out).
+No reply (timed out).
+No reply (timed out).
+No reply (timed out).
+Sent 4, received 0
+
+== sw1
+sw1#configure terminal
+sw1(config)#interface fa0/1
+sw1(config-if)#channel-group 1 mode active
+Command rejected (Channel protocol mismatch for channel-group 1).
+sw1(config-if)#end
+sw1#show etherchannel load-balance
+EtherChannel Load-Balancing Configuration:
+        src-mac
+
+EtherChannel Load-Balancing Addresses Used Per-Protocol:
+Non-IP: Source MAC address
+IPv4: Source MAC address
+sw1#configure terminal
+sw1(config)#port-channel load-balance src-dst-ip
+sw1(config)#end
+sw1#show etherchannel load-balance
+EtherChannel Load-Balancing Configuration:
+        src-dst-ip
+
+EtherChannel Load-Balancing Addresses Used Per-Protocol:
+Non-IP: Source XOR Destination MAC address
+IPv4: Source XOR Destination IP address

@@ -84,6 +84,12 @@ const PSEC: Scenario = Scenario {
     golden: "../../testkit/scenarios/m3b_psec.out",
 };
 
+const ETHERCHANNEL: Scenario = Scenario {
+    lab: include_str!("../../../testkit/scenarios/m3b_etherchannel.lab.toml"),
+    script: include_str!("../../../testkit/scenarios/m3b_etherchannel.script"),
+    golden: "../../testkit/scenarios/m3b_etherchannel.out",
+};
+
 fn transcript(sc: &Scenario) -> String {
     let mut lab = load_and_build(sc.lab, Trace::new()).expect("lab builds");
     assert!(lab.warnings.is_empty(), "{:?}", lab.warnings);
@@ -229,6 +235,11 @@ fn the_ospf_areas_lab_matches_its_golden_transcript() {
 #[test]
 fn the_port_security_lab_matches_its_golden_transcript() {
     check_golden(&PSEC);
+}
+
+#[test]
+fn the_etherchannel_lab_matches_its_golden_transcript() {
+    check_golden(&ETHERCHANNEL);
 }
 
 #[test]

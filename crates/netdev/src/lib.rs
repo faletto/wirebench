@@ -3,6 +3,7 @@
 
 mod acl;
 mod arp;
+mod channel;
 mod device;
 mod dhcp_server;
 mod fib;
@@ -23,6 +24,10 @@ pub use acl::{
     Rule as AclRule,
 };
 pub use arp::Resolver;
+pub use channel::{
+    bundle_cost, ChannelMode, ChannelPort, JoinError, LoadBalance, Membership, MAX_GROUP,
+    MAX_MEMBERS,
+};
 pub use device::{Ctx, Device, DeviceEvent};
 pub use dhcp_server::{client_key, Binding, BindingState, DhcpServer, Pool};
 pub use fib::{mask, Fib, Route, RouteKind};

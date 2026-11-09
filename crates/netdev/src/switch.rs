@@ -1,3 +1,6 @@
+use crate::channel::{
+    bundle_cost, ChannelMode, ChannelPort, JoinError, LoadBalance, Membership, MAX_MEMBERS,
+};
 use crate::psec::{PortSecurity, PsecState, Verdict as PsecVerdict};
 use crate::stp::{Action as StpAction, Mode as StpMode, Stp};
 use crate::vlan::{all_vlans, DEFAULT_VLAN};
@@ -56,6 +59,8 @@ pub struct PortConfig {
     pub stp_priority: Option<u8>,
     /// Port security; `None` is off.
     pub psec: Option<PortSecurity>,
+    /// EtherChannel membership; `None` is a port on its own.
+    pub channel: Option<Membership>,
 }
 
 impl Default for PortConfig {
@@ -71,6 +76,7 @@ impl Default for PortConfig {
             stp_cost: None,
             stp_priority: None,
             psec: None,
+            channel: None,
         }
     }
 }
@@ -134,6 +140,14 @@ pub struct L2Switch {
     dtp_secs: u32,
     /// Port security: learned addresses, violations and error-disabled ports.
     pub psec: PsecState,
+    /// Port-channel interfaces: the settings every member shares.
+    groups: BTreeMap<u8, PortConfig>,
+    chan: Vec<ChannelPort>,
+    /// For a bundled port: its group and the port that stands for the bundle.
+    rep: Vec<Option<(u8, usize)>>,
+    load_balance: LoadBalance,
+    lacp_secs: u32,
+    lacp_dirty: bool,
 }
 
 /// DTP is repeated this often, and a neighbour not heard from for three times as long is gone.
@@ -165,6 +179,12 @@ impl L2Switch {
             dtp_dirty: false,
             dtp_secs: 0,
             psec: PsecState::new(n_ports as usize),
+            groups: BTreeMap::new(),
+            chan: vec![ChannelPort::default(); n_ports as usize],
+            rep: vec![None; n_ports as usize],
+            load_balance: LoadBalance::default(),
+            lacp_secs: 0,
+            lacp_dirty: false,
         }
     }
 
@@ -190,6 +210,11 @@ impl L2Switch {
         self.dtp_peer = vec![None; n];
         self.dtp_dirty = false;
         self.psec = PsecState::new(n);
+        self.groups.clear();
+        self.chan = vec![ChannelPort::default(); n];
+        self.rep = vec![None; n];
+        self.load_balance = LoadBalance::default();
+        self.lacp_dirty = false;
     }
 
     /// Set before creating SVIs; their MACs are `02:bb:00:<unit>:<vlan>`.
@@ -350,6 +375,8 @@ impl L2Switch {
             self.dtp_dirty = true;
             self.dtp_decide(p);
             self.table.retain(|_, (port, _)| *port != p);
+            self.share_from(p);
+            self.bundle_sync();
             self.refresh_svis();
             self.sync_stp();
         }
@@ -390,13 +417,21 @@ impl L2Switch {
         }
     }
 
+    /// Shut down, or error-disabled; for a bundle, whether the port-channel itself is shut.
+    fn admin_down(&self, p: PortId) -> bool {
+        let i = p.0 as usize;
+        match self.rep[i].and_then(|(g, _)| self.groups.get(&g)) {
+            Some(gc) => gc.shutdown,
+            None => self.ports[i].shutdown || self.psec.disabled[i].is_some(),
+        }
+    }
+
     /// Whether VLAN `v` is carried by port `p` (the VLAN exists and the port is in it).
     fn carries(&self, p: PortId, v: u16) -> bool {
         let Some(cfg) = self.ports.get(p.0 as usize) else {
             return false;
         };
-        !cfg.shutdown
-            && self.psec.disabled[p.0 as usize].is_none()
+        !self.admin_down(p)
             && self.vlans.contains_key(&v)
             && if self.is_trunk(p) {
                 cfg.allowed.contains(&v)
@@ -472,7 +507,7 @@ impl L2Switch {
             Some(out) if !dst.is_multicast() => {
                 // Destination is behind the ingress port: filter.
                 if Some(out) != ingress {
-                    ctx.transmit(out, self.egress(out, vlan, prio, plain));
+                    self.tx(ctx, out, self.egress(out, vlan, prio, plain));
                 }
             }
             _ => {
@@ -480,7 +515,7 @@ impl L2Switch {
                     .map(PortId)
                     .filter(|p| Some(*p) != ingress && self.passes(*p, vlan))
                 {
-                    ctx.transmit(p, self.egress(p, vlan, prio, plain));
+                    self.tx(ctx, p, self.egress(p, vlan, prio, plain));
                 }
             }
         }
@@ -550,6 +585,7 @@ impl L2Switch {
     /// Whether data for `vlan` may leave through `p` right now.
     fn passes(&self, p: PortId, vlan: u16) -> bool {
         self.carries(p, vlan)
+            && !self.is_standby(p)
             && self
                 .trees
                 .get(&vlan)
@@ -575,7 +611,17 @@ impl L2Switch {
             let id = self.bridge_id(v);
             let n = self.ports.len();
             let on: Vec<bool> = (0..n)
-                .map(|p| self.link_up[p] && self.carries(PortId(p as u16), v))
+                .map(|p| {
+                    (self.link_up[p] || self.rep[p].is_some())
+                        && self.carries(PortId(p as u16), v)
+                        && !self.is_standby(PortId(p as u16))
+                })
+                .collect();
+            let default_cost: Vec<u32> = (0..n)
+                .map(|p| match self.rep[p] {
+                    Some((g, _)) => bundle_cost(self.bundled(g).len()),
+                    None => 19,
+                })
                 .collect();
             let tree = self.trees.entry(v).or_insert_with(|| Stp::new(mode, id, n));
             let mut acts = vec![];
@@ -587,7 +633,7 @@ impl L2Switch {
             }
             for (p, cfg) in self.ports.iter().enumerate() {
                 let view = tree.port(p);
-                let cost = cfg.stp_cost.unwrap_or(19);
+                let cost = cfg.stp_cost.unwrap_or(default_cost[p]);
                 let prio = cfg.stp_priority.unwrap_or(128);
                 if view.cost != cost {
                     acts.extend(tree.set_cost(p, cost));
@@ -607,6 +653,12 @@ impl L2Switch {
     /// Look at the cables, settle the trees and send what is waiting. Called after
     /// configuration changes, which is what starts spanning tree running, and on every tick.
     pub fn refresh(&mut self, ctx: &mut Ctx) {
+        // A port that is shut down or error-disabled drops its carrier, so the neighbour sees the
+        // link go down as well.
+        for p in 0..self.ports.len() {
+            let off = self.ports[p].shutdown || self.psec.disabled[p].is_some();
+            ctx.set_carrier(PortId(p as u16), !off);
+        }
         let initiates = self.ports.iter().any(|c| {
             matches!(c.mode, PortMode::Trunk | PortMode::DynamicDesirable) && !c.nonegotiate
         });
@@ -615,6 +667,7 @@ impl L2Switch {
             self.link_up = vec![false; self.ports.len()];
             return;
         }
+        let mut changed_links = false;
         for p in 0..self.ports.len() {
             let up = ctx.port_up(PortId(p as u16));
             if self.link_up[p] != up {
@@ -627,7 +680,15 @@ impl L2Switch {
                     // Dynamically learned secure addresses do not outlive the link.
                     self.psec.dynamic[p].clear();
                 }
+                if !up {
+                    self.chan[p].peer = None;
+                }
+                self.lacp_dirty = true;
+                changed_links = true;
             }
+        }
+        if changed_links {
+            self.bundle_sync();
         }
         self.sync_stp();
         self.flush_stp(ctx);
@@ -646,7 +707,10 @@ impl L2Switch {
         }
         let busy = self.spanning.mode.is_some()
             || self.dtp_peer.iter().any(Option::is_some)
-            || self.ports.iter().any(|c| c.psec.is_some())
+            || self
+                .ports
+                .iter()
+                .any(|c| c.psec.is_some() || c.channel.is_some())
             || (self.psec.recover && self.psec.disabled.iter().any(Option::is_some));
         if busy && self.stp_timer.is_none() {
             self.stp_timer = Some(ctx.schedule_background(SimTime::from_secs(1), STP_TIMER));
@@ -659,7 +723,10 @@ impl L2Switch {
         self.spanning.mode.is_some()
             || self.dtp_peer.iter().any(Option::is_some)
             || self.dtp_dirty
-            || self.ports.iter().any(|c| c.psec.is_some())
+            || self
+                .ports
+                .iter()
+                .any(|c| c.psec.is_some() || c.channel.is_some())
             || (self.psec.recover && self.psec.disabled.iter().any(Option::is_some))
     }
 
@@ -670,6 +737,7 @@ impl L2Switch {
         // Neighbours not heard for three intervals are gone; the rest hear from us every interval.
         let now = ctx.now();
         self.psec_recover(now);
+        self.lacp_tick(ctx);
         for p in 0..self.ports.len() {
             if let Some((_, heard)) = self.dtp_peer[p] {
                 if now > heard + SimTime::from_secs(u64::from(3 * DTP_INTERVAL)) {
@@ -717,7 +785,7 @@ impl L2Switch {
                 .emit();
                 let p = PortId(port as u16);
                 if self.carries(p, vlan) {
-                    ctx.transmit(p, self.egress(p, vlan, BPDU_PRIO, &frame));
+                    self.tx(ctx, p, self.egress(p, vlan, BPDU_PRIO, &frame));
                 }
             }
         }
@@ -731,7 +799,7 @@ impl L2Switch {
     fn dtp_send(&mut self, ctx: &mut Ctx, p: PortId) {
         let i = p.0 as usize;
         let cfg = &self.ports[i];
-        if cfg.nonegotiate || cfg.shutdown || !self.link_up[i] {
+        if cfg.nonegotiate || cfg.shutdown || !self.link_up[i] || cfg.channel.is_some() {
             return;
         }
         let mode = match cfg.mode {
@@ -763,7 +831,8 @@ impl L2Switch {
     fn on_dtp(&mut self, ctx: &mut Ctx, port: PortId, frame: &[u8]) {
         let i = port.0 as usize;
         let cfg = &self.ports[i];
-        if cfg.nonegotiate || cfg.shutdown || cfg.mode == PortMode::Access {
+        if cfg.nonegotiate || cfg.shutdown || cfg.mode == PortMode::Access || cfg.channel.is_some()
+        {
             return;
         }
         let Ok(d) = EthernetFrame::parse(frame)
@@ -801,6 +870,386 @@ impl L2Switch {
     }
 }
 
+// ---- EtherChannel ----
+
+/// LACPDUs are repeated this often (the slow rate), and a neighbour unheard for three times as
+/// long is gone.
+const LACP_INTERVAL: u32 = 30;
+const LACP_PRIO: u16 = 32768;
+
+/// Settings shared by every member of a group: everything but its own address security, shutdown
+/// and membership.
+fn share(dst: &mut PortConfig, src: &PortConfig, with_shutdown: bool) {
+    let keep = (dst.channel, dst.psec.clone(), dst.shutdown);
+    *dst = src.clone();
+    dst.channel = keep.0;
+    dst.psec = keep.1;
+    if !with_shutdown {
+        dst.shutdown = keep.2;
+    }
+}
+
+impl L2Switch {
+    /// Port-channel interfaces that exist, with their shared settings.
+    pub fn groups(&self) -> impl Iterator<Item = (u8, &PortConfig)> {
+        self.groups.iter().map(|(g, c)| (*g, c))
+    }
+
+    pub fn group(&self, g: u8) -> Option<&PortConfig> {
+        self.groups.get(&g)
+    }
+
+    /// Ports with `channel-group g`, in order.
+    pub fn members(&self, g: u8) -> Vec<PortId> {
+        (0..self.ports.len())
+            .filter(|i| self.ports[*i].channel.is_some_and(|m| m.group == g))
+            .map(|i| PortId(i as u16))
+            .collect()
+    }
+
+    /// Create the port-channel interface if it is not there yet.
+    pub fn ensure_group(&mut self, g: u8) {
+        self.groups.entry(g).or_default();
+    }
+
+    /// `no interface port-channel g`: the members leave and the interface goes.
+    pub fn remove_group(&mut self, g: u8) -> bool {
+        for p in self.members(g) {
+            self.ports[p.0 as usize].channel = None;
+        }
+        let gone = self.groups.remove(&g).is_some();
+        self.channel_changed();
+        gone
+    }
+
+    /// `channel-group g mode m` on a port. The port takes the group's settings (a new group
+    /// takes the port's).
+    pub fn channel_join(&mut self, p: PortId, g: u8, mode: ChannelMode) -> Result<(), JoinError> {
+        let members = self.members(g);
+        let others: Vec<_> = members.iter().filter(|m| **m != p).collect();
+        if others.iter().any(|m| {
+            self.ports[m.0 as usize]
+                .channel
+                .is_some_and(|c| c.mode.is_lacp() != mode.is_lacp())
+        }) {
+            return Err(JoinError::ProtocolMismatch);
+        }
+        if others.len() >= MAX_MEMBERS {
+            return Err(JoinError::TooMany);
+        }
+        let i = p.0 as usize;
+        match self.groups.get(&g).cloned() {
+            Some(gc) => share(&mut self.ports[i], &gc, false),
+            None => {
+                let mut gc = self.ports[i].clone();
+                gc.channel = None;
+                gc.psec = None;
+                gc.shutdown = false;
+                self.groups.insert(g, gc);
+            }
+        }
+        self.ports[i].channel = Some(Membership { group: g, mode });
+        self.chan[i] = ChannelPort::default();
+        self.lacp_dirty = true;
+        self.channel_changed();
+        Ok(())
+    }
+
+    /// `no channel-group` on a port.
+    pub fn channel_leave(&mut self, p: PortId) {
+        self.ports[p.0 as usize].channel = None;
+        self.chan[p.0 as usize] = ChannelPort::default();
+        self.channel_changed();
+    }
+
+    /// Change a port-channel interface; the members follow.
+    pub fn configure_group(&mut self, g: u8, f: impl FnOnce(&mut PortConfig)) {
+        let cfg = self.groups.entry(g).or_default();
+        f(cfg);
+        let cfg = cfg.clone();
+        for p in self.members(g) {
+            share(&mut self.ports[p.0 as usize], &cfg, true);
+        }
+        self.channel_changed();
+    }
+
+    /// A member was configured on its own: the group and the other members follow. (Shutting one
+    /// member does not shut the rest.)
+    fn share_from(&mut self, p: PortId) {
+        let Some(m) = self.ports[p.0 as usize].channel else {
+            return;
+        };
+        let src = self.ports[p.0 as usize].clone();
+        if let Some(gc) = self.groups.get_mut(&m.group) {
+            share(gc, &src, false);
+        }
+        for q in self.members(m.group) {
+            if q != p {
+                share(&mut self.ports[q.0 as usize], &src, false);
+            }
+        }
+    }
+
+    fn channel_changed(&mut self) {
+        let n = self.ports.len();
+        for i in 0..n {
+            self.table.retain(|_, (port, _)| port.0 as usize != i);
+        }
+        self.bundle_sync();
+        self.refresh_svis();
+        self.sync_stp();
+    }
+
+    pub fn load_balance(&self) -> LoadBalance {
+        self.load_balance
+    }
+
+    pub fn set_load_balance(&mut self, l: LoadBalance) {
+        self.load_balance = l;
+    }
+
+    /// For a bundled port: its group and the port that stands for the bundle in spanning tree and
+    /// the MAC table.
+    pub fn bundle_of(&self, p: PortId) -> Option<(u8, PortId)> {
+        self.rep
+            .get(p.0 as usize)
+            .copied()
+            .flatten()
+            .map(|(g, r)| (g, PortId(r as u16)))
+    }
+
+    /// Whether `p` itself is carrying traffic as part of a bundle.
+    pub fn is_bundled(&self, p: PortId) -> bool {
+        self.chan.get(p.0 as usize).is_some_and(|c| c.bundled)
+    }
+
+    /// The ports bundled in group `g`.
+    pub fn bundled(&self, g: u8) -> Vec<PortId> {
+        self.members(g)
+            .into_iter()
+            .filter(|p| self.chan[p.0 as usize].bundled)
+            .collect()
+    }
+
+    /// What the neighbour on `p` last said in LACP, if it is still heard.
+    pub fn lacp_neighbour(&self, p: PortId) -> Option<(wire::LacpInfo, SimTime)> {
+        self.chan.get(p.0 as usize)?.peer
+    }
+
+    /// What this switch announces for `p` in LACP, if it is in a channel group.
+    pub fn lacp_actor(&self, p: PortId) -> Option<wire::LacpInfo> {
+        self.lacp_info(p)
+    }
+
+    /// Whether the link under `p` was up at the last look.
+    pub fn link_is_up(&self, p: PortId) -> bool {
+        self.link_up.get(p.0 as usize).copied().unwrap_or(false)
+    }
+
+    /// A bundled port that is not the one standing for its bundle: it carries frames but has no
+    /// identity of its own.
+    fn is_standby(&self, p: PortId) -> bool {
+        self.bundle_of(p).is_some_and(|(_, r)| r != p)
+    }
+
+    /// Settle which ports are bundled: static members once their link is up, LACP members once
+    /// their neighbour has answered, and only those that agree on who the neighbour is.
+    fn bundle_sync(&mut self) {
+        let before: Vec<bool> = self.chan.iter().map(|c| c.bundled).collect();
+        let groups: Vec<u8> = self
+            .ports
+            .iter()
+            .filter_map(|c| c.channel.map(|m| m.group))
+            .collect();
+        for c in &mut self.chan {
+            c.bundled = false;
+        }
+        let mut seen = BTreeSet::new();
+        for g in groups {
+            if !seen.insert(g) {
+                continue;
+            }
+            let eligible: Vec<usize> = self
+                .members(g)
+                .into_iter()
+                .map(|p| p.0 as usize)
+                .filter(|&i| {
+                    let m = self.ports[i].channel.expect("member");
+                    self.link_up[i]
+                        && !self.ports[i].shutdown
+                        && self.psec.disabled[i].is_none()
+                        && (!m.mode.is_lacp()
+                            || self.chan[i].peer.is_some_and(|(peer, _)| {
+                                m.mode == ChannelMode::Active
+                                    || peer.state & wire::STATE_ACTIVITY != 0
+                            }))
+                })
+                .collect();
+            // One neighbour per bundle: that of the lowest-numbered port.
+            let partner = eligible
+                .first()
+                .and_then(|&i| self.chan[i].peer.map(|(p, _)| p.system));
+            for i in eligible {
+                if self.chan[i].peer.map(|(p, _)| p.system) == partner {
+                    self.chan[i].bundled = true;
+                }
+            }
+        }
+        // The port that stands for a bundle is the lowest-numbered member whatever its state, so
+        // spanning tree sees the same port when a cable goes and comes back.
+        self.rep = vec![None; self.ports.len()];
+        for i in 0..self.ports.len() {
+            if let (true, Some(m)) = (self.chan[i].bundled, self.ports[i].channel) {
+                let r = (0..self.ports.len())
+                    .find(|&j| self.ports[j].channel.is_some_and(|c| c.group == m.group))
+                    .unwrap_or(i);
+                self.rep[i] = Some((m.group, r));
+                self.rep[r] = Some((m.group, r));
+            }
+        }
+        let after: Vec<bool> = self.chan.iter().map(|c| c.bundled).collect();
+        if before != after {
+            for i in 0..self.ports.len() {
+                if before[i] != after[i] {
+                    self.table.retain(|_, (port, _)| port.0 as usize != i);
+                }
+            }
+            // The tables above can name a representative that has changed; forget all of the
+            // group's addresses.
+            for g in self.groups.keys().copied().collect::<Vec<_>>() {
+                for p in self.members(g) {
+                    self.table.retain(|_, (port, _)| *port != p);
+                }
+            }
+            self.refresh_svis();
+            self.sync_stp();
+        }
+    }
+
+    /// Send a frame out of `p`, or, if `p` stands for a bundle, out of the member the frame hashes to.
+    fn tx(&self, ctx: &mut Ctx, p: PortId, frame: Vec<u8>) {
+        let Some((g, r)) = self.bundle_of(p) else {
+            return ctx.transmit(p, frame);
+        };
+        if r != p {
+            return;
+        }
+        let up: Vec<PortId> = self
+            .bundled(g)
+            .into_iter()
+            .filter(|m| ctx.port_up(*m))
+            .collect();
+        if let Some(m) = up.get(self.load_balance.pick(&frame, up.len())) {
+            ctx.transmit(*m, frame);
+        }
+    }
+
+    fn lacp_info(&self, p: PortId) -> Option<wire::LacpInfo> {
+        let i = p.0 as usize;
+        let m = self.ports[i].channel?;
+        let mut state = wire::STATE_AGGREGATION;
+        if m.mode == ChannelMode::Active {
+            state |= wire::STATE_ACTIVITY;
+        }
+        if self.chan[i].bundled {
+            state |= wire::STATE_SYNC | wire::STATE_COLLECTING | wire::STATE_DISTRIBUTING;
+        }
+        Some(wire::LacpInfo {
+            system_priority: LACP_PRIO,
+            system: self.bridge_mac(),
+            key: u16::from(m.group),
+            port_priority: LACP_PRIO,
+            port: p.0 + 1,
+            state,
+        })
+    }
+
+    /// Tell the neighbour on `p` about this port, if it speaks LACP. A passive port only answers.
+    fn lacp_send(&mut self, ctx: &mut Ctx, p: PortId) {
+        let i = p.0 as usize;
+        let Some(m) = self.ports[i].channel else {
+            return;
+        };
+        if !m.mode.is_lacp()
+            || !self.link_up[i]
+            || self.ports[i].shutdown
+            || (m.mode == ChannelMode::Passive && self.chan[i].peer.is_none())
+        {
+            return;
+        }
+        let Some(actor) = self.lacp_info(p) else {
+            return;
+        };
+        let partner = self.chan[i].peer.map(|(p, _)| p).unwrap_or_default();
+        let payload = wire::Lacpdu { actor, partner }.emit();
+        let frame = EthernetFrame {
+            dst: wire::SLOW_PROTOCOLS,
+            src: self.dtp_mac(p),
+            vlan: None,
+            ethertype: EtherType(wire::SLOW_PROTOCOLS_TYPE),
+            payload,
+        }
+        .emit();
+        ctx.transmit(p, frame);
+    }
+
+    fn on_lacp(&mut self, ctx: &mut Ctx, port: PortId, frame: &[u8]) {
+        let i = port.0 as usize;
+        let Some(m) = self.ports[i].channel else {
+            return;
+        };
+        if !m.mode.is_lacp() || self.ports[i].shutdown {
+            return;
+        }
+        let Ok(d) = EthernetFrame::parse(frame)
+            .map_err(drop)
+            .and_then(|f| wire::Lacpdu::parse(&f.payload).map_err(drop))
+        else {
+            return;
+        };
+        let news = self.chan[i].peer.map(|(p, _)| (p.system, p.key, p.state))
+            != Some((d.actor.system, d.actor.key, d.actor.state));
+        self.link_up[i] = true;
+        self.chan[i].peer = Some((d.actor, ctx.now()));
+        let was = self.chan[i].bundled;
+        self.bundle_sync();
+        if news || was != self.chan[i].bundled {
+            self.lacp_send(ctx, port);
+        }
+        if self.stp_timer.is_none() {
+            self.stp_timer = Some(ctx.schedule_background(SimTime::from_secs(1), STP_TIMER));
+        }
+        self.flush_stp(ctx);
+    }
+
+    fn lacp_tick(&mut self, ctx: &mut Ctx) {
+        let now = ctx.now();
+        let mut lost = false;
+        for i in 0..self.ports.len() {
+            if let Some((_, heard)) = self.chan[i].peer {
+                if now > heard + SimTime::from_secs(u64::from(3 * LACP_INTERVAL)) {
+                    self.chan[i].peer = None;
+                    lost = true;
+                }
+            }
+        }
+        if lost {
+            self.bundle_sync();
+        }
+        self.lacp_secs += 1;
+        if self.lacp_secs >= LACP_INTERVAL {
+            self.lacp_secs = 0;
+            self.lacp_dirty = true;
+        }
+        if self.lacp_dirty {
+            self.lacp_dirty = false;
+            for i in 0..self.ports.len() {
+                self.lacp_send(ctx, PortId(i as u16));
+            }
+        }
+    }
+}
+
 // ---- port security ----
 
 impl L2Switch {
@@ -814,6 +1263,7 @@ impl L2Switch {
             PsecVerdict::Allow => true,
             PsecVerdict::Drop => false,
             PsecVerdict::Disable => {
+                ctx.set_carrier(port, false);
                 self.psec.dynamic[i].clear();
                 self.table.retain(|_, (p, _)| *p != port);
                 self.refresh_svis();
@@ -892,6 +1342,13 @@ impl Device for L2Switch {
         if frame.len() < 14 {
             return;
         }
+        // LACP stays on the wire it arrived on; no bridge forwards it.
+        if frame[0..6] == wire::SLOW_PROTOCOLS.0 {
+            self.on_lacp(ctx, port, &frame);
+            return;
+        }
+        // From here a bundle is one port: the one that stands for it.
+        let port = self.bundle_of(port).map_or(port, |(_, r)| r);
         if frame[0..6] == DTP_MULTICAST.0 && frame[12..14] != DOT1Q {
             self.on_dtp(ctx, port, &frame);
             return;

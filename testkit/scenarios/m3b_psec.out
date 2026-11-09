@@ -131,7 +131,7 @@ Fa0/8                        notconnect   1          a-full a-100 10/100BaseTX
 
 == pc3
 pc3>ping 10.0.0.2
-Reply from 10.0.0.2: time=76us
+Reply from 10.0.0.2: time=79us
 Reply from 10.0.0.2: time=41us
 Reply from 10.0.0.2: time=41us
 Reply from 10.0.0.2: time=41us

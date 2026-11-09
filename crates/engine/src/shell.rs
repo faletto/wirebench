@@ -15,6 +15,7 @@ use netdev::{
 use std::sync::Arc;
 use wire::{IcmpErrorKind, Ipv4Addr};
 
+mod etherchannel;
 mod m3b;
 
 // ---- message catalog (shell-level strings) ----
@@ -943,6 +944,7 @@ fn switch_grammar() -> (Grammar, Modes) {
     probe_commands(&mut g, privileged);
     span_commands(&mut g, user, privileged, config, config_if);
     m3b::port_security_commands(&mut g, user, privileged, config, config_if);
+    etherchannel::channel_commands(&mut g, user, privileged, config, config_if);
     (
         g,
         Modes {
@@ -3007,11 +3009,33 @@ impl Shell {
             Exec::Logout => None,
             Exec::Error(e) => Some(render_error(&prompt, &e)),
             Exec::Run { handler, args } => {
-                let out = self.run(w, handler, &args);
+                let out = self.run(w, handler, &args, line);
                 self.settle(w);
                 Some(out)
             }
         }
+    }
+
+    /// Run a command; inside `interface range` once for each port, unless it is a `do` command.
+    fn run(&mut self, w: &mut World, handler: u32, a: &Args, line: &str) -> String {
+        let Some(ports) = self
+            .range_ports()
+            .filter(|_| !line.trim_start().starts_with("do "))
+        else {
+            return self.run_one(w, handler, a);
+        };
+        let saved = self.session.context().map(str::to_string);
+        let mut outs: Vec<String> = vec![];
+        for p in ports {
+            self.session
+                .enter(self.modes.config_if, Some(p.to_string()));
+            let o = self.run_one(w, handler, a);
+            if !o.is_empty() && !outs.contains(&o) {
+                outs.push(o);
+            }
+        }
+        self.session.enter(self.modes.config_if, saved);
+        outs.join("\n")
     }
 
     /// After a command: a switch looks at its cables and gets spanning tree going if it is on.
@@ -3021,7 +3045,7 @@ impl Shell {
         }
     }
 
-    fn run(&mut self, w: &mut World, handler: u32, a: &Args) -> String {
+    fn run_one(&mut self, w: &mut World, handler: u32, a: &Args) -> String {
         let id = self.device;
         let m = self.modes;
         match handler {
@@ -3044,7 +3068,8 @@ impl Shell {
             ROUTER_OSPF..=NO_OSPF_DEFAULT_INFO | IF_MTU..=SHOW_PROTOCOLS => {
                 return self.ospf_cmd(w, handler, a, &m)
             }
-            300..=399 => return self.m3b_cmd(w, handler, a),
+            300..=329 => return self.m3b_cmd(w, handler, a),
+            330..=349 => return self.channel_cmd(w, handler, a),
             ACL_PERMIT | ACL_DENY | ACL_REMARK | ACL_NO_SEQ | ACL_NO_PERMIT | ACL_NO_DENY
             | NO_ACL_NUMBER => return self.acl_entry_cmd(w, handler, a, &m),
             ACL_STD | ACL_EXT | NO_ACL_STD | NO_ACL_EXT => {
@@ -3422,6 +3447,11 @@ impl Shell {
                     self.session.enter(m.config_if, Some(format!("vlan{vlan}")));
                     return String::new();
                 }
+                if let Some(g) = etherchannel::parse_po_name(name) {
+                    w.with_device::<L2Switch, _>(id, |s, _| s.ensure_group(g));
+                    self.session.enter(m.config_if, Some(format!("po:{g}")));
+                    return String::new();
+                }
                 let n = w.device::<L2Switch>(id).n_ports() as usize;
                 match parse_switch_ifname(name, n) {
                     Some(p) => self.session.enter(m.config_if, Some(p.to_string())),
@@ -3567,12 +3597,9 @@ impl Shell {
     /// `ip address` and `shutdown` inside `interface vlan N` on a switch.
     fn svi_interface_cmd(&mut self, w: &mut World, handler: u32, a: &Args) -> String {
         // `shutdown` on a switch port, not an SVI.
-        if let (SHUTDOWN | NO_SHUTDOWN, Some(port)) = (
-            handler,
-            self.session.context().and_then(|c| c.parse::<u16>().ok()),
-        ) {
+        if let (SHUTDOWN | NO_SHUTDOWN, Some(target)) = (handler, self.cfg_target()) {
             w.with_device::<L2Switch, _>(self.device, |s, _| {
-                s.configure_port(PortId(port), |c| c.shutdown = handler == SHUTDOWN)
+                target.apply(s, |c| c.shutdown = handler == SHUTDOWN)
             });
             return String::new();
         }
@@ -3655,7 +3682,7 @@ impl Shell {
 
     /// `spanning-tree portfast`, `cost` and `port-priority` inside an interface.
     fn spanning_port(&mut self, w: &mut World, handler: u32, a: &Args) -> String {
-        let Some(port) = self.session.context().and_then(|c| c.parse().ok()) else {
+        let Some(target) = self.cfg_target() else {
             return PORT_ONLY.to_string();
         };
         let prio = a.int("prio").map_or(128, |p| p as u8);
@@ -3664,7 +3691,7 @@ impl Shell {
         }
         let cost = a.int("cost").map(|c| c as u32);
         w.with_device::<L2Switch, _>(self.device, |s, _| {
-            s.configure_port(PortId(port), |c| match handler {
+            target.apply(s, |c| match handler {
                 PORTFAST => c.portfast = true,
                 NO_PORTFAST => c.portfast = false,
                 SPAN_COST => c.stp_cost = cost,
@@ -3680,13 +3707,14 @@ impl Shell {
     fn switchport(&mut self, w: &mut World, handler: u32, a: &Args) -> String {
         let id = self.device;
         // Inside `interface vlan N` the context is not a port number.
-        let Some(port) = self.session.context().and_then(|c| c.parse().ok()) else {
+        let Some(target) = self.cfg_target() else {
             return PORT_ONLY.to_string();
         };
-        let port = PortId(port);
         let mut notice = String::new();
         {
-            let c = w.device::<L2Switch>(id).port(port).expect("port in range");
+            let c = target
+                .config(w.device::<L2Switch>(id))
+                .expect("port in range");
             let dynamic_now = c.mode.is_dynamic();
             if (handler == SW_NONEGOTIATE && dynamic_now)
                 || (matches!(handler, SW_MODE_AUTO | SW_MODE_DESIRABLE) && c.nonegotiate)
@@ -3711,7 +3739,7 @@ impl Shell {
             notice = format!("% Access VLAN does not exist. Creating vlan {vid}");
         }
         w.with_device::<L2Switch, _>(id, |s, _| {
-            s.configure_port(port, |c| match handler {
+            target.apply(s, |c| match handler {
                 SW_MODE_ACCESS => c.mode = PortMode::Access,
                 NO_SW_MODE | SW_MODE_AUTO => c.mode = PortMode::DynamicAuto,
                 SW_MODE_DESIRABLE => c.mode = PortMode::DynamicDesirable,
@@ -3885,46 +3913,18 @@ pub fn switch_config(s: &L2Switch) -> String {
     }
     o += &dhcp_config(s.l3());
     let default = netdev::PortConfig::default();
+    for (g, c) in s.groups() {
+        o += &format!("interface Port-channel{g}\n");
+        o += &port_body(c);
+        o += "!\n";
+    }
     for p in 0..s.n_ports() {
         let c = s.port(kernel::PortId(p)).expect("port in range");
         if *c == default {
             continue;
         }
         o += &format!("interface FastEthernet0/{}\n", p + 1);
-        match c.mode {
-            PortMode::Trunk => o += " switchport mode trunk\n",
-            PortMode::Access => o += " switchport mode access\n",
-            PortMode::DynamicDesirable => o += " switchport mode dynamic desirable\n",
-            PortMode::DynamicAuto => {}
-        }
-        if c.nonegotiate {
-            o += " switchport nonegotiate\n";
-        }
-        if c.access_vlan != DEFAULT_VLAN {
-            o += &format!(" switchport access vlan {}\n", c.access_vlan);
-        }
-        if c.native_vlan != DEFAULT_VLAN {
-            o += &format!(" switchport trunk native vlan {}\n", c.native_vlan);
-        }
-        if c.allowed != all_vlans() {
-            o += &format!(
-                " switchport trunk allowed vlan {}\n",
-                format_vlan_list(&c.allowed)
-            );
-        }
-        o += &m3b::psec_lines(c);
-        if c.shutdown {
-            o += " shutdown\n";
-        }
-        if c.portfast {
-            o += " spanning-tree portfast\n";
-        }
-        if let Some(cost) = c.stp_cost {
-            o += &format!(" spanning-tree cost {cost}\n");
-        }
-        if let Some(p) = c.stp_priority {
-            o += &format!(" spanning-tree port-priority {p}\n");
-        }
+        o += &port_body(c);
         o += "!\n";
     }
     let l3 = s.l3();
@@ -3962,6 +3962,49 @@ pub fn switch_config(s: &L2Switch) -> String {
     o + "end"
 }
 
+/// The lines of a switch port or port-channel inside its `interface` block.
+fn port_body(c: &netdev::PortConfig) -> String {
+    let mut o = String::new();
+    match c.mode {
+        PortMode::Trunk => o += " switchport mode trunk\n",
+        PortMode::Access => o += " switchport mode access\n",
+        PortMode::DynamicDesirable => o += " switchport mode dynamic desirable\n",
+        PortMode::DynamicAuto => {}
+    }
+    if c.nonegotiate {
+        o += " switchport nonegotiate\n";
+    }
+    if c.access_vlan != DEFAULT_VLAN {
+        o += &format!(" switchport access vlan {}\n", c.access_vlan);
+    }
+    if c.native_vlan != DEFAULT_VLAN {
+        o += &format!(" switchport trunk native vlan {}\n", c.native_vlan);
+    }
+    if c.allowed != all_vlans() {
+        o += &format!(
+            " switchport trunk allowed vlan {}\n",
+            format_vlan_list(&c.allowed)
+        );
+    }
+    o += &m3b::psec_lines(c);
+    if c.shutdown {
+        o += " shutdown\n";
+    }
+    if c.portfast {
+        o += " spanning-tree portfast\n";
+    }
+    if let Some(cost) = c.stp_cost {
+        o += &format!(" spanning-tree cost {cost}\n");
+    }
+    if let Some(p) = c.stp_priority {
+        o += &format!(" spanning-tree port-priority {p}\n");
+    }
+    if let Some(m) = c.channel {
+        o += &format!(" channel-group {} mode {}\n", m.group, m.mode.word());
+    }
+    o
+}
+
 /// Switch ports are numbered from 1 in names (Fa0/1 is port 0).
 fn show_macs(s: &L2Switch, now: SimTime) -> String {
     let mut o = format!("{:<6}{:<16}{}", "Vlan", "Mac Address", "Port");
@@ -3971,7 +4014,7 @@ fn show_macs(s: &L2Switch, now: SimTime) -> String {
             "\n{:<6}{:<16}{}",
             e.vlan,
             e.mac.to_string(),
-            fa(e.port.0 as usize)
+            etherchannel::port_label(s, e.port.0 as usize)
         );
     }
     if table.is_empty() {
@@ -4030,10 +4073,13 @@ fn show_spanning_tree(s: &L2Switch, only: Option<u16>) -> String {
             None => o += "             This bridge is the root\n",
             Some(rp) => {
                 o += &format!(
-                    "             Cost        {}\n             Port        {} (FastEthernet0/{})\n",
+                    "             Cost        {}\n             Port        {} ({})\n",
                     root.cost,
                     rp + 1,
-                    rp + 1
+                    match s.bundle_of(kernel::PortId(rp as u16)) {
+                        Some((g, _)) => format!("Port-channel{g}"),
+                        None => format!("FastEthernet0/{}", rp + 1),
+                    }
                 )
             }
         }
@@ -4072,7 +4118,7 @@ fn show_spanning_tree(s: &L2Switch, only: Option<u16>) -> String {
             };
             o += &format!(
                 "\n{:<20}{:<5}{:<4}{:<10}{:<9}{}",
-                fa(p),
+                etherchannel::port_label(s, p),
                 role,
                 sts,
                 pv.cost,
@@ -4092,7 +4138,9 @@ fn show_vlan_brief(s: &L2Switch) -> String {
         let ports: Vec<String> = (0..s.n_ports())
             .filter(|p| {
                 let c = s.port(kernel::PortId(*p)).expect("port in range");
-                !s.is_trunk(kernel::PortId(*p)) && c.access_vlan == id
+                !s.is_trunk(kernel::PortId(*p))
+                    && c.access_vlan == id
+                    && s.bundle_of(kernel::PortId(*p)).is_none()
             })
             .map(|p| fa(p as usize))
             .collect();
@@ -4152,7 +4200,7 @@ Trunking VLANs Enabled: {allowed}",
 fn show_trunks(s: &L2Switch) -> String {
     let trunks: Vec<(usize, &netdev::PortConfig)> = (0..s.n_ports())
         .filter_map(|p| s.port(kernel::PortId(p)).map(|c| (p as usize, c)))
-        .filter(|(p, _)| s.is_trunk(kernel::PortId(*p as u16)))
+        .filter(|(p, _)| s.is_trunk(kernel::PortId(*p as u16)) && etherchannel::listed(s, *p))
         .collect();
     if trunks.is_empty() {
         return String::new();
@@ -4164,7 +4212,7 @@ fn show_trunks(s: &L2Switch) -> String {
     for (p, c) in &trunks {
         o += &format!(
             "\n{:<12}{:<13}{:<15}{:<14}{}",
-            fa(*p),
+            etherchannel::port_label(s, *p),
             match c.mode {
                 PortMode::DynamicAuto => "auto",
                 PortMode::DynamicDesirable => "desirable",
@@ -4177,7 +4225,11 @@ fn show_trunks(s: &L2Switch) -> String {
     }
     o += &format!("\n\n{:<12}{}", "Port", "Vlans allowed on trunk");
     for (p, c) in &trunks {
-        o += &format!("\n{:<12}{}", fa(*p), format_vlan_list(&c.allowed));
+        o += &format!(
+            "\n{:<12}{}",
+            etherchannel::port_label(s, *p),
+            format_vlan_list(&c.allowed)
+        );
     }
     o += &format!(
         "\n\n{:<12}{}",
@@ -4190,7 +4242,11 @@ fn show_trunks(s: &L2Switch) -> String {
             .copied()
             .filter(|v| s.vlan_exists(*v))
             .collect();
-        o += &format!("\n{:<12}{}", fa(*p), format_vlan_list(&active));
+        o += &format!(
+            "\n{:<12}{}",
+            etherchannel::port_label(s, *p),
+            format_vlan_list(&active)
+        );
     }
     o
 }

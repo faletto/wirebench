@@ -10,6 +10,7 @@ mod dtp;
 mod ethernet;
 mod icmp;
 mod ipv4;
+mod lacp;
 mod ospf;
 mod summary;
 mod tcp;
@@ -25,6 +26,11 @@ pub use dtp::{Dtp, DtpMode, DTP_MULTICAST};
 pub use ethernet::{EtherType, EthernetFrame, VlanTag};
 pub use icmp::{IcmpEcho, IcmpError, IcmpErrorKind};
 pub use ipv4::{IpProto, Ipv4Packet};
+pub use lacp::{
+    LacpInfo, Lacpdu, SLOW_PROTOCOLS, SLOW_PROTOCOLS_TYPE, STATE_ACTIVITY, STATE_AGGREGATION,
+    STATE_COLLECTING, STATE_DEFAULTED, STATE_DISTRIBUTING, STATE_EXPIRED, STATE_SYNC,
+    STATE_TIMEOUT,
+};
 pub use ospf::{
     Dbd, Hello, LsRequest, Lsa, LsaBody, LsaHeader, OspfBody, OspfPacket, RouterLink,
     ALL_DR_ROUTERS, ALL_SPF_ROUTERS, DBD_INIT, DBD_MASTER, DBD_MORE, INITIAL_SEQ, LINK_P2P,

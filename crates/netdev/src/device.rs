@@ -32,6 +32,11 @@ impl<'a> Ctx<'a> {
         self.kernel.port_up(self.device, port)
     }
 
+    /// Switch this port's carrier on or off (see [`Kernel::set_carrier`]).
+    pub fn set_carrier(&mut self, port: PortId, on: bool) {
+        self.kernel.set_carrier(self.device, port, on);
+    }
+
     pub fn transmit(&mut self, port: PortId, frame: Vec<u8>) {
         self.kernel.transmit(self.device, port, frame);
     }
