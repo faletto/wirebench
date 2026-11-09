@@ -1,4 +1,4 @@
-use crate::{record_probe, Ctx, Device, DeviceEvent, ProbeBody, ProbeReply, Resolver};
+use crate::{record_probe, Ctx, Device, DeviceEvent, ProbeBody, ProbeReply, Resolver, Tcp, TcpTx};
 use kernel::{PortId, SimTime};
 use std::any::Any;
 use std::collections::BTreeMap;
@@ -15,6 +15,8 @@ const ARP_TIMEOUT: SimTime = SimTime::from_secs(1);
 /// Timer tokens with this bit set belong to the DHCP client; the low bits are the generation of
 /// the state they were set in. ARP timer tokens are 32-bit addresses, so the two never clash.
 const DHCP_TIMER: u64 = 1 << 62;
+/// The timer token of TCP retransmission (ARP's tokens are 32-bit addresses).
+const TCP_TICK: u64 = 1 << 44;
 /// First retransmission delay for DISCOVER and REQUEST; it doubles each time up to a cap.
 const DHCP_RETRY: SimTime = SimTime::from_secs(2);
 const DHCP_RETRY_CAP: SimTime = SimTime::from_secs(16);
@@ -113,6 +115,9 @@ pub struct Host {
     pub dhcp: DhcpClient,
     /// Replies to probes this host sent (traceroute), oldest first.
     pub probes: Vec<ProbeReply>,
+    /// TCP connections and UDP sockets.
+    pub tcp: Tcp,
+    tcp_armed: Option<SimTime>,
 }
 
 impl Host {
@@ -134,6 +139,8 @@ impl Host {
             dns: Vec::new(),
             dhcp: DhcpClient::default(),
             probes: Vec::new(),
+            tcp: Tcp::new(mac.0[5] as u32 * 0x0101_0101),
+            tcp_armed: None,
         }
     }
 
@@ -170,6 +177,66 @@ impl Host {
         };
         self.send_ip(ctx, dst, IpProto::ICMP, echo.emit());
         seq
+    }
+
+    /// Send TCP segments and keep the retransmission timer set.
+    fn tcp_emit(&mut self, ctx: &mut Ctx, out: Vec<TcpTx>) {
+        for tx in out {
+            self.send_ip(ctx, tx.dst, IpProto::TCP, tx.seg.emit(tx.src, tx.dst));
+        }
+        if let Some(d) = self.tcp.next_deadline() {
+            if self.tcp_armed.is_none_or(|a| d < a || a <= ctx.now()) {
+                self.tcp_armed = Some(d);
+                ctx.schedule(SimTime(d.0.saturating_sub(ctx.now().0)), TCP_TICK);
+            }
+        }
+    }
+
+    /// Open a connection to `dst`:`dport`. None without an address or a way to reach `dst`.
+    pub fn tcp_open(&mut self, ctx: &mut Ctx, dst: Ipv4Addr, dport: u16) -> Option<u32> {
+        if self.ip == Ipv4Addr::UNSPECIFIED || dst == self.ip || self.next_hop(dst).is_none() {
+            return None;
+        }
+        let mut out = vec![];
+        let id = self.tcp.connect(ctx.now(), self.ip, dst, dport, &mut out);
+        self.tcp_emit(ctx, out);
+        Some(id)
+    }
+
+    pub fn tcp_write(&mut self, ctx: &mut Ctx, id: u32, data: &[u8]) -> bool {
+        let mut out = vec![];
+        let ok = self.tcp.send(ctx.now(), id, data, &mut out);
+        self.tcp_emit(ctx, out);
+        ok
+    }
+
+    pub fn tcp_take(&mut self, ctx: &mut Ctx, id: u32) -> Vec<u8> {
+        let mut out = vec![];
+        let d = self.tcp.read(ctx.now(), id, &mut out);
+        self.tcp_emit(ctx, out);
+        d
+    }
+
+    pub fn tcp_shut(&mut self, ctx: &mut Ctx, id: u32) {
+        let mut out = vec![];
+        self.tcp.close(ctx.now(), id, &mut out);
+        self.tcp_emit(ctx, out);
+    }
+
+    pub fn tcp_abort(&mut self, ctx: &mut Ctx, id: u32) {
+        let mut out = vec![];
+        self.tcp.abort(id, &mut out);
+        self.tcp_emit(ctx, out);
+    }
+
+    /// Send a UDP datagram from `sport` to `dst`:`dport`.
+    pub fn udp_send(&mut self, ctx: &mut Ctx, dst: Ipv4Addr, sport: u16, dport: u16, data: &[u8]) {
+        let udp = UdpDatagram {
+            src_port: sport,
+            dst_port: dport,
+            payload: data.to_vec(),
+        };
+        self.send_ip(ctx, dst, IpProto::UDP, udp.emit(self.ip, dst));
     }
 
     /// Send an echo request with the given TTL (a traceroute probe). It is not counted as a ping:
@@ -274,6 +341,23 @@ impl Host {
         }
         // A UDP packet for a port nobody listens on: say so, as every host does. This is what
         // ends a UDP traceroute at its destination.
+        if p.proto == IpProto::TCP && p.dst == self.ip {
+            let mut out = vec![];
+            self.tcp
+                .on_ip(ctx.now(), p.src, p.dst, &p.payload, &mut out);
+            self.tcp_emit(ctx, out);
+            return;
+        }
+        if p.proto == IpProto::UDP && p.dst == self.ip {
+            if let Ok(u) = UdpDatagram::parse(&p.payload) {
+                if self
+                    .tcp
+                    .udp_deliver(p.src, u.src_port, u.dst_port, &u.payload)
+                {
+                    return;
+                }
+            }
+        }
         if p.proto == IpProto::UDP && p.dst == self.ip && self.ip != Ipv4Addr::UNSPECIFIED {
             let err = IcmpError {
                 kind: IcmpErrorKind::DestUnreachable(3),
@@ -662,6 +746,12 @@ impl Device for Host {
             }
             DeviceEvent::Timer { token, .. } if token & DHCP_TIMER != 0 => {
                 self.dhcp_timer(ctx, (token & 0xffff_ffff) as u32);
+            }
+            DeviceEvent::Timer { token, .. } if token == TCP_TICK => {
+                self.tcp_armed = None;
+                let mut out = vec![];
+                self.tcp.tick(ctx.now(), &mut out);
+                self.tcp_emit(ctx, out);
             }
             DeviceEvent::Timer { token, .. } => {
                 // ARP resolution timeout for next hop `token`.

@@ -43,7 +43,7 @@ pub fn handle_events(model: &mut TermModel, events: &[Event]) -> Vec<TermAction>
             Event::Text(s) => {
                 for ch in s.chars() {
                     // A password may contain `?`; everywhere else it asks for help.
-                    if ch == '?' && !model.secret {
+                    if ch == '?' && !model.secret && !model.no_help {
                         actions.push(TermAction::Help(model.input()));
                     } else {
                         model.insert(ch.encode_utf8(&mut [0; 4]));
@@ -263,6 +263,15 @@ mod tests {
         let a = handle_events(&mut m, &[Event::Text("show ip?".into())]);
         assert_eq!(a, vec![TermAction::Help("show ip".into())]);
         assert_eq!(m.input(), "show ip");
+    }
+
+    #[test]
+    fn question_mark_is_just_a_character_at_a_pc_prompt() {
+        let mut m = TermModel::default();
+        m.no_help = true;
+        let a = handle_events(&mut m, &[Event::Text("ping?".into())]);
+        assert!(a.is_empty());
+        assert_eq!(m.input(), "ping?");
     }
 
     #[test]

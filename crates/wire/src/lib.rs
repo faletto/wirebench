@@ -15,8 +15,10 @@ mod ipv4;
 mod lacp;
 mod ntp;
 mod ospf;
+mod ssh;
 mod summary;
 mod tcp;
+mod telnet;
 mod udp;
 
 pub use addr::{Ipv4Addr, MacAddr};
@@ -51,8 +53,19 @@ pub use ospf::{
     LINK_STUB, LINK_TRANSIT, LSA_ASBR_SUMMARY, LSA_EXTERNAL, LSA_NETWORK, LSA_ROUTER, LSA_SUMMARY,
     LS_INFINITY, MAX_AGE, MAX_SEQ, OPT_E, ROUTER_B, ROUTER_E,
 };
+pub use ssh::{
+    ident as ssh_ident, parse_ident as ssh_parse_ident, Decoder as SshDecoder, Ident as SshIdent,
+    Packet as SshPacket, MSG_CHANNEL_DATA as SSH_MSG_CHANNEL_DATA,
+    MSG_DISCONNECT as SSH_MSG_DISCONNECT, MSG_USERAUTH_FAILURE as SSH_MSG_USERAUTH_FAILURE,
+    MSG_USERAUTH_REQUEST as SSH_MSG_USERAUTH_REQUEST,
+    MSG_USERAUTH_SUCCESS as SSH_MSG_USERAUTH_SUCCESS, SOFTWARE as SSH_SOFTWARE,
+};
 pub use summary::summarize;
 pub use tcp::TcpSegment;
+pub use telnet::{
+    escape as telnet_escape, Decoder as TelnetDecoder, Negotiation as TelnetNegotiation,
+    Options as TelnetOptions, DO as TELNET_DO, OPT_ECHO as TELNET_ECHO, OPT_SGA as TELNET_SGA,
+};
 pub use udp::UdpDatagram;
 
 /// Parse failure. Parsers never panic on arbitrary input.

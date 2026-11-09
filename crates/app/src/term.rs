@@ -14,6 +14,8 @@ pub struct TermModel {
     pub preedit: String,
     /// The line being typed is a password: nothing is echoed, remembered or recalled.
     pub secret: bool,
+    /// `?` is an ordinary character here (a PC's command prompt has no context help).
+    pub no_help: bool,
 }
 
 const MAX_SCROLLBACK: usize = 5_000;

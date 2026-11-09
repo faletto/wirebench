@@ -209,7 +209,10 @@ impl L2Switch {
             r.clock = clock;
             r
         };
+        // The key pair lives in private storage on a real device: reload and erase keep it.
+        let rsa = self.mgmt.rsa_bits;
         self.mgmt = Mgmt::default();
+        self.mgmt.rsa_bits = rsa;
         self.spanning = SpanningConfig::default();
         self.trees.clear();
         self.stp_pending.clear();
@@ -1454,6 +1457,11 @@ impl Device for L2Switch {
             let own = self.l3.owns_mac(i, dst);
             if own || self.l3.accepts_mac(i, dst) {
                 if let Ok(f) = EthernetFrame::parse(&plain) {
+                    // The vty lines belong to the switch; its layer 3 half needs to know them.
+                    self.l3.set_vty_policy(
+                        self.mgmt.vty_ports(),
+                        self.mgmt.vty.access_class_in.clone(),
+                    );
                     self.l3.receive(ctx, i, f);
                     self.drain_l3(ctx);
                 }

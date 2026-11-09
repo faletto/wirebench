@@ -253,7 +253,7 @@ fn bad_arguments_are_parse_errors() {
     ] {
         let out = run(&mut lab, who, line);
         assert!(
-            out.contains('^') || out.contains("incomplete"),
+            out.contains('^') || out.contains("incomplete") || out.contains("syntax"),
             "{who}: {line} -> {out}"
         );
     }

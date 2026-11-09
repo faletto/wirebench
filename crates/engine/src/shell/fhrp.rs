@@ -497,10 +497,9 @@ impl Shell {
                     return BAD_VIP.to_string();
                 }
             }
-            SB_TIMERS
-                if a.int("hold").unwrap() <= a.int("hello").unwrap() => {
-                    return BAD_TIMERS.to_string();
-                }
+            SB_TIMERS if a.int("hold").unwrap() <= a.int("hello").unwrap() => {
+                return BAD_TIMERS.to_string();
+            }
             _ => {}
         }
         let (hello, hold) = (

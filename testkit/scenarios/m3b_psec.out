@@ -1,12 +1,12 @@
 
 == pc1
-pc1>ipconfig set 10.0.0.1 255.255.255.0
+C:\>ipconfig set 10.0.0.1 255.255.255.0
 
 == pc3
-pc3>ipconfig set 10.0.0.3 255.255.255.0
+C:\>ipconfig set 10.0.0.3 255.255.255.0
 
 == pc2
-pc2>ipconfig set 10.0.0.2 255.255.255.0
+C:\>ipconfig set 10.0.0.2 255.255.255.0
 
 == sw1
 sw1>enable
@@ -41,7 +41,7 @@ Last Source Address:Vlan   : 0000.0000.0000:0
 Security Violation Count   : 0
 
 == pc1
-pc1>ping 10.0.0.2
+C:\>ping 10.0.0.2
 Reply from 10.0.0.2: time=79us
 Reply from 10.0.0.2: time=41us
 Reply from 10.0.0.2: time=41us
@@ -65,7 +65,7 @@ Secure Port  MaxSecureAddr  CurrentAddr  SecurityViolation  Security Action
 Total Addresses in System (excluding one mac per port)     : 0
 
 == pc3
-pc3>ping 10.0.0.2
+C:\>ping 10.0.0.2
 No reply (timed out).
 No reply (timed out).
 No reply (timed out).
@@ -105,7 +105,7 @@ Secure Port  MaxSecureAddr  CurrentAddr  SecurityViolation  Security Action
 Total Addresses in System (excluding one mac per port)     : 0
 
 == pc1
-pc1>ping 10.0.0.2
+C:\>ping 10.0.0.2
 No reply (timed out).
 No reply (timed out).
 No reply (timed out).
@@ -130,7 +130,7 @@ Fa0/7                        notconnect   1          a-full a-100 10/100BaseTX
 Fa0/8                        notconnect   1          a-full a-100 10/100BaseTX
 
 == pc3
-pc3>ping 10.0.0.2
+C:\>ping 10.0.0.2
 Reply from 10.0.0.2: time=79us
 Reply from 10.0.0.2: time=41us
 Reply from 10.0.0.2: time=41us
@@ -165,7 +165,7 @@ Last Source Address:Vlan   : 0200.0000.0101:1
 Security Violation Count   : 1
 
 == pc1
-pc1>ping 10.0.0.2
+C:\>ping 10.0.0.2
 No reply (timed out).
 No reply (timed out).
 No reply (timed out).
@@ -215,7 +215,7 @@ sw1(config)#errdisable recovery interval 60
 sw1(config)#end
 
 == pc1
-pc1>ping 10.0.0.2
+C:\>ping 10.0.0.2
 No reply (timed out).
 No reply (timed out).
 No reply (timed out).
