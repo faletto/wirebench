@@ -81,7 +81,7 @@ fn clicking_a_device_opens_its_terminal() {
     let at = app.node_centre("pc2").unwrap();
     click(&ctx, &mut app, at);
     assert_eq!(app.active_device(), "pc2");
-    assert_eq!(app.active_prompt(), "pc2>");
+    assert_eq!(app.active_prompt(), "C:\\>");
     let at = app.node_centre("r2").unwrap();
     click(&ctx, &mut app, at);
     assert_eq!(app.active_device(), "r2");

@@ -46,15 +46,15 @@ r3(config)#ip route 10.0.1.0 255.255.255.0 10.0.23.1
 r3(config)#end
 
 == pc1
-pc1>ipconfig set 10.0.1.2 255.255.255.0
-pc1>ipconfig gateway 10.0.1.1
+C:\>ipconfig set 10.0.1.2 255.255.255.0
+C:\>ipconfig gateway 10.0.1.1
 
 == pc2
-pc2>ipconfig set 10.0.2.2 255.255.255.0
-pc2>ipconfig gateway 10.0.2.1
+C:\>ipconfig set 10.0.2.2 255.255.255.0
+C:\>ipconfig gateway 10.0.2.1
 
 == pc1
-pc1>tracert 10.0.2.2
+C:\>tracert 10.0.2.2
 Tracing route to 10.0.2.2 over a maximum of 30 hops
 
   1     25 us     13 us     13 us  10.0.1.1
@@ -63,14 +63,14 @@ Tracing route to 10.0.2.2 over a maximum of 30 hops
   4     66 us     55 us     55 us  10.0.2.2
 
 Trace complete.
-pc1>tracert -h 2 10.0.2.2
+C:\>tracert -h 2 10.0.2.2
 Tracing route to 10.0.2.2 over a maximum of 2 hops
 
   1     13 us     13 us     13 us  10.0.1.1
   2     27 us     27 us     27 us  10.0.12.2
 
 Trace complete.
-pc1>tracert 10.0.9.9
+C:\>tracert 10.0.9.9
 Tracing route to 10.0.9.9 over a maximum of 30 hops
 
   1     13 us     13 us     13 us  10.0.1.1

@@ -27,21 +27,21 @@ C  10.0.10.0/24  directly connected, Vlan10
 C  10.0.20.0/24  directly connected, Vlan20
 
 == pc1
-pc1>ipconfig set 10.0.10.2 255.255.255.0
-pc1>ipconfig gateway 10.0.10.1
+C:\>ipconfig set 10.0.10.2 255.255.255.0
+C:\>ipconfig gateway 10.0.10.1
 
 == pc2
-pc2>ipconfig set 10.0.20.2 255.255.255.0
-pc2>ipconfig gateway 10.0.20.1
+C:\>ipconfig set 10.0.20.2 255.255.255.0
+C:\>ipconfig gateway 10.0.20.1
 
 == pc1
-pc1>ping 10.0.10.1
+C:\>ping 10.0.10.1
 Reply from 10.0.10.1: time=25us
 Reply from 10.0.10.1: time=13us
 Reply from 10.0.10.1: time=13us
 Reply from 10.0.10.1: time=13us
 Sent 4, received 4
-pc1>ping 10.0.20.2
+C:\>ping 10.0.20.2
 No reply (timed out).
 No reply (timed out).
 No reply (timed out).
@@ -59,7 +59,7 @@ C  10.0.10.0/24  directly connected, Vlan10
 C  10.0.20.0/24  directly connected, Vlan20
 
 == pc1
-pc1>ping 10.0.20.2
+C:\>ping 10.0.20.2
 Reply from 10.0.20.2: time=39us
 Reply from 10.0.20.2: time=27us
 Reply from 10.0.20.2: time=27us
@@ -67,7 +67,7 @@ Reply from 10.0.20.2: time=27us
 Sent 4, received 4
 
 == pc2
-pc2>ping 10.0.10.2
+C:\>ping 10.0.10.2
 Reply from 10.0.10.2: time=27us
 Reply from 10.0.10.2: time=27us
 Reply from 10.0.10.2: time=27us
@@ -93,7 +93,7 @@ Codes: C connected, S static
 C  10.0.10.0/24  directly connected, Vlan10
 
 == pc1
-pc1>ping 10.0.20.2
+C:\>ping 10.0.20.2
 Destination unreachable.
 Destination unreachable.
 Destination unreachable.
@@ -114,7 +114,7 @@ Vlan10                10.0.10.1         admin down
 Vlan20                10.0.20.1         up
 
 == pc2
-pc2>ping 10.0.10.2
+C:\>ping 10.0.10.2
 Destination unreachable.
 Destination unreachable.
 Destination unreachable.

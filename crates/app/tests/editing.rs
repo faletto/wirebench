@@ -153,7 +153,7 @@ fn delete_tool_removes_a_device_and_its_cables_and_the_lab_still_works() {
     let pc = app.node_centre("pc1").unwrap();
     click(&ctx, &mut app, pc);
     assert_eq!(app.active_device(), "pc1");
-    assert_eq!(app.active_prompt(), "pc1>");
+    assert_eq!(app.active_prompt(), "C:\\>");
 }
 
 #[test]

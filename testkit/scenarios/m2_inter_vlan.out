@@ -70,21 +70,21 @@ interface GigabitEthernet0/0.30
 end
 
 == pc1
-pc1>ipconfig set 10.0.10.2 255.255.255.0
-pc1>ipconfig gateway 10.0.10.1
+C:\>ipconfig set 10.0.10.2 255.255.255.0
+C:\>ipconfig gateway 10.0.10.1
 
 == pc2
-pc2>ipconfig set 10.0.20.2 255.255.255.0
-pc2>ipconfig gateway 10.0.20.1
+C:\>ipconfig set 10.0.20.2 255.255.255.0
+C:\>ipconfig gateway 10.0.20.1
 
 == pc1
-pc1>ping 10.0.20.2
+C:\>ping 10.0.20.2
 Reply from 10.0.20.2: time=104us
 Reply from 10.0.20.2: time=56us
 Reply from 10.0.20.2: time=56us
 Reply from 10.0.20.2: time=56us
 Sent 4, received 4
-pc1>ping 10.0.10.1
+C:\>ping 10.0.10.1
 Reply from 10.0.10.1: time=28us
 Reply from 10.0.10.1: time=28us
 Reply from 10.0.10.1: time=28us
@@ -113,7 +113,7 @@ GigabitEthernet0/0.20 10.0.20.1         admin down
 GigabitEthernet0/0.30 unassigned        up
 
 == pc1
-pc1>ping 10.0.20.2
+C:\>ping 10.0.20.2
 Destination unreachable.
 Destination unreachable.
 Destination unreachable.
@@ -137,7 +137,7 @@ GigabitEthernet0/0.10 10.0.10.1         admin down
 GigabitEthernet0/0.20 10.0.20.1         admin down
 
 == pc1
-pc1>ping 10.0.10.1
+C:\>ping 10.0.10.1
 No reply (timed out).
 No reply (timed out).
 No reply (timed out).
@@ -151,7 +151,7 @@ r1(config-if)#no shutdown
 r1(config-if)#end
 
 == pc1
-pc1>ping 10.0.20.2
+C:\>ping 10.0.20.2
 Reply from 10.0.20.2: time=56us
 Reply from 10.0.20.2: time=56us
 Reply from 10.0.20.2: time=56us

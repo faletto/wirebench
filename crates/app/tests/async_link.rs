@@ -116,14 +116,25 @@ fn help_and_completion_arrive_late_too() {
     let mut app = App::from_lab_text_delayed(LAB, 2).unwrap();
     let mut d = Driver::new();
     d.frames(&mut app, 6);
-    let p = pc(&mut app);
-    app.apply(p, TermAction::Help("".into()));
+    // A router answers `?` with its commands.
+    let r = app
+        .device_names()
+        .iter()
+        .position(|n| n.starts_with('r'))
+        .expect("a router in the lab");
+    app.select(r);
+    app.apply(r, TermAction::Help("".into()));
     d.frames(&mut app, 4);
     assert!(
-        screen(&app).to_lowercase().contains("ipconfig"),
+        screen(&app).to_lowercase().contains("enable"),
         "{}",
         screen(&app)
     );
+    // A PC has no `?`, but completes with Tab.
+    let p = pc(&mut app);
+    app.apply(p, TermAction::Tab("ipc".into()));
+    d.frames(&mut app, 4);
+    assert_eq!(app.active_input(), "ipconfig ", "{}", screen(&app));
 }
 
 #[test]

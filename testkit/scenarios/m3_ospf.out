@@ -48,16 +48,16 @@ r3(config-if)#no shutdown
 r3(config-if)#end
 
 == pc1
-pc1>ipconfig set 10.0.1.10 255.255.255.0
-pc1>ipconfig gateway 10.0.1.1
+C:\>ipconfig set 10.0.1.10 255.255.255.0
+C:\>ipconfig gateway 10.0.1.1
 
 == pc2
-pc2>ipconfig set 10.0.2.10 255.255.255.0
-pc2>ipconfig gateway 10.0.2.1
+C:\>ipconfig set 10.0.2.10 255.255.255.0
+C:\>ipconfig gateway 10.0.2.1
 
 == pc3
-pc3>ipconfig set 10.0.3.10 255.255.255.0
-pc3>ipconfig gateway 10.0.3.1
+C:\>ipconfig set 10.0.3.10 255.255.255.0
+C:\>ipconfig gateway 10.0.3.1
 
 -- 60 s pass
 
@@ -113,13 +113,13 @@ Link ID         ADV Router      Age         Seq#       Checksum
 10.0.0.3        3.3.3.3         19          0x80000002 0xD94A
 
 == pc1
-pc1>ping 10.0.3.10
+C:\>ping 10.0.3.10
 Reply from 10.0.3.10: time=101us
 Reply from 10.0.3.10: time=63us
 Reply from 10.0.3.10: time=55us
 Reply from 10.0.3.10: time=55us
 Sent 4, received 4
-pc1>ping 10.0.2.10
+C:\>ping 10.0.2.10
 Reply from 10.0.2.10: time=90us
 Reply from 10.0.2.10: time=55us
 Reply from 10.0.2.10: time=55us
@@ -160,7 +160,7 @@ C  10.0.1.0/24  directly connected, GigabitEthernet0/1
 O  10.0.2.0/24  [110/2] via 10.0.0.2, GigabitEthernet0/0
 
 == pc1
-pc1>ping 10.0.3.10
+C:\>ping 10.0.3.10
 Destination unreachable.
 Destination unreachable.
 Destination unreachable.
