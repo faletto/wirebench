@@ -2981,9 +2981,7 @@ impl Shell {
             Pending::VtyUser { .. } | Pending::VtyPassword { .. } => {
                 self.answer_vty(w, pending, line)
             }
-            Pending::SshPassword { user, dst } => {
-                self.answer_ssh_password(w, user, dst, line)
-            }
+            Pending::SshPassword { user, dst } => self.answer_ssh_password(w, user, dst, line),
             Pending::Banner { delim, mut text } => {
                 match line.find(delim) {
                     Some(end) => {

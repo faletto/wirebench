@@ -343,13 +343,17 @@ impl Host {
         // ends a UDP traceroute at its destination.
         if p.proto == IpProto::TCP && p.dst == self.ip {
             let mut out = vec![];
-            self.tcp.on_ip(ctx.now(), p.src, p.dst, &p.payload, &mut out);
+            self.tcp
+                .on_ip(ctx.now(), p.src, p.dst, &p.payload, &mut out);
             self.tcp_emit(ctx, out);
             return;
         }
         if p.proto == IpProto::UDP && p.dst == self.ip {
             if let Ok(u) = UdpDatagram::parse(&p.payload) {
-                if self.tcp.udp_deliver(p.src, u.src_port, u.dst_port, &u.payload) {
+                if self
+                    .tcp
+                    .udp_deliver(p.src, u.src_port, u.dst_port, &u.payload)
+                {
                     return;
                 }
             }

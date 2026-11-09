@@ -61,11 +61,11 @@ pub use ssh::{
     MSG_USERAUTH_SUCCESS as SSH_MSG_USERAUTH_SUCCESS, SOFTWARE as SSH_SOFTWARE,
 };
 pub use summary::summarize;
+pub use tcp::TcpSegment;
 pub use telnet::{
     escape as telnet_escape, Decoder as TelnetDecoder, Negotiation as TelnetNegotiation,
     Options as TelnetOptions, DO as TELNET_DO, OPT_ECHO as TELNET_ECHO, OPT_SGA as TELNET_SGA,
 };
-pub use tcp::TcpSegment;
 pub use udp::UdpDatagram;
 
 /// Parse failure. Parsers never panic on arbitrary input.

@@ -1171,14 +1171,16 @@ impl Router {
         let Ok(u) = UdpDatagram::parse(&p.payload) else {
             return false;
         };
-        self.tcp.udp_deliver(p.src, u.src_port, u.dst_port, &u.payload)
+        self.tcp
+            .udp_deliver(p.src, u.src_port, u.dst_port, &u.payload)
     }
 
     /// A TCP segment for one of this router's addresses.
     fn on_tcp(&mut self, ctx: &mut Ctx, p: &Ipv4Packet) {
-        let (ports, access_class) = self.vty_policy.clone().unwrap_or_else(|| {
-            (self.mgmt.vty_ports(), self.mgmt.vty.access_class_in.clone())
-        });
+        let (ports, access_class) = self
+            .vty_policy
+            .clone()
+            .unwrap_or_else(|| (self.mgmt.vty_ports(), self.mgmt.vty.access_class_in.clone()));
         self.tcp.set_listeners(&ports);
         let mut out = vec![];
         if let Ok(seg) = wire::TcpSegment::parse(&p.payload) {
@@ -1193,7 +1195,8 @@ impl Router {
                 self.tcp.set_listeners(&[]);
             }
         }
-        self.tcp.on_ip(ctx.now(), p.src, p.dst, &p.payload, &mut out);
+        self.tcp
+            .on_ip(ctx.now(), p.src, p.dst, &p.payload, &mut out);
         self.tcp_emit(ctx, out);
     }
 
@@ -1266,7 +1269,14 @@ impl Router {
     }
 
     /// Send a UDP datagram from a bound socket (or any port) to `dst`.
-    pub fn udp_send(&mut self, ctx: &mut Ctx, dst: Ipv4Addr, sport: u16, dport: u16, data: &[u8]) -> bool {
+    pub fn udp_send(
+        &mut self,
+        ctx: &mut Ctx,
+        dst: Ipv4Addr,
+        sport: u16,
+        dport: u16,
+        data: &[u8],
+    ) -> bool {
         let Some(src) = self.source_for(dst) else {
             return false;
         };

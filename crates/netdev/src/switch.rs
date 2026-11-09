@@ -1458,8 +1458,10 @@ impl Device for L2Switch {
             if own || self.l3.accepts_mac(i, dst) {
                 if let Ok(f) = EthernetFrame::parse(&plain) {
                     // The vty lines belong to the switch; its layer 3 half needs to know them.
-                    self.l3
-                        .set_vty_policy(self.mgmt.vty_ports(), self.mgmt.vty.access_class_in.clone());
+                    self.l3.set_vty_policy(
+                        self.mgmt.vty_ports(),
+                        self.mgmt.vty.access_class_in.clone(),
+                    );
                     self.l3.receive(ctx, i, f);
                     self.drain_l3(ctx);
                 }

@@ -175,8 +175,8 @@ impl Decoder {
             if self.buf.len() < 5 {
                 return Ok(out);
             }
-            let n = u32::from_be_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]])
-                as usize;
+            let n =
+                u32::from_be_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]]) as usize;
             if n == 0 || n > 35_000 {
                 return Err(ParseError::BadLength);
             }
@@ -197,11 +197,17 @@ mod tests {
 
     #[test]
     fn identification_lines() {
-        assert_eq!(parse_ident("SSH-2.0-OpenSSH_9.6"), Ident::V2("OpenSSH_9.6".into()));
+        assert_eq!(
+            parse_ident("SSH-2.0-OpenSSH_9.6"),
+            Ident::V2("OpenSSH_9.6".into())
+        );
         assert_eq!(parse_ident("SSH-1.99-x"), Ident::V2("x".into()));
         assert_eq!(parse_ident("SSH-1.5-old"), Ident::V1);
         assert_eq!(parse_ident("HELO"), Ident::NotSsh);
-        assert_eq!(String::from_utf8(ident()).unwrap(), "SSH-2.0-wirebench_1.0\r\n");
+        assert_eq!(
+            String::from_utf8(ident()).unwrap(),
+            "SSH-2.0-wirebench_1.0\r\n"
+        );
     }
 
     #[test]
@@ -224,7 +230,10 @@ mod tests {
         }
         assert_eq!(ident_seen.as_deref(), Some("SSH-2.0-wirebench_1.0"));
         assert_eq!(pkts.len(), 2);
-        assert_eq!(pkts[0].parse_auth().unwrap(), ("admin".into(), "s3cret".into()));
+        assert_eq!(
+            pkts[0].parse_auth().unwrap(),
+            ("admin".into(), "s3cret".into())
+        );
         assert_eq!(pkts[1].parse_data().unwrap(), b"show version\r");
     }
 

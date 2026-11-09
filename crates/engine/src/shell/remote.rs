@@ -12,11 +12,11 @@
 //! rest of the terminal handles prompts separately from output.
 
 use super::*;
-use netdev::{Tcp, TcpFailure, TcpState, TELNET_PORT, User, SSH_PORT};
+use netdev::{Tcp, TcpFailure, TcpState, User, SSH_PORT, TELNET_PORT};
 use wire::{
     ssh_ident, ssh_parse_ident, telnet_escape, SshDecoder, SshIdent, SshPacket, TelnetDecoder,
-    TelnetOptions, TELNET_ECHO, TELNET_SGA, SSH_MSG_CHANNEL_DATA, SSH_MSG_DISCONNECT,
-    SSH_MSG_USERAUTH_FAILURE, SSH_MSG_USERAUTH_REQUEST, SSH_MSG_USERAUTH_SUCCESS,
+    TelnetOptions, SSH_MSG_CHANNEL_DATA, SSH_MSG_DISCONNECT, SSH_MSG_USERAUTH_FAILURE,
+    SSH_MSG_USERAUTH_REQUEST, SSH_MSG_USERAUTH_SUCCESS, TELNET_ECHO, TELNET_SGA,
 };
 
 // Handler ids 430..469.
@@ -117,7 +117,14 @@ pub(super) fn remote_commands(
         ),
         (
             "crypto key generate rsa modulus <bits:int(360..4096)>",
-            &["Cryptography", "Keys", "Generate", "RSA key pair", "Size", "Bits"],
+            &[
+                "Cryptography",
+                "Keys",
+                "Generate",
+                "RSA key pair",
+                "Size",
+                "Bits",
+            ],
             KEYGEN_BITS,
         ),
         (
@@ -157,7 +164,11 @@ pub(super) fn remote_commands(
         ),
         (
             "transport input none",
-            &["Line transport", "Incoming connections", "No incoming connections"],
+            &[
+                "Line transport",
+                "Incoming connections",
+                "No incoming connections",
+            ],
             TRANSPORT_NONE,
         ),
     ];
@@ -263,7 +274,6 @@ impl Net for Router {
         self.tcp_abort(ctx, conn)
     }
 }
-
 
 #[derive(Clone, Copy, Debug)]
 struct Endpoint {
@@ -406,24 +416,22 @@ impl Remote {
                 }
                 input = data;
             }
-            Proto::Ssh => {
-                match self.s_ssh.packets(&bytes) {
-                    Ok(pkts) => {
-                        for p in pkts {
-                            match p.msg {
-                                SSH_MSG_CHANNEL_DATA if self.authed => {
-                                    if let Ok(d) = p.parse_data() {
-                                        input.extend(d);
-                                    }
+            Proto::Ssh => match self.s_ssh.packets(&bytes) {
+                Ok(pkts) => {
+                    for p in pkts {
+                        match p.msg {
+                            SSH_MSG_CHANNEL_DATA if self.authed => {
+                                if let Ok(d) = p.parse_data() {
+                                    input.extend(d);
                                 }
-                                SSH_MSG_DISCONNECT => self.server_done = true,
-                                _ => {}
                             }
+                            SSH_MSG_DISCONNECT => self.server_done = true,
+                            _ => {}
                         }
                     }
-                    Err(_) => self.server_done = true,
                 }
-            }
+                Err(_) => self.server_done = true,
+            },
         }
         self.partial.extend(input);
         let mut out = String::new();
@@ -512,7 +520,11 @@ impl Remote {
             w.run_to_idle();
             let tail = format!("[Connection to {} closed by foreign host]", self.addr);
             let t = text.trim_end_matches('\n').to_string();
-            text = if t.is_empty() { tail } else { format!("{t}\n\n{tail}") };
+            text = if t.is_empty() {
+                tail
+            } else {
+                format!("{t}\n\n{tail}")
+            };
         }
         (text.trim_end_matches('\n').to_string(), over)
     }
@@ -550,7 +562,10 @@ impl Shell {
                 self.close_requested = true;
             } else {
                 out += "\nUser Access Verification\n\n";
-                self.pending = Some(Pending::VtyPassword { tries: 0, user: None });
+                self.pending = Some(Pending::VtyPassword {
+                    tries: 0,
+                    user: None,
+                });
             }
         }
         out
@@ -591,7 +606,10 @@ impl Shell {
         self.pending = Some(if user.is_some() {
             Pending::VtyUser { tries: tries + 1 }
         } else {
-            Pending::VtyPassword { tries: tries + 1, user: None }
+            Pending::VtyPassword {
+                tries: tries + 1,
+                user: None,
+            }
         });
         if user.is_some() {
             "% Login invalid".to_string()
@@ -689,7 +707,9 @@ impl Shell {
                 };
                 self.with_mgmt(w, |m| m.vty.transport = netdev::Transport { telnet, ssh });
             }
-            TELNET => return self.connect(w, Proto::Telnet, Ipv4Addr(a.ipv4("dst").unwrap()), None),
+            TELNET => {
+                return self.connect(w, Proto::Telnet, Ipv4Addr(a.ipv4("dst").unwrap()), None)
+            }
             SSH => {
                 let dst = Ipv4Addr(a.ipv4("dst").unwrap());
                 let user = a.word("user").unwrap().to_string();
@@ -712,7 +732,10 @@ impl Shell {
 
     fn show_tcp_brief(&self, w: &World) -> String {
         let t = tcp_of(w, self.kind, self.device);
-        let mut o = format!("{:<5} {:<24}{:<24}(state)", "TCB", "Local Address", "Foreign Address");
+        let mut o = format!(
+            "{:<5} {:<24}{:<24}(state)",
+            "TCB", "Local Address", "Foreign Address"
+        );
         for c in t.conns() {
             o += &format!(
                 "\n{:<5} {:<24}{:<24}{}",
@@ -737,7 +760,11 @@ impl Shell {
         auth: Option<(String, String)>,
     ) -> String {
         let (kind, dev) = (self.kind, self.device);
-        let port = if proto == Proto::Telnet { TELNET_PORT } else { SSH_PORT };
+        let port = if proto == Proto::Telnet {
+            TELNET_PORT
+        } else {
+            SSH_PORT
+        };
         let Some(conn) = with_net(w, kind, dev, |n, c| n.open(c, dst, port)) else {
             return NO_ROUTE.to_string();
         };
@@ -859,7 +886,10 @@ impl Remote {
             .write(w, &SshPacket::auth_password(user, password).emit());
         w.run_to_idle();
         let bytes = self.server.take(w);
-        let pkts = self.s_ssh.packets(&bytes).map_err(|_| BAD_SSH_SERVER.to_string())?;
+        let pkts = self
+            .s_ssh
+            .packets(&bytes)
+            .map_err(|_| BAD_SSH_SERVER.to_string())?;
         let who = pkts
             .iter()
             .find(|p| p.msg == SSH_MSG_USERAUTH_REQUEST)
@@ -888,8 +918,10 @@ impl Remote {
             .map(|p| p.iter().any(|p| p.msg == SSH_MSG_USERAUTH_SUCCESS))
             .unwrap_or(false);
         let Some(u) = who.filter(|_| ok) else {
-            self.server
-                .write(w, &SshPacket::disconnect("Too many authentication failures").emit());
+            self.server.write(
+                w,
+                &SshPacket::disconnect("Too many authentication failures").emit(),
+            );
             return Err(AUTH_FAILED.to_string());
         };
         self.authed = true;
@@ -901,7 +933,11 @@ impl Remote {
 
 /// Find the device that accepted the connection from `client` to `server`, by looking at the
 /// connection tables. (The shell has no map of the lab, only the world.)
-fn find_server(w: &mut World, client: (Ipv4Addr, u16), server: (Ipv4Addr, u16)) -> Option<Endpoint> {
+fn find_server(
+    w: &mut World,
+    client: (Ipv4Addr, u16),
+    server: (Ipv4Addr, u16),
+) -> Option<Endpoint> {
     for i in 0..w.device_count() {
         let dev = DeviceId(i as u32);
         let kind = if w.is_device::<Router>(dev) {
@@ -918,10 +954,15 @@ fn find_server(w: &mut World, client: (Ipv4Addr, u16), server: (Ipv4Addr, u16)) 
         if let Some(conn) = conn {
             // Take it off the list of connections waiting to be accepted.
             match kind {
-                Kind::Router => w.with_device::<Router, _>(dev, |r, _| while r.tcp.accept().is_some() {}),
-                _ => w.with_device::<L2Switch, _>(dev, |s, _| {
-                    while s.l3_mut().tcp.accept().is_some() {}
-                }),
+                Kind::Router => {
+                    w.with_device::<Router, _>(dev, |r, _| while r.tcp.accept().is_some() {})
+                }
+                _ => w.with_device::<L2Switch, _>(
+                    dev,
+                    |s, _| {
+                        while s.l3_mut().tcp.accept().is_some() {}
+                    },
+                ),
             }
             return Some(Endpoint { dev, kind, conn });
         }

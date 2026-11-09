@@ -210,9 +210,11 @@ impl Canvas {
             self.view.fitted = false;
         }
         // Wheel / pinch zoom about the pointer.
+        // Only when the pointer is over the canvas itself: a window floating above it (a device
+        // terminal) keeps its own scrolling, and the topology stays put.
         if let Some(ptr) = ui
             .input(|i| i.pointer.hover_pos())
-            .filter(|p| rect.contains(*p))
+            .filter(|_| ui.rect_contains_pointer(rect))
         {
             let (scroll, pinch) = ui.input(|i| (i.smooth_scroll_delta.y, i.zoom_delta()));
             let factor = pinch * (scroll * 0.0015).exp();

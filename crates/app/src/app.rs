@@ -350,6 +350,16 @@ impl App {
         self.frame_ms
     }
 
+    /// Where the topology canvas was drawn last frame.
+    pub fn canvas_rect(&self) -> egui::Rect {
+        self.canvas_rect
+    }
+
+    /// The topology canvas's zoom, 1.0 when not zoomed.
+    pub fn canvas_zoom(&self) -> f32 {
+        self.canvas.view.zoom
+    }
+
     /// Number of devices on the canvas.
     /// Simulated time so far, in nanoseconds.
     pub fn sim_time_ns(&self) -> u64 {
