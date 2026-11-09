@@ -12,7 +12,7 @@
 | TCP and UDP sockets | `netdev/src/tcp.rs`, `provenance/tcp-udp.md` | Handshake, streams, retransmission, close, resets on hosts, routers and switches; UDP port table. No options, congestion control or out-of-order buffering |
 | Telnet and SSH | `engine/src/shell/remote.rs`, `wire/src/{telnet,ssh}.rs`, `provenance/remote-login.md` | `telnet` / `ssh -l` clients on every device; vty login (`login`, `login local`, `username`, `transport input`, `access-class`, `crypto key generate rsa`). SSH framing is real but unencrypted |
 | `do` in config modes | `clish/src/session.rs` | Runs exec commands from config modes; help and Tab now work after `do` |
-| PC command prompt | `engine/src/shell/pc.rs` | `C:\>` prompt, no `?` help (the key types a `?`), `help` command, Windows wording for errors, `ipconfig /all /release /renew`, `netsh interface ip set address <name> static <ip> <mask> [gw]` / `dhcp`, `netsh interface ip show config`. The older `ipconfig set/gateway/dhcp` forms still work. Not done: `cls`, case-insensitive commands |
+| PC command prompt | `engine/src/shell/pc.rs` | `C:\>` prompt, no `?` help (the key types a `?`), `help` command, Windows wording for errors, `ipconfig /all /release /renew`, `netsh interface ip set address <name> static <ip> <mask> [gw]` / `dhcp`, `netsh interface ip show config`. The older `ipconfig set/gateway/dhcp` forms still work. `cls` clears the screen; commands ignore case (user names after `-l` keep theirs) |
 | Port security | `provenance/port-security.md` | Limits, sticky addresses, protect/restrict/shutdown, err-disabled and recovery, `show interfaces status` |
 | EtherChannel | `wire` LACPDU, `provenance/etherchannel.md` | Static and LACP bundles, `interface port-channel`, `interface range`, load-balance methods; a bundle counts as one port for spanning tree. PAgP (Cisco-only) is not simulated |
 | CDP / LLDP | `provenance/cdp-lldp.md` | Neighbour discovery on switches and routers. **Off by default** (a real device runs CDP from the start); enable with `cdp run`. On by default, its constant timer stopped the app ever going idle and ~25 tests failed |
@@ -44,4 +44,4 @@ switch port now drops the link at both ends (before, the neighbour still saw it 
   with NAT to an "internet" router and ACLs on the VTY lines).
 - Packet inspector support for the new frame types (LACPDU, CDP, LLDP, NTP, HSRP/VRRP).
 - PAgP, if ever wanted (Cisco-only; not planned).
-- SSH/Telnet leftovers: `show users`, `show ssh`, `exec-timeout`, public-key auth, host names.
+- SSH/Telnet leftovers: `exec-timeout`, public-key auth, host names (no resolver yet). `show users` and `show ssh` exist; telnet users are not named.

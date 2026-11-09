@@ -455,3 +455,52 @@ fn the_same_session_gives_the_same_trace() {
     };
     assert_eq!(run(), run());
 }
+
+#[test]
+fn show_users_and_show_ssh_list_the_live_sessions_and_forget_the_ended_ones() {
+    let mut lab = setup();
+    enable_ssh(&mut lab, R2);
+    let mut far = open(&lab, R2);
+    let none = far.run(&mut lab, &["show ssh"]);
+    assert_eq!(none, "%No SSHv2 server connections running.");
+    let mut r1 = open(&lab, R1);
+    r1.run(&mut lab, &["ssh -l admin 10.0.0.2", "s3cret"]);
+    let ssh = far.run(&mut lab, &["show ssh"]);
+    assert!(
+        ssh.contains("Session started") && ssh.contains("admin") && ssh.contains("2.0"),
+        "{ssh}"
+    );
+    let users = far.run(&mut lab, &["show users"]);
+    assert!(
+        users.contains("0 con 0") && users.contains("1 vty 0") && users.contains("10.0.0.1"),
+        "{users}"
+    );
+    assert!(users.contains("admin"), "{users}");
+    // A telnet session shows in `show users` but not in `show ssh`.
+    let mut pc = open(&lab, PC);
+    far.run(
+        &mut lab,
+        &[
+            "enable",
+            "configure terminal",
+            "line vty 0 4",
+            "no login",
+            "end",
+        ],
+    );
+    pc.run(&mut lab, &["telnet 10.0.0.2"]);
+    assert!(far.run(&mut lab, &["show users"]).contains("2 vty 1"));
+    assert_eq!(
+        far.run(&mut lab, &["show ssh"])
+            .matches("Session started")
+            .count(),
+        1
+    );
+    r1.run(&mut lab, &["exit"]);
+    pc.run(&mut lab, &["exit"]);
+    assert_eq!(
+        far.run(&mut lab, &["show ssh"]),
+        "%No SSHv2 server connections running."
+    );
+    assert!(!far.run(&mut lab, &["show users"]).contains("vty"));
+}

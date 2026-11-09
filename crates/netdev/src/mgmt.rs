@@ -92,6 +92,9 @@ pub struct Mgmt {
     pub domain_name: Option<String>,
     /// `crypto key generate rsa`: the modulus size of the key pair, once there is one.
     pub rsa_bits: Option<u16>,
+    /// Who logged in over SSH, by the caller's address and port. Entries for connections that
+    /// have ended are ignored (and dropped) when the sessions are listed.
+    pub ssh_users: Vec<((wire::Ipv4Addr, u16), String)>,
 }
 
 impl Default for Mgmt {
@@ -107,6 +110,7 @@ impl Default for Mgmt {
             users: Vec::new(),
             domain_name: None,
             rsa_bits: None,
+            ssh_users: Vec::new(),
         }
     }
 }

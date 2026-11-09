@@ -40,6 +40,8 @@ pub(super) const TELNET: u32 = 446;
 pub(super) const SSH: u32 = 447;
 pub(super) const SHOW_IP_SSH: u32 = 448;
 pub(super) const SHOW_TCP_BRIEF: u32 = 449;
+pub(super) const SHOW_USERS: u32 = 450;
+pub(super) const SHOW_SSH: u32 = 451;
 
 pub(super) const USERNAME_PROMPT: &str = "Username: ";
 const NO_ROUTE: &str = "% Destination unreachable; gateway or host down";
@@ -197,6 +199,18 @@ pub(super) fn remote_commands(
         "show ip ssh",
         &["Show", "IP", "SSH server state"],
         h(SHOW_IP_SSH),
+    );
+    g.cmd(
+        &[user, privileged],
+        "show users",
+        &["Show", "Who is logged in"],
+        h(SHOW_USERS),
+    );
+    g.cmd(
+        &[user, privileged],
+        "show ssh",
+        &["Show", "SSH sessions to this device"],
+        h(SHOW_SSH),
     );
     g.cmd(
         &[user, privileged],
@@ -725,9 +739,89 @@ impl Shell {
                 };
             }
             SHOW_TCP_BRIEF => return self.show_tcp_brief(w),
+            SHOW_USERS => return self.show_users(w),
+            SHOW_SSH => return self.show_ssh(w),
             _ => {}
         }
         String::new()
+    }
+
+    /// The sessions other devices have open to this one's vty lines: connections that are up on
+    /// the telnet or SSH port, oldest first.
+    fn vty_sessions(&self, w: &World) -> Vec<(u16, (Ipv4Addr, u16))> {
+        tcp_of(w, self.kind, self.device)
+            .conns()
+            .filter(|c| {
+                c.state == TcpState::Established && [TELNET_PORT, SSH_PORT].contains(&c.local.1)
+            })
+            .map(|c| (c.local.1, c.remote))
+            .collect()
+    }
+
+    fn show_users(&self, w: &World) -> String {
+        let users = self
+            .mgmt(w)
+            .map(|m| m.ssh_users.clone())
+            .unwrap_or_default();
+        let mut o = format!(
+            "{:<4}{:<11}{:<11}{:<21}{:<11}{}",
+            "", "Line", "User", "Host(s)", "Idle", "Location"
+        );
+        o += &format!(
+            "\n{:<4}{:<11}{:<11}{:<21}{}",
+            "*", "0 con 0", "", "idle", "00:00:00"
+        );
+        for (i, (_, remote)) in self.vty_sessions(w).iter().enumerate() {
+            let user = users
+                .iter()
+                .find(|(k, _)| k == remote)
+                .map_or("", |(_, u)| u.as_str());
+            o += &format!(
+                "\n{:<4}{:<11}{:<11}{:<21}{:<11}{}",
+                "",
+                format!("{} vty {i}", i + 1),
+                user,
+                "idle",
+                "00:00:00",
+                remote.0
+            );
+        }
+        o
+    }
+
+    fn show_ssh(&self, w: &World) -> String {
+        let users = self
+            .mgmt(w)
+            .map(|m| m.ssh_users.clone())
+            .unwrap_or_default();
+        let rows: Vec<String> = self
+            .vty_sessions(w)
+            .iter()
+            .filter(|(port, _)| *port == SSH_PORT)
+            .enumerate()
+            .map(|(i, (_, remote))| {
+                let user = users
+                    .iter()
+                    .find(|(k, _)| k == remote)
+                    .map_or("", |(_, u)| u.as_str());
+                format!(
+                    "{:<11}{:<8}{:<11}{:<17}{}",
+                    i, "2.0", "none", "Session started", user
+                )
+            })
+            .collect();
+        if rows.is_empty() {
+            return "%No SSHv2 server connections running.".to_string();
+        }
+        format!(
+            "{:<11}{:<8}{:<11}{:<17}{}\n{}",
+            "Connection",
+            "Version",
+            "Encryption",
+            "State",
+            "Username",
+            rows.join("\n")
+        )
     }
 
     fn show_tcp_brief(&self, w: &World) -> String {
@@ -925,6 +1019,21 @@ impl Remote {
             return Err(AUTH_FAILED.to_string());
         };
         self.authed = true;
+        if let Some(remote) = tcp_of(w, self.server.kind, self.server.dev)
+            .conn(self.server.conn)
+            .map(|c| c.remote)
+        {
+            let name = u.name.clone();
+            let live: Vec<_> = tcp_of(w, self.server.kind, self.server.dev)
+                .conns()
+                .map(|c| c.remote)
+                .collect();
+            self.shell.with_mgmt(w, |m| {
+                m.ssh_users
+                    .retain(|(k, _)| live.contains(k) && *k != remote);
+                m.ssh_users.push((remote, name));
+            });
+        }
         let greeting = self.shell.open_vty(w, Some(&u));
         self.server_send(w, &greeting);
         Ok(())

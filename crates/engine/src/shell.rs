@@ -24,7 +24,7 @@ mod etherchannel;
 mod fhrp;
 mod m3b;
 mod pc;
-pub use pc::GREETING as PC_GREETING;
+pub use pc::{CLEAR_SCREEN, GREETING as PC_GREETING};
 mod remote;
 
 // ---- message catalog (shell-level strings) ----
@@ -3077,6 +3077,13 @@ impl Shell {
             return Some(self.answer(w, p, line));
         }
         let prompt = self.prompt(w);
+        let lowered;
+        let line = if self.kind == Kind::Host {
+            lowered = pc::normalise(line);
+            lowered.as_str()
+        } else {
+            line
+        };
         match self.session.exec(&self.grammar, line) {
             Exec::Empty | Exec::Moved => Some(String::new()),
             Exec::Logout => None,
@@ -3361,7 +3368,10 @@ impl Shell {
                     match (password, handler) {
                         (Some(p), _) => line.password = p,
                         (None, LINE_LOGIN) => line.login = true,
-                        (None, _) => line.login = false,
+                        (None, _) => {
+                            line.login = false;
+                            line.login_local = false;
+                        }
                     }
                 });
             }

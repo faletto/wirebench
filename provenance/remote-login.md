@@ -36,5 +36,6 @@ Only password authentication, one attempt per `ssh` command, protocol 2 only.
   connection. The far device only processes input while a client is typing at it.
 - `username ... secret` is stored hashed (like `enable secret`); `password` is stored as typed (shown
   as `wb0$` under `service password-encryption`).
-- Not done: `show users`, `show ssh`, `exec-timeout`, `ip ssh version 1`, public-key
+- `show users` and `show ssh` are built from the device's live TCP connections on ports 22 and 23; the SSH user name comes from the login. Idle time is always 00:00:00.
+- Not done: `exec-timeout`, `ip ssh version 1`, public-key
   authentication, `ssh` with options other than `-l`, host names (addresses only), Ctrl-Shift-6.

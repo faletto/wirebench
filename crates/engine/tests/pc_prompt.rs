@@ -113,3 +113,27 @@ fn the_old_ipconfig_forms_still_work() {
         (Ipv4Addr::new(10, 9, 9, 9), Some(Ipv4Addr::new(10, 9, 9, 1)))
     );
 }
+
+#[test]
+fn commands_ignore_case_but_user_names_do_not() {
+    let (mut lab, mut sh) = pc();
+    sh.exec(&mut lab.world, "IPCONFIG SET 10.4.4.4 255.255.255.0");
+    assert_eq!(
+        lab.world.device::<Host>(lab.devices[0].id).ip,
+        Ipv4Addr::new(10, 4, 4, 4)
+    );
+    let out = sh.exec(&mut lab.world, "Ipconfig /All").unwrap();
+    assert!(out.contains("10.4.4.4"), "{out}");
+    // `-l Admin` keeps its capital: the prompt for the password appears.
+    sh.exec(&mut lab.world, "SSH -L Admin 10.4.4.9");
+    assert_eq!(sh.prompt(&lab.world), "Password: ");
+}
+
+#[test]
+fn cls_asks_the_terminal_to_clear() {
+    let (mut lab, mut sh) = pc();
+    assert_eq!(
+        sh.exec(&mut lab.world, "cls").unwrap(),
+        engine::shell::CLEAR_SCREEN
+    );
+}

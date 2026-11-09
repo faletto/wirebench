@@ -7,6 +7,10 @@ use super::*;
 pub(super) const NETSH_STATIC: u32 = 470;
 pub(super) const NETSH_STATIC_GW: u32 = 471;
 pub(super) const HELP: u32 = 472;
+pub(super) const CLS: u32 = 473;
+
+/// Output that asks the terminal to clear its screen (what `cls` returns).
+pub const CLEAR_SCREEN: &str = "\u{c}";
 
 pub(super) const PROMPT: &str = "C:\\>";
 
@@ -25,6 +29,7 @@ TRACERT [-h max] address
 TELNET address    Open a telnet connection
 SSH -l user address
                   Open an SSH connection
+CLS               Clear the screen
 HELP              This list
 EXIT              Close the window";
 
@@ -95,6 +100,7 @@ pub(super) fn pc_commands(g: &mut Grammar, m: ModeId) {
             IPCONFIG,
         ),
         ("help", &["List the commands"], HELP),
+        ("cls", &["Clear the screen"], CLS),
     ];
     for (pattern, help, id) in cmds {
         g.cmd(&[m], pattern, help, h(*id));
@@ -117,9 +123,28 @@ impl Shell {
                 String::new()
             }
             HELP => HELP_TEXT.to_string(),
+            CLS => CLEAR_SCREEN.to_string(),
             _ => String::new(),
         }
     }
+}
+
+/// Commands at a command prompt do not care about case. Everything is lowered except the user
+/// name after `-l` (names are case-sensitive).
+pub(super) fn normalise(line: &str) -> String {
+    let mut after_l = false;
+    line.split(' ')
+        .map(|t| {
+            let keep = after_l;
+            after_l = t == "-l" || t == "-L";
+            if keep {
+                t.to_string()
+            } else {
+                t.to_lowercase()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Windows' wording for a line the grammar rejected.

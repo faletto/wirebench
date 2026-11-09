@@ -164,7 +164,11 @@ impl App {
                 let reopen = match main.take() {
                     Some(EngineEvent::Output { text, prompt, .. }) => {
                         if let Some(t) = self.tab_for(device) {
-                            t.model.push_output(&text);
+                            if text == engine::shell::CLEAR_SCREEN {
+                                t.model.scrollback.clear();
+                            } else {
+                                t.model.push_output(&text);
+                            }
                             t.prompt = prompt;
                         }
                         false
