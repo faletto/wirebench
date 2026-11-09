@@ -1,13 +1,14 @@
 use crate::fib::{mask, Fib, Route, RouteKind};
 use crate::{
-    record_probe, AclPacket, AclSet, Ctx, Device, DeviceEvent, DhcpServer, Mgmt, ProbeBody,
-    ProbeReply, Resolver,
+    record_probe, AclPacket, AclSet, Ctx, Device, DeviceEvent, DhcpServer, Mgmt, Ospf, OspfIfCfg,
+    OspfIfView, OspfPathKind, OspfSource, OspfTx, ProbeBody, ProbeReply, Resolver,
 };
 use kernel::{PortId, SimTime};
 use std::any::Any;
 use wire::{
     ArpOp, ArpPacket, EtherType, EthernetFrame, IcmpEcho, IcmpError, IcmpErrorKind, IpProto,
-    Ipv4Addr, Ipv4Packet, MacAddr, UdpDatagram, VlanTag,
+    Ipv4Addr, Ipv4Packet, MacAddr, OspfPacket, UdpDatagram, VlanTag, ALL_DR_ROUTERS,
+    ALL_SPF_ROUTERS,
 };
 use wire::{DhcpMessage, DhcpOp, DhcpType};
 
@@ -15,6 +16,8 @@ const ARP_TIMEOUT: SimTime = SimTime::from_secs(1);
 /// At most one ICMP destination-unreachable per this long for traffic the router forwards
 /// (`ip icmp rate-limit unreachable`'s default of 500 ms). Time-exceeded is not limited.
 const UNREACHABLE_GAP: SimTime = SimTime::from_millis(500);
+/// The timer token of OSPF's one-second upkeep (ARP's tokens are 32-bit addresses).
+const OSPF_TICK: u64 = 1 << 40;
 const ARP_TTL: SimTime = SimTime::from_secs(4 * 3600);
 
 /// A logical interface. The first `n_ports` are the physical ports, in port order; subinterfaces
@@ -40,6 +43,8 @@ pub struct Interface {
     /// `ip access-group <acl> out`: applied to packets forwarded out of it (never to packets the
     /// router itself sends).
     pub acl_out: Option<String>,
+    /// `ip ospf ...` and `passive-interface`.
+    pub ospf: OspfIfCfg,
 }
 
 /// An 802.1Q subinterface: traffic for one VLAN on a physical port, sharing the port's MAC.
@@ -104,6 +109,11 @@ pub struct Router {
     pub dhcp: DhcpServer,
     /// Access lists, by name or number (see [`Router::acl_permits`]).
     pub acls: AclSet,
+    /// `router ospf`: the protocol state, if configured.
+    pub ospf: Option<Ospf>,
+    ospf_timer: bool,
+    /// Source MAC of the frame being handled (OSPF learns its neighbours' addresses from it).
+    rx_src_mac: MacAddr,
     /// Replies to probes this router sent (pings, traceroutes), oldest first.
     pub probes: Vec<ProbeReply>,
     /// No forwarding-plane unreachable is sent before this time.
@@ -131,6 +141,7 @@ impl Router {
                 line_down: false,
                 acl_in: None,
                 acl_out: None,
+                ospf: OspfIfCfg::default(),
             })
             .collect();
         Router {
@@ -148,6 +159,9 @@ impl Router {
             startup: None,
             dhcp: DhcpServer::default(),
             acls: AclSet::default(),
+            ospf: None,
+            ospf_timer: false,
+            rx_src_mac: MacAddr::default(),
             probes: Vec::new(),
             unreachable_after: SimTime::ZERO,
         }
@@ -172,12 +186,14 @@ impl Router {
         self.mgmt = Mgmt::default();
         self.dhcp = DhcpServer::default();
         self.acls = AclSet::default();
+        self.ospf = None;
         self.probes.clear();
         self.unreachable_after = SimTime::ZERO;
         for ifc in &mut self.ifaces {
             ifc.helpers.clear();
             ifc.acl_in = None;
             ifc.acl_out = None;
+            ifc.ospf = OspfIfCfg::default();
         }
         self.rebuild_fib();
     }
@@ -249,6 +265,7 @@ impl Router {
             line_down: false,
             acl_in: None,
             acl_out: None,
+            ospf: OspfIfCfg::default(),
             sub: Some(SubInterface {
                 parent,
                 number,
@@ -407,6 +424,7 @@ impl Router {
             line_down: false,
             acl_in: None,
             acl_out: None,
+            ospf: OspfIfCfg::default(),
         });
         self.ifaces.len() - 1
     }
@@ -534,6 +552,7 @@ impl Router {
                     via: None,
                     port: PortId(i as u16),
                     kind: RouteKind::Connected,
+                    metric: 0,
                 });
             }
         }
@@ -550,6 +569,7 @@ impl Router {
                         via: Some(gw),
                         port: c.port,
                         kind: RouteKind::Static,
+                        metric: 0,
                     });
                 }
             }
@@ -565,7 +585,32 @@ impl Router {
                     via: Some(s.via),
                     port: c.port,
                     kind: RouteKind::Static,
+                    metric: 0,
                 });
+            }
+        }
+        if self.routing {
+            if let Some(ospf) = &self.ospf {
+                for r in ospf.routes() {
+                    if let Some(c) = connected
+                        .lookup(r.via)
+                        .filter(|c| c.kind == RouteKind::Connected)
+                    {
+                        fib.insert(Route {
+                            net: r.net,
+                            len: r.len,
+                            via: Some(r.via),
+                            port: c.port,
+                            kind: match r.kind {
+                                OspfPathKind::Intra => RouteKind::Ospf,
+                                OspfPathKind::Inter => RouteKind::OspfInter,
+                                OspfPathKind::External1 => RouteKind::OspfExt1,
+                                OspfPathKind::External2 => RouteKind::OspfExt2,
+                            },
+                            metric: r.cost,
+                        });
+                    }
+                }
             }
         }
         self.fib = fib;
@@ -820,6 +865,19 @@ impl Router {
             self.acl_refused(ctx, ingress, &p);
             return;
         }
+        if p.proto == IpProto::OSPF {
+            // Never forwarded and never answered with an error.
+            if self.ospf.is_some()
+                && (p.dst == ALL_SPF_ROUTERS || p.dst == ALL_DR_ROUTERS || self.owns(p.dst))
+            {
+                self.ospf_receive(ctx, ingress, &p);
+            }
+            return;
+        }
+        // Multicast is not routed.
+        if (224..240).contains(&p.dst.0[0]) {
+            return;
+        }
         if p.proto == IpProto::UDP
             && (p.dst == Ipv4Addr::BROADCAST || self.owns(p.dst))
             && self.on_dhcp(ctx, ingress, &p)
@@ -1026,9 +1084,13 @@ impl Router {
         if self.live(i).is_none() {
             return;
         }
-        if f.dst != self.ifaces[i].mac && !f.dst.is_broadcast() {
+        let ospf_group = self.ospf.is_some()
+            && f.dst.0[..5] == [0x01, 0x00, 0x5e, 0x00, 0x00]
+            && matches!(f.dst.0[5], 5 | 6);
+        if f.dst != self.ifaces[i].mac && !f.dst.is_broadcast() && !ospf_group {
             return;
         }
+        self.rx_src_mac = f.src;
         let port = PortId(i as u16);
         match f.ethertype {
             EtherType::ARP => {
@@ -1047,6 +1109,10 @@ impl Router {
 
     /// An ARP resolution timer fired (the token is the next hop's address).
     pub fn on_timer(&mut self, ctx: &mut Ctx, token: u64) {
+        if token == OSPF_TICK {
+            self.ospf_tick(ctx);
+            return;
+        }
         if self.arp.timeout(Ipv4Addr::from_u32(token as u32)) {
             ctx.note("arp timeout");
         }
@@ -1079,5 +1145,132 @@ impl Device for Router {
     }
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
+    }
+}
+
+// ---- OSPF glue ----
+
+impl Router {
+    /// The interfaces OSPF may use: up and addressed.
+    fn ospf_views(&self) -> Vec<OspfIfView> {
+        (0..self.ifaces.len())
+            .filter_map(|i| {
+                self.live(i).map(|(addr, len)| OspfIfView {
+                    index: i,
+                    addr,
+                    len,
+                    mac: self.ifaces[i].mac,
+                    cfg: self.ifaces[i].ospf,
+                })
+            })
+            .collect()
+    }
+
+    /// OSPF was reconfigured: have it originate afresh and take in whatever that did to the
+    /// routes.
+    pub fn ospf_config_changed(&mut self) {
+        self.ospf_sync_default();
+        if let Some(o) = &mut self.ospf {
+            o.config_changed();
+        }
+        if self.ospf.as_mut().is_some_and(|o| o.take_routes_changed()) {
+            self.rebuild_fib();
+        }
+    }
+
+    /// `no router ospf`: forget the protocol and every route it taught.
+    pub fn remove_ospf(&mut self) {
+        self.ospf = None;
+        self.rebuild_fib();
+    }
+
+    /// Change one interface's OSPF settings.
+    pub fn set_ospf_cfg(&mut self, i: usize, f: impl FnOnce(&mut OspfIfCfg)) {
+        f(&mut self.ifaces[i].ospf);
+    }
+
+    /// Start OSPF's one-second upkeep if the protocol is configured and it is not running.
+    pub fn ospf_kick(&mut self, ctx: &mut Ctx) {
+        if self.ospf.is_some() && !self.ospf_timer {
+            self.ospf_timer = true;
+            ctx.schedule_background(SimTime::from_secs(1), OSPF_TICK);
+        }
+    }
+
+    /// Tell OSPF whether we have a default route that does not come from OSPF itself.
+    fn ospf_sync_default(&mut self) {
+        let present = self.fib.routes().any(|r| r.len == 0 && !r.kind.is_ospf());
+        if let Some(o) = &mut self.ospf {
+            o.set_default_route(present);
+        }
+    }
+
+    fn ospf_tick(&mut self, ctx: &mut Ctx) {
+        self.ospf_timer = false;
+        self.ospf_sync_default();
+        let views = self.ospf_views();
+        let mut out = Vec::new();
+        if let Some(o) = &mut self.ospf {
+            o.tick(ctx.now(), &views, &mut out);
+        }
+        self.ospf_after(out);
+        self.ospf_kick(ctx);
+    }
+
+    fn ospf_receive(&mut self, ctx: &mut Ctx, ingress: PortId, p: &Ipv4Packet) {
+        let Ok(pkt) = OspfPacket::parse(&p.payload) else {
+            return;
+        };
+        let i = ingress.0 as usize;
+        self.ospf_sync_default();
+        let views = self.ospf_views();
+        let mac = self.rx_src_mac;
+        let mut out = Vec::new();
+        if let Some(o) = &mut self.ospf {
+            // Packets to 224.0.0.6 are for the designated router and its backup only.
+            if p.dst == ALL_DR_ROUTERS && !o.is_designated(i) {
+                return;
+            }
+            o.receive(
+                ctx.now(),
+                &views,
+                OspfSource {
+                    iface: i,
+                    ip: p.src,
+                    mac,
+                },
+                pkt,
+                &mut out,
+            );
+        }
+        self.ospf_after(out);
+    }
+
+    /// Put the packets the protocol produced on the wire and take in any new routes.
+    fn ospf_after(&mut self, out: Vec<OspfTx>) {
+        for tx in out {
+            let Some((src, _)) = self.live(tx.iface) else {
+                continue;
+            };
+            let pkt = Ipv4Packet {
+                dscp_ecn: 0xc0,
+                ident: self.next_ident(),
+                flags_frag: 0,
+                ttl: 1,
+                proto: IpProto::OSPF,
+                src,
+                dst: tx.dst,
+                payload: tx.packet.emit(),
+            };
+            self.emit(
+                PortId(tx.iface as u16),
+                tx.dst_mac,
+                EtherType::IPV4,
+                pkt.emit(),
+            );
+        }
+        if self.ospf.as_mut().is_some_and(|o| o.take_routes_changed()) {
+            self.rebuild_fib();
+        }
     }
 }

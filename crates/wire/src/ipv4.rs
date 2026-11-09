@@ -7,6 +7,7 @@ impl IpProto {
     pub const ICMP: IpProto = IpProto(1);
     pub const TCP: IpProto = IpProto(6);
     pub const UDP: IpProto = IpProto(17);
+    pub const OSPF: IpProto = IpProto(89);
 }
 
 /// IPv4 packet without options (IHL = 5). Packets with options parse as `Unsupported` for now.

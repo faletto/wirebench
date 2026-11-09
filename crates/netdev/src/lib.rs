@@ -8,6 +8,7 @@ mod dhcp_server;
 mod fib;
 mod host;
 mod mgmt;
+mod ospf;
 mod probe;
 mod router;
 mod stp;
@@ -28,6 +29,12 @@ pub use host::{DhcpClient, DhcpState, Host, PingResult};
 pub use mgmt::{
     banner_delimiter, check_secret, hash_secret, is_hashed, obscure, password_text, plain_password,
     reveal, stored_secret, Line, Mgmt,
+};
+pub use ospf::{
+    DefaultInfo as OspfDefaultInfo, IfCfg as OspfIfCfg, IfState as OspfIfState,
+    IfView as OspfIfView, NbrState as OspfNbrState, NetStmt as OspfNetStmt, Ospf, OspfIf,
+    OspfRoute, PathKind as OspfPathKind, Source as OspfSource, Tx as OspfTx,
+    DEFAULT_HELLO as OSPF_DEFAULT_HELLO, DEFAULT_REF_BW as OSPF_DEFAULT_REF_BW,
 };
 pub use probe::{record as record_probe, ProbeBody, ProbeReply, PROBE_LOG_LIMIT};
 pub use router::{EncapError, Interface, Outgoing, Router, StaticRoute, SubInterface};

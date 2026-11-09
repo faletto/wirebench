@@ -1,0 +1,64 @@
+format = "labsim-lab"
+version = 1
+
+[meta]
+title = "OSPF: three routers on one LAN, a PC behind each"
+
+[[device]]
+name = "r1"
+template = "router-2g"
+pos = [0, 0]
+
+[[device]]
+name = "r2"
+template = "router-2g"
+pos = [0, 140]
+
+[[device]]
+name = "r3"
+template = "router-2g"
+pos = [0, 280]
+
+[[device]]
+name = "sw1"
+template = "switch-l2-8"
+pos = [160, 140]
+
+[[device]]
+name = "pc1"
+template = "host-pc"
+pos = [-160, 0]
+
+[[device]]
+name = "pc2"
+template = "host-pc"
+pos = [-160, 140]
+
+[[device]]
+name = "pc3"
+template = "host-pc"
+pos = [-160, 280]
+
+[[link]]
+a = "r1:Gi0/0"
+b = "sw1:Fa0/1"
+
+[[link]]
+a = "r2:Gi0/0"
+b = "sw1:Fa0/2"
+
+[[link]]
+a = "r3:Gi0/0"
+b = "sw1:Fa0/3"
+
+[[link]]
+a = "r1:Gi0/1"
+b = "pc1:eth0"
+
+[[link]]
+a = "r2:Gi0/1"
+b = "pc2:eth0"
+
+[[link]]
+a = "r3:Gi0/1"
+b = "pc3:eth0"
