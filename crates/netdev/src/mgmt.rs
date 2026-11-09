@@ -9,6 +9,9 @@
 //! command, so an ordinary password is never mistaken for one (a password that happens to look
 //! exactly like an encoded form is read as that form).
 
+pub const SSH_PORT: u16 = 22;
+pub const TELNET_PORT: u16 = 23;
+
 /// One `line` block: `line console 0` or `line vty 0 4`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Line {
@@ -17,6 +20,47 @@ pub struct Line {
     /// `access-class <acl> in`: who may connect. Kept and printed; nothing connects to a line
     /// yet, so nothing enforces it.
     pub access_class_in: Option<String>,
+    /// `login local`: log in with a `username`, not the line password.
+    pub login_local: bool,
+    /// `transport input`: which protocols the line accepts (vty lines only).
+    pub transport: Transport,
+}
+
+/// `transport input telnet | ssh | all | none`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Transport {
+    pub telnet: bool,
+    pub ssh: bool,
+}
+
+impl Default for Transport {
+    fn default() -> Self {
+        Transport {
+            telnet: true,
+            ssh: true,
+        }
+    }
+}
+
+impl Transport {
+    /// The words `transport input` was given, as printed.
+    pub fn words(&self) -> &'static str {
+        match (self.telnet, self.ssh) {
+            (true, true) => "all",
+            (true, false) => "telnet",
+            (false, true) => "ssh",
+            (false, false) => "none",
+        }
+    }
+}
+
+/// A local account: `username <name> secret|password <...>`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct User {
+    pub name: String,
+    /// Stored the way an enable secret or password is (see the module comment).
+    pub secret: String,
+    pub privilege: u8,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,6 +76,11 @@ pub struct Mgmt {
     pub vty: Line,
     /// The range given to `line vty`, kept so the config prints what was typed.
     pub vty_range: (u8, u8),
+    pub users: Vec<User>,
+    /// `ip domain-name`.
+    pub domain_name: Option<String>,
+    /// `crypto key generate rsa`: the modulus size of the key pair, once there is one.
+    pub rsa_bits: Option<u16>,
 }
 
 impl Default for Mgmt {
@@ -44,6 +93,9 @@ impl Default for Mgmt {
             console: Line::default(),
             vty: Line::default(),
             vty_range: (0, 4),
+            users: Vec::new(),
+            domain_name: None,
+            rsa_bits: None,
         }
     }
 }
@@ -61,6 +113,27 @@ impl Mgmt {
             (None, Some(p)) => p == attempt,
             (None, None) => true,
         }
+    }
+
+    /// SSH needs a domain name and a key pair, as on IOS.
+    pub fn ssh_enabled(&self) -> bool {
+        self.domain_name.is_some() && self.rsa_bits.is_some()
+    }
+
+    /// The TCP ports the vty lines accept connections on.
+    pub fn vty_ports(&self) -> Vec<u16> {
+        let mut v = vec![];
+        if self.vty.transport.ssh && self.ssh_enabled() {
+            v.push(SSH_PORT);
+        }
+        if self.vty.transport.telnet {
+            v.push(TELNET_PORT);
+        }
+        v
+    }
+
+    pub fn user(&self, name: &str) -> Option<&User> {
+        self.users.iter().find(|u| u.name == name)
     }
 
     /// Whether a new console session must log in.

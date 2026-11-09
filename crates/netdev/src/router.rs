@@ -3,7 +3,7 @@ use crate::fib::{mask, Fib, Route, RouteKind};
 use crate::{
     record_probe, AclPacket, AclSet, Clock, Ctx, Device, DeviceEvent, DhcpServer, FhrpGroup,
     FhrpKind, FhrpMsg, FhrpProto, FhrpState, Mgmt, Ntp, Ospf, OspfIfCfg, OspfIfView, OspfPathKind,
-    OspfSource, OspfTx, ProbeBody, ProbeReply, Resolver,
+    OspfSource, OspfTx, ProbeBody, ProbeReply, Resolver, Tcp, TcpTx,
 };
 use kernel::{PortId, SimTime};
 use std::any::Any;
@@ -26,6 +26,8 @@ const DISC_TICK: u64 = 1 << 41;
 const NTP_TICK: u64 = 1 << 42;
 /// The timer token of the first hop redundancy upkeep.
 const FHRP_TICK: u64 = 1 << 43;
+/// The timer token of TCP retransmission.
+const TCP_TICK: u64 = 1 << 44;
 const ARP_TTL: SimTime = SimTime::from_secs(4 * 3600);
 
 /// A logical interface. The first `n_ports` are the physical ports, in port order; subinterfaces
@@ -139,6 +141,9 @@ pub struct Router {
     /// HSRP and VRRP groups.
     pub fhrp: Vec<FhrpEntry>,
     fhrp_timer: bool,
+    /// TCP connections and UDP sockets (telnet and SSH sessions live here).
+    pub tcp: Tcp,
+    tcp_armed: Option<SimTime>,
     /// Source MAC of the frame being handled (OSPF learns its neighbours' addresses from it).
     rx_src_mac: MacAddr,
     /// Replies to probes this router sent (pings, traceroutes), oldest first.
@@ -193,6 +198,8 @@ impl Router {
             clock: Clock::default(),
             ntp: Ntp::default(),
             ntp_timer: false,
+            tcp: Tcp::new(u32::from(unit) * 0x0101_0101),
+            tcp_armed: None,
             fhrp: Vec::new(),
             fhrp_timer: false,
             rx_src_mac: MacAddr::default(),
@@ -953,9 +960,13 @@ impl Router {
         if p.proto == IpProto::UDP && self.owns(p.dst) && self.on_ntp(ctx, &p) {
             return;
         }
+        if p.proto == IpProto::UDP && self.owns(p.dst) && self.on_udp_socket(&p) {
+            return;
+        }
         if self.owns(p.dst) {
             match p.proto {
                 IpProto::ICMP => self.on_icmp_to_me(ctx, &p),
+                IpProto::TCP => self.on_tcp(ctx, &p),
                 // A UDP packet for a port nothing listens on: tell the sender. (DHCP was taken
                 // above.) This is what ends a UDP traceroute at its destination.
                 IpProto::UDP => {
@@ -1143,6 +1154,110 @@ impl Router {
             payload: udp.emit(src, dst),
         };
         self.route(ctx, pkt);
+    }
+}
+
+// ---- TCP and UDP sockets ----
+
+impl Router {
+    /// A UDP datagram for a socket an application bound. True if one was.
+    fn on_udp_socket(&mut self, p: &Ipv4Packet) -> bool {
+        let Ok(u) = UdpDatagram::parse(&p.payload) else {
+            return false;
+        };
+        self.tcp.udp_deliver(p.src, u.src_port, u.dst_port, &u.payload)
+    }
+
+    /// A TCP segment for one of this router's addresses.
+    fn on_tcp(&mut self, ctx: &mut Ctx, p: &Ipv4Packet) {
+        self.tcp.set_listeners(&self.mgmt.vty_ports());
+        let mut out = vec![];
+        if let Ok(seg) = wire::TcpSegment::parse(&p.payload) {
+            let new = seg.flags & (wire::TcpSegment::SYN | wire::TcpSegment::ACK)
+                == wire::TcpSegment::SYN;
+            // `access-class` on the vty lines: a refused caller gets a reset, as if nothing
+            // listened.
+            if new
+                && self.tcp.listening(seg.dst_port)
+                && !self.acl_permits(self.mgmt.vty.access_class_in.clone().as_deref(), p)
+            {
+                self.tcp.set_listeners(&[]);
+            }
+        }
+        self.tcp.on_ip(ctx.now(), p.src, p.dst, &p.payload, &mut out);
+        self.tcp_emit(ctx, out);
+    }
+
+    /// Put segments into IP packets and send them; then make sure a retransmission timer is set.
+    pub fn tcp_emit(&mut self, ctx: &mut Ctx, out: Vec<TcpTx>) {
+        for tx in out {
+            let pkt = Ipv4Packet {
+                dscp_ecn: 0,
+                ident: self.next_ident(),
+                flags_frag: 0,
+                ttl: 255,
+                proto: IpProto::TCP,
+                src: tx.src,
+                dst: tx.dst,
+                payload: tx.seg.emit(tx.src, tx.dst),
+            };
+            self.route(ctx, pkt);
+        }
+        if let Some(d) = self.tcp.next_deadline() {
+            if self.tcp_armed.map_or(true, |a| d < a || a <= ctx.now()) {
+                self.tcp_armed = Some(d);
+                ctx.schedule(SimTime(d.0.saturating_sub(ctx.now().0)), TCP_TICK);
+            }
+        }
+    }
+
+    /// Open a connection to `dst`:`dport` from the address that faces it. None if there is no
+    /// route, or `dst` is this router. Segments are queued like any probe: a router's caller
+    /// follows with [`Router::flush_outbox`], a switch's goes through `originate`.
+    pub fn tcp_open(&mut self, ctx: &mut Ctx, dst: Ipv4Addr, dport: u16) -> Option<u32> {
+        if self.owns(dst) {
+            return None;
+        }
+        let src = self.source_for(dst)?;
+        let mut out = vec![];
+        let id = self.tcp.connect(ctx.now(), src, dst, dport, &mut out);
+        self.tcp_emit(ctx, out);
+        Some(id)
+    }
+
+    pub fn tcp_write(&mut self, ctx: &mut Ctx, id: u32, data: &[u8]) -> bool {
+        let mut out = vec![];
+        let ok = self.tcp.send(ctx.now(), id, data, &mut out);
+        self.tcp_emit(ctx, out);
+        ok
+    }
+
+    pub fn tcp_take(&mut self, ctx: &mut Ctx, id: u32) -> Vec<u8> {
+        let mut out = vec![];
+        let d = self.tcp.read(ctx.now(), id, &mut out);
+        self.tcp_emit(ctx, out);
+        d
+    }
+
+    pub fn tcp_shut(&mut self, ctx: &mut Ctx, id: u32) {
+        let mut out = vec![];
+        self.tcp.close(ctx.now(), id, &mut out);
+        self.tcp_emit(ctx, out);
+    }
+
+    pub fn tcp_abort(&mut self, ctx: &mut Ctx, id: u32) {
+        let mut out = vec![];
+        self.tcp.abort(id, &mut out);
+        self.tcp_emit(ctx, out);
+    }
+
+    /// Send a UDP datagram from a bound socket (or any port) to `dst`.
+    pub fn udp_send(&mut self, ctx: &mut Ctx, dst: Ipv4Addr, sport: u16, dport: u16, data: &[u8]) -> bool {
+        let Some(src) = self.source_for(dst) else {
+            return false;
+        };
+        self.send_udp(ctx, src, dst, sport, dport, data);
+        true
     }
 }
 
@@ -1494,6 +1609,13 @@ impl Router {
         if token == FHRP_TICK {
             self.fhrp_timer = false;
             self.fhrp_tick(ctx);
+            return;
+        }
+        if token == TCP_TICK {
+            self.tcp_armed = None;
+            let mut out = vec![];
+            self.tcp.tick(ctx.now(), &mut out);
+            self.tcp_emit(ctx, out);
             return;
         }
         if token == NTP_TICK {
