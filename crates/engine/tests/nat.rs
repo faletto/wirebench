@@ -375,6 +375,144 @@ fn the_nat_example_lab_works_as_its_notes_say() {
 }
 
 #[test]
+fn the_router_answers_arp_for_global_addresses_so_the_neighbour_needs_no_route() {
+    let mut lab = lab();
+    // Widen the outside link so a public address lives on it, and take the static route away.
+    run(
+        &mut lab,
+        R1,
+        &[
+            "enable",
+            "configure terminal",
+            "interface g0/1",
+            "ip address 203.0.113.1 255.255.255.248",
+            "exit",
+            "ip nat inside source static 10.0.1.10 203.0.113.5",
+            "end",
+        ],
+    );
+    run(
+        &mut lab,
+        R2,
+        &[
+            "enable",
+            "configure terminal",
+            "no ip route 192.0.2.0 255.255.255.248 203.0.113.1",
+            "interface g0/0",
+            "ip address 203.0.113.2 255.255.255.248",
+            "end",
+        ],
+    );
+    let out = run(&mut lab, R2, &["enable", "ping 203.0.113.5"]);
+    assert!(out.contains("Success rate is 100 percent"), "{out}");
+    // An address nothing translates is not answered for.
+    let out = run(&mut lab, R2, &["enable", "ping 203.0.113.6"]);
+    assert!(out.contains("Success rate is 0 percent"), "{out}");
+}
+
+#[test]
+fn translation_timeouts_can_be_set_and_are_saved() {
+    let mut lab = lab();
+    run(
+        &mut lab,
+        R1,
+        &[
+            "enable",
+            "configure terminal",
+            "ip nat translation icmp-timeout 5",
+            "ip nat translation tcp-timeout 600",
+            "end",
+        ],
+    );
+    run(&mut lab, PC1, &["ping 198.51.100.10"]);
+    assert!(translations(&mut lab).contains("icmp"));
+    let later = lab.world.kernel.now() + SimTime::from_secs(6);
+    lab.world.run_until(later);
+    assert!(
+        !translations(&mut lab).contains("icmp"),
+        "gone after 5 s, not 60"
+    );
+    let cfg = running_config(lab.world.device::<Router>(lab.devices[R1].id));
+    assert!(cfg.contains("ip nat translation icmp-timeout 5\n"), "{cfg}");
+    assert!(
+        cfg.contains("ip nat translation tcp-timeout 600\n"),
+        "{cfg}"
+    );
+    run(
+        &mut lab,
+        R1,
+        &[
+            "enable",
+            "configure terminal",
+            "no ip nat translation icmp-timeout",
+            "end",
+        ],
+    );
+    let cfg = running_config(lab.world.device::<Router>(lab.devices[R1].id));
+    assert!(
+        !cfg.contains("icmp-timeout"),
+        "back to the default, so not printed:\n{cfg}"
+    );
+    assert!(cfg.contains("tcp-timeout 600"), "{cfg}");
+}
+
+#[test]
+fn an_inside_hosts_icmp_error_leaves_from_the_global_address() {
+    let mut lab = lab();
+    run(
+        &mut lab,
+        R1,
+        &[
+            "enable",
+            "configure terminal",
+            "ip nat inside source static udp 10.0.1.10 5000 203.0.113.1 6000",
+            "end",
+        ],
+    );
+    // The server sends a datagram to the forwarded port; nothing listens on pc1, which answers
+    // with port unreachable. The server must see it coming from 203.0.113.1, not 10.0.1.10.
+    let srv = lab.devices[SRV].id;
+    lab.world.with_device::<Host, _>(srv, |h, c| {
+        h.udp_send(c, Ipv4Addr::new(203, 0, 113, 1), 4000, 6000, b"hello")
+    });
+    lab.world.run_to_idle();
+    let h = lab.world.device::<Host>(srv);
+    assert_eq!(h.icmp_errors.len(), 1);
+    assert_eq!(h.probes.len(), 1);
+    assert_eq!(h.probes[0].from, Ipv4Addr::new(203, 0, 113, 1));
+}
+
+#[test]
+fn outside_source_lets_the_inside_reach_an_outside_host_by_another_address() {
+    let mut lab = lab();
+    run(
+        &mut lab,
+        R1,
+        &[
+            "enable",
+            "configure terminal",
+            "ip route 10.99.0.10 255.255.255.255 203.0.113.2",
+            "ip nat outside source static 198.51.100.10 10.99.0.10",
+            "end",
+        ],
+    );
+    // pc1 pings the outside local address; the server answers and pc1 sees the same address.
+    let out = run(&mut lab, PC1, &["ping 10.99.0.10"]);
+    assert!(out.contains("received 4"), "{out}");
+    assert!(out.contains("Reply from 10.99.0.10"), "{out}");
+    let t = translations(&mut lab);
+    assert!(
+        t.contains("10.99.0.10") && t.contains("198.51.100.10"),
+        "{t}"
+    );
+    let cfg = running_config(lab.world.device::<Router>(lab.devices[R1].id));
+    assert!(
+        cfg.contains("ip nat outside source static 198.51.100.10 10.99.0.10"),
+        "{cfg}"
+    );
+}
+
+#[test]
 fn nat_configuration_is_printed_saved_and_comes_back_after_a_reload() {
     let mut lab = lab();
     run(

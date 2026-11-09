@@ -24,6 +24,16 @@ pub(super) const NO_NAT_STATIC_UDP: u32 = 496;
 pub(super) const SHOW_NAT_TRANSLATIONS: u32 = 497;
 pub(super) const SHOW_NAT_STATISTICS: u32 = 498;
 pub(super) const CLEAR_NAT: u32 = 499;
+pub(super) const NAT_TIMEOUT_SIMPLE: u32 = 500;
+pub(super) const NAT_TIMEOUT_TCP: u32 = 501;
+pub(super) const NAT_TIMEOUT_UDP: u32 = 502;
+pub(super) const NAT_TIMEOUT_ICMP: u32 = 503;
+pub(super) const NAT_TIMEOUT_FINRST: u32 = 504;
+/// The `no` forms are these plus five, in the same order.
+pub(super) const NO_NAT_TIMEOUT_SIMPLE: u32 = 505;
+pub(super) const NO_NAT_TIMEOUT_FINRST: u32 = 509;
+pub(super) const NAT_OUTSIDE_STATIC: u32 = 510;
+pub(super) const NO_NAT_OUTSIDE_STATIC: u32 = 511;
 
 const TCP: u8 = 6;
 const UDP: u8 = 17;
@@ -284,6 +294,76 @@ pub(super) fn nat_commands(
     for (pattern, help, id) in &cfg {
         g.cmd(&[config], pattern, help, h(*id));
     }
+    let timeouts: &[(&str, &str, u32)] = &[
+        (
+            "timeout",
+            "Idle time of one-to-one dynamic translations",
+            NAT_TIMEOUT_SIMPLE,
+        ),
+        (
+            "tcp-timeout",
+            "Idle time of TCP translations",
+            NAT_TIMEOUT_TCP,
+        ),
+        (
+            "udp-timeout",
+            "Idle time of UDP translations",
+            NAT_TIMEOUT_UDP,
+        ),
+        (
+            "icmp-timeout",
+            "Idle time of ICMP translations",
+            NAT_TIMEOUT_ICMP,
+        ),
+        (
+            "finrst-timeout",
+            "How long a TCP translation lasts after FIN or RST",
+            NAT_TIMEOUT_FINRST,
+        ),
+    ];
+    for (word, what, id) in timeouts {
+        g.cmd(
+            &[config],
+            &format!("ip nat translation {word} <secs:int(1..2147483)>"),
+            &["IP", nat, "Translation timers", what, "Seconds"],
+            h(*id),
+        );
+        g.cmd(
+            &[config],
+            &format!("no ip nat translation {word}"),
+            &["Negate", "IP", nat, "Translation timers", what],
+            h(*id + 5),
+        );
+    }
+    g.cmd(
+        &[config],
+        "ip nat outside source static <global:ipv4> <local:ipv4>",
+        &[
+            "IP",
+            nat,
+            "Outside addresses",
+            "Translate the source of packets from the outside",
+            "One fixed address for another",
+            "Outside global address (the real one)",
+            "Outside local address (as the inside sees it)",
+        ],
+        h(NAT_OUTSIDE_STATIC),
+    );
+    g.cmd(
+        &[config],
+        "no ip nat outside source static <global:ipv4> <local:ipv4>",
+        &[
+            "Negate",
+            "IP",
+            nat,
+            "Outside addresses",
+            "Translate the source of packets from the outside",
+            "Fixed translation",
+            "Outside global address",
+            "Outside local address",
+        ],
+        h(NO_NAT_OUTSIDE_STATIC),
+    );
     g.cmd(
         &[user, privileged],
         "show ip nat translations",
@@ -455,6 +535,48 @@ impl Shell {
                     return NO_STATIC.to_string();
                 }
             }
+            NAT_TIMEOUT_SIMPLE..=NAT_TIMEOUT_FINRST
+            | NO_NAT_TIMEOUT_SIMPLE..=NO_NAT_TIMEOUT_FINRST => {
+                let reset = handler >= NO_NAT_TIMEOUT_SIMPLE;
+                let kind = if reset { handler - 5 } else { handler };
+                let secs = a.int("secs").map(|s| s as u64);
+                w.with_device::<Router, _>(id, |r, _| {
+                    let d = netdev::NatTimeouts::default();
+                    let t = &mut r.nat.timeouts;
+                    let (slot, default) = match kind {
+                        NAT_TIMEOUT_SIMPLE => (&mut t.simple, d.simple),
+                        NAT_TIMEOUT_TCP => (&mut t.tcp, d.tcp),
+                        NAT_TIMEOUT_UDP => (&mut t.udp, d.udp),
+                        NAT_TIMEOUT_ICMP => (&mut t.icmp, d.icmp),
+                        _ => (&mut t.finrst, d.finrst),
+                    };
+                    *slot = secs.map_or(default, SimTime::from_secs);
+                });
+            }
+            NAT_OUTSIDE_STATIC => {
+                let pair = (
+                    Ipv4Addr(a.ipv4("global").unwrap()),
+                    Ipv4Addr(a.ipv4("local").unwrap()),
+                );
+                w.with_device::<Router, _>(id, |r, _| {
+                    r.nat.outside.retain(|(g, _)| *g != pair.0);
+                    r.nat.outside.push(pair);
+                });
+            }
+            NO_NAT_OUTSIDE_STATIC => {
+                let pair = (
+                    Ipv4Addr(a.ipv4("global").unwrap()),
+                    Ipv4Addr(a.ipv4("local").unwrap()),
+                );
+                let found = w.with_device::<Router, _>(id, |r, _| {
+                    let n = r.nat.outside.len();
+                    r.nat.outside.retain(|p| *p != pair);
+                    r.nat.outside.len() != n
+                });
+                if !found {
+                    return NO_STATIC.to_string();
+                }
+            }
             SHOW_NAT_TRANSLATIONS => return self.show_nat_translations(w),
             SHOW_NAT_STATISTICS => return self.show_nat_statistics(w),
             CLEAR_NAT => {
@@ -508,6 +630,12 @@ impl Shell {
                 tuple(s.local.0, s.local.1),
                 "---",
                 "---"
+            );
+        }
+        for (global, local) in &r.nat.outside {
+            o += &format!(
+                "\n{:<5}{:<23}{:<23}{:<23}{}",
+                "---", "---", "---", local, global
             );
         }
         for e in r.nat.entries() {
@@ -629,6 +757,21 @@ pub(super) fn nat_config(r: &Router) -> String {
                     iface_name(r, *i)
                 )
             }
+        }
+    }
+    for (global, local) in &r.nat.outside {
+        o += &format!("ip nat outside source static {global} {local}\n");
+    }
+    let (t, d) = (&r.nat.timeouts, netdev::NatTimeouts::default());
+    for (word, now, default) in [
+        ("timeout", t.simple, d.simple),
+        ("tcp-timeout", t.tcp, d.tcp),
+        ("udp-timeout", t.udp, d.udp),
+        ("icmp-timeout", t.icmp, d.icmp),
+        ("finrst-timeout", t.finrst, d.finrst),
+    ] {
+        if now != default {
+            o += &format!("ip nat translation {word} {}\n", now.0 / 1_000_000_000);
         }
     }
     for s in &r.nat.statics {

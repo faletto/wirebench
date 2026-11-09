@@ -92,15 +92,15 @@ pub struct Entry {
 
 impl Entry {
     /// A packet used this entry: push its expiry out, or bring it close if the connection ends.
-    fn touch(&mut self, now: SimTime, proto: u8, flags: u8) {
+    fn touch(&mut self, now: SimTime, proto: u8, flags: u8, t: &Timeouts) {
         if proto == TCP && flags & (TcpSegment::FIN | TcpSegment::RST) != 0 {
             self.closing = true;
         }
         self.expires = now
             + if self.closing {
-                TCP_FINRST_TIMEOUT
+                t.finrst
             } else {
-                timeout(self.proto)
+                t.of(self.proto)
             };
     }
 }
@@ -167,16 +167,44 @@ pub struct Nat {
     pub pools: Vec<Pool>,
     pub rules: Vec<Rule>,
     pub statics: Vec<Static>,
+    /// `ip nat outside source static <global> <local>`: (outside global, outside local).
+    pub outside: Vec<(Ipv4Addr, Ipv4Addr)>,
+    pub timeouts: Timeouts,
     table: Vec<Entry>,
     pub stats: Stats,
 }
 
-fn timeout(proto: u8) -> SimTime {
-    match proto {
-        ICMP => ICMP_TIMEOUT,
-        UDP => UDP_TIMEOUT,
-        TCP => TCP_TIMEOUT,
-        _ => SIMPLE_TIMEOUT,
+/// `ip nat translation ... timeout`: how long an idle translation is kept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Timeouts {
+    pub icmp: SimTime,
+    pub udp: SimTime,
+    pub tcp: SimTime,
+    pub finrst: SimTime,
+    /// One-to-one dynamic entries, which cover every protocol.
+    pub simple: SimTime,
+}
+
+impl Default for Timeouts {
+    fn default() -> Self {
+        Timeouts {
+            icmp: ICMP_TIMEOUT,
+            udp: UDP_TIMEOUT,
+            tcp: TCP_TIMEOUT,
+            finrst: TCP_FINRST_TIMEOUT,
+            simple: SIMPLE_TIMEOUT,
+        }
+    }
+}
+
+impl Timeouts {
+    fn of(&self, proto: u8) -> SimTime {
+        match proto {
+            ICMP => self.icmp,
+            UDP => self.udp,
+            TCP => self.tcp,
+            _ => self.simple,
+        }
     }
 }
 
@@ -199,7 +227,7 @@ fn last_port(wanted: u16) -> u16 {
 impl Nat {
     /// Whether anything is configured; the router skips NAT entirely when not.
     pub fn is_configured(&self) -> bool {
-        !self.rules.is_empty() || !self.statics.is_empty()
+        !self.rules.is_empty() || !self.statics.is_empty() || !self.outside.is_empty()
     }
 
     pub fn pool(&self, name: &str) -> Option<&Pool> {
@@ -211,6 +239,11 @@ impl Nat {
         self.rules
             .iter()
             .any(|r| matches!(&r.target, Target::Pool(n) if n == name))
+    }
+
+    /// Whether `ip` is a global address some translation uses: the router answers ARP for it.
+    pub fn is_global(&self, ip: Ipv4Addr) -> bool {
+        self.statics.iter().any(|s| s.global.0 == ip) || self.table.iter().any(|e| e.global.0 == ip)
     }
 
     pub fn entries(&self) -> &[Entry] {
@@ -245,12 +278,13 @@ impl Nat {
     /// (dynamic, then static). Refreshes its timer.
     pub fn find_out(&mut self, now: SimTime, f: &Flow) -> Option<(Ipv4Addr, u16)> {
         self.expire(now);
+        let timeouts = self.timeouts;
         let hit = self.table.iter_mut().find(|e| {
             (e.proto == f.proto && e.local == f.src) || (e.proto == 0 && e.local.0 == f.src.0)
         });
         if let Some(e) = hit {
             e.remote = Some(f.dst);
-            e.touch(now, f.proto, f.flags);
+            e.touch(now, f.proto, f.flags, &timeouts);
             return Some(e.global);
         }
         self.statics
@@ -303,7 +337,7 @@ impl Nat {
             global,
             remote: Some(f.dst),
             acl: acl.to_string(),
-            expires: now + timeout(proto),
+            expires: now + self.timeouts.of(proto),
             closing: false,
         });
         Some(global)
@@ -315,29 +349,99 @@ impl Nat {
         rewrite(p, (global.0, port), f.dst)
     }
 
-    /// A packet from outside: if it is addressed to a translated address, the packet with its
-    /// destination put back to the inside host.
+    /// A packet from outside: if its source is an outside global address the source becomes the
+    /// outside local one, and if it is addressed to a translated address the destination is put
+    /// back to the inside host. None if neither applies.
     pub fn inbound(&mut self, now: SimTime, p: &Ipv4Packet) -> Option<Ipv4Packet> {
         self.expire(now);
-        if p.proto == IpProto::ICMP {
-            if let Some(q) = self.inbound_error(now, p) {
+        let mut cur = p.clone();
+        let mut changed = false;
+        if let Some(&(_, local)) = self.outside.iter().find(|(g, _)| *g == cur.src) {
+            cur = with_addrs(&cur, local, cur.dst);
+            changed = true;
+        }
+        if cur.proto == IpProto::ICMP {
+            if let Some(q) = self.inbound_error(now, &cur) {
                 return Some(q);
             }
         }
-        let f = Flow::of(p)?;
-        let local = self.find_in(now, &f)?;
+        if let Some(f) = Flow::of(&cur) {
+            if let Some(local) = self.find_in(now, &f) {
+                self.stats.hits += 1;
+                let port = if local.1 == 0 { f.dst.1 } else { local.1 };
+                return rewrite(&cur, f.src, (local.0, port));
+            }
+        }
+        changed.then_some(cur)
+    }
+
+    /// A packet from inside to an outside local address: its destination becomes the outside
+    /// global one.
+    pub fn outside_dst(&self, p: &Ipv4Packet) -> Option<Ipv4Packet> {
+        let &(global, _) = self.outside.iter().find(|(_, l)| *l == p.dst)?;
+        Some(with_addrs(p, p.src, global))
+    }
+
+    /// An ICMP error an inside host sends to the outside, about a packet that reached it through a
+    /// translation: it leaves from the global address, and the quoted packet shows the global
+    /// address too.
+    pub fn outbound_error(&mut self, now: SimTime, p: &Ipv4Packet) -> Option<Ipv4Packet> {
+        let e = IcmpError::parse(&p.payload).ok()?;
+        let o = &e.original;
+        if o.len() < 28 || o[0] >> 4 != 4 {
+            return None;
+        }
+        let ihl = usize::from(o[0] & 15) * 4;
+        if ihl < 20 || o.len() < ihl + 8 {
+            return None;
+        }
+        let proto = o[9];
+        let remote = Ipv4Addr([o[12], o[13], o[14], o[15]]);
+        let local = Ipv4Addr([o[16], o[17], o[18], o[19]]);
+        // The quoted packet was sent to the inside host: its destination port is the inside one
+        // (for an echo, the identifier, which sits where a source port would).
+        let (rport_at, lport_at) = if proto == ICMP {
+            (ihl + 4, ihl + 4)
+        } else {
+            (ihl, ihl + 2)
+        };
+        let rport = u16::from_be_bytes([o[rport_at], o[rport_at + 1]]);
+        let lport = u16::from_be_bytes([o[lport_at], o[lport_at + 1]]);
+        let f = Flow {
+            proto,
+            src: (local, lport),
+            dst: (remote, rport),
+            flags: 0,
+        };
+        let global = self.find_out(now, &f)?;
         self.stats.hits += 1;
-        let port = if local.1 == 0 { f.dst.1 } else { local.1 };
-        rewrite(p, f.src, (local.0, port))
+        let mut o = e.original.clone();
+        o[16..20].copy_from_slice(&global.0 .0);
+        if global.1 != 0 {
+            o[lport_at..lport_at + 2].copy_from_slice(&global.1.to_be_bytes());
+        }
+        o[10] = 0;
+        o[11] = 0;
+        let c = internet_checksum(&o[..ihl]);
+        o[10..12].copy_from_slice(&c.to_be_bytes());
+        let mut q = p.clone();
+        q.src = global.0;
+        q.payload = IcmpError {
+            kind: e.kind,
+            original: o,
+        }
+        .emit();
+        Some(q)
     }
 
     fn find_in(&mut self, now: SimTime, f: &Flow) -> Option<(Ipv4Addr, u16)> {
+        let timeouts = self.timeouts;
         let hit = self.table.iter_mut().find(|e| {
             (e.proto == f.proto && e.global == f.dst) || (e.proto == 0 && e.global.0 == f.dst.0)
         });
         if let Some(e) = hit {
             e.remote = Some(f.src);
-            e.touch(now, f.proto, f.flags);
+            e.touch(now, f.proto, f.flags, &timeouts);
             return Some(e.local);
         }
         self.statics
@@ -394,6 +498,19 @@ impl Nat {
         .emit();
         Some(q)
     }
+}
+
+/// `p` with new addresses only (ports as they were), for the protocols NAT knows.
+fn with_addrs(p: &Ipv4Packet, src: Ipv4Addr, dst: Ipv4Addr) -> Ipv4Packet {
+    if let Some(f) = Flow::of(p) {
+        if let Some(q) = rewrite(p, (src, f.src.1), (dst, f.dst.1)) {
+            return q;
+        }
+    }
+    let mut q = p.clone();
+    q.src = src;
+    q.dst = dst;
+    q
 }
 
 /// `p` with new addresses and ports in the IP header and the transport header, checksums redone.
@@ -533,6 +650,102 @@ mod tests {
         n.expire(NOW + SimTime::from_secs(61));
         assert!(n.entries().is_empty());
         assert_eq!(n.stats.expired, 1);
+    }
+
+    #[test]
+    fn timeouts_can_be_changed_and_a_closing_entry_keeps_the_short_one() {
+        let mut n = Nat::default();
+        n.timeouts.tcp = SimTime::from_secs(120);
+        n.timeouts.finrst = SimTime::from_secs(5);
+        let p = tcp((ip(10, 0, 0, 1), 4000), (ip(198, 51, 100, 5), 80), 0);
+        let f = Flow::of(&p).unwrap();
+        n.create(NOW, &f, "1", &[ip(203, 0, 113, 1)], true);
+        n.expire(NOW + SimTime::from_secs(119));
+        assert_eq!(n.entries().len(), 1);
+        n.expire(NOW + SimTime::from_secs(121));
+        assert!(n.entries().is_empty());
+        n.create(NOW, &f, "1", &[ip(203, 0, 113, 1)], true);
+        let fin = Flow {
+            flags: TcpSegment::RST,
+            ..f
+        };
+        n.find_out(NOW, &fin);
+        // Later traffic does not stretch a closing entry back to the long timeout.
+        n.find_out(NOW + SimTime::from_secs(3), &f);
+        n.expire(NOW + SimTime::from_secs(9));
+        assert!(n.entries().is_empty());
+    }
+
+    #[test]
+    fn an_error_from_an_inside_host_leaves_from_its_global_address() {
+        let mut n = Nat::default();
+        n.statics.push(Static {
+            proto: UDP,
+            local: (ip(10, 0, 0, 5), 5000),
+            global: (ip(203, 0, 113, 1), 6000),
+        });
+        // A datagram from the internet arrived, was translated, and nothing listens: the inside
+        // host answers with port unreachable, quoting the packet as it saw it.
+        let seen = Ipv4Packet {
+            dscp_ecn: 0,
+            ident: 3,
+            flags_frag: 0,
+            ttl: 60,
+            proto: IpProto::UDP,
+            src: ip(198, 51, 100, 5),
+            dst: ip(10, 0, 0, 5),
+            payload: UdpDatagram {
+                src_port: 3333,
+                dst_port: 5000,
+                payload: vec![1, 2, 3],
+            }
+            .emit(ip(198, 51, 100, 5), ip(10, 0, 0, 5)),
+        };
+        let err = Ipv4Packet {
+            dscp_ecn: 0,
+            ident: 4,
+            flags_frag: 0,
+            ttl: 64,
+            proto: IpProto::ICMP,
+            src: ip(10, 0, 0, 5),
+            dst: ip(198, 51, 100, 5),
+            payload: IcmpError {
+                kind: wire::IcmpErrorKind::DestUnreachable(3),
+                original: IcmpError::quote(&seen.emit()),
+            }
+            .emit(),
+        };
+        let out = n.outbound_error(NOW, &err).unwrap();
+        assert_eq!(out.src, ip(203, 0, 113, 1));
+        let e = IcmpError::parse(&out.payload).unwrap();
+        assert_eq!(
+            &e.original[16..20],
+            &[203, 0, 113, 1],
+            "quoted destination is the global one"
+        );
+        assert_eq!(u16::from_be_bytes([e.original[22], e.original[23]]), 6000);
+        assert_eq!(&e.original[12..16], &[198, 51, 100, 5]);
+    }
+
+    #[test]
+    fn outside_source_translates_the_far_hosts_address_for_the_inside() {
+        let mut n = Nat::default();
+        let (global, local) = (ip(198, 51, 100, 5), ip(10, 99, 0, 5));
+        n.outside.push((global, local));
+        // From the far host to an inside one: its source becomes the outside local address.
+        let from_far = tcp((global, 80), (ip(10, 0, 0, 1), 4000), 0);
+        let q = n.inbound(NOW, &from_far).unwrap();
+        assert_eq!((q.src, q.dst), (local, ip(10, 0, 0, 1)));
+        assert!(TcpSegment::checksum_ok(&q.payload, q.src, q.dst));
+        // From inside to the outside local address: the destination becomes the global one.
+        let to_far = tcp((ip(10, 0, 0, 1), 4000), (local, 80), 0);
+        let q = n.outside_dst(&to_far).unwrap();
+        assert_eq!((q.src, q.dst), (ip(10, 0, 0, 1), global));
+        assert!(TcpSegment::checksum_ok(&q.payload, q.src, q.dst));
+        // Other addresses are left alone.
+        assert!(n
+            .outside_dst(&tcp((ip(10, 0, 0, 1), 1), (ip(1, 1, 1, 1), 80), 0))
+            .is_none());
     }
 
     #[test]

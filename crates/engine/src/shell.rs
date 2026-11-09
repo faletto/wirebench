@@ -3156,7 +3156,7 @@ impl Shell {
             300..=329 => return self.m3b_cmd(w, handler, a),
             430..=469 => return self.remote_cmd(w, handler, a),
             470..=479 => return self.pc_cmd(w, handler, a),
-            480..=509 => return self.nat_cmd(w, handler, a),
+            480..=529 => return self.nat_cmd(w, handler, a),
             330..=349 => return self.channel_cmd(w, handler, a),
             350..=379 => return self.disc_cmd(w, handler, a),
             380..=399 => return self.clock_cmd(w, handler, a),

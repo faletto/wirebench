@@ -899,7 +899,11 @@ impl Router {
             .iter()
             .find(|e| e.iface == port.0 as usize && e.g.is_active() && e.g.vip == p.target_ip)
             .map(|e| e.g.vmac());
-        if p.target_ip != my_ip && virt.is_none() {
+        // On an outside interface the router also answers for the global addresses it translates
+        // (a static mapping's, or one in use), so the neighbour needs no route to them.
+        let proxy = self.ifaces[port.0 as usize].nat == Some(NatSide::Outside)
+            && self.nat.is_global(p.target_ip);
+        if p.target_ip != my_ip && virt.is_none() && !proxy {
             return;
         }
         self.arp
@@ -1211,6 +1215,17 @@ impl Router {
         p: Ipv4Packet,
     ) -> Option<Ipv4Packet> {
         let now = ctx.now();
+        // To an outside local address: the destination becomes the global one first.
+        let p = match self.nat.outside_dst(&p) {
+            Some(q) => q,
+            None => p,
+        };
+        // An inside host's ICMP error leaves from its global address too.
+        if p.proto == IpProto::ICMP {
+            if let Some(q) = self.nat.outbound_error(now, &p) {
+                return Some(q);
+            }
+        }
         let Some(f) = NatFlow::of(&p) else {
             return Some(p);
         };
