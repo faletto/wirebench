@@ -143,6 +143,8 @@ pub struct Router {
     fhrp_timer: bool,
     /// TCP connections and UDP sockets (telnet and SSH sessions live here).
     pub tcp: Tcp,
+    /// Set by a switch for its layer 3 half: vty ports and `access-class`, which the switch holds.
+    vty_policy: Option<(Vec<u16>, Option<String>)>,
     tcp_armed: Option<SimTime>,
     /// Source MAC of the frame being handled (OSPF learns its neighbours' addresses from it).
     rx_src_mac: MacAddr,
@@ -199,6 +201,7 @@ impl Router {
             ntp: Ntp::default(),
             ntp_timer: false,
             tcp: Tcp::new(u32::from(unit) * 0x0101_0101),
+            vty_policy: None,
             tcp_armed: None,
             fhrp: Vec::new(),
             fhrp_timer: false,
@@ -1170,7 +1173,10 @@ impl Router {
 
     /// A TCP segment for one of this router's addresses.
     fn on_tcp(&mut self, ctx: &mut Ctx, p: &Ipv4Packet) {
-        self.tcp.set_listeners(&self.mgmt.vty_ports());
+        let (ports, access_class) = self.vty_policy.clone().unwrap_or_else(|| {
+            (self.mgmt.vty_ports(), self.mgmt.vty.access_class_in.clone())
+        });
+        self.tcp.set_listeners(&ports);
         let mut out = vec![];
         if let Ok(seg) = wire::TcpSegment::parse(&p.payload) {
             let new = seg.flags & (wire::TcpSegment::SYN | wire::TcpSegment::ACK)
@@ -1179,13 +1185,18 @@ impl Router {
             // listened.
             if new
                 && self.tcp.listening(seg.dst_port)
-                && !self.acl_permits(self.mgmt.vty.access_class_in.clone().as_deref(), p)
+                && !self.acl_permits(access_class.as_deref(), p)
             {
                 self.tcp.set_listeners(&[]);
             }
         }
         self.tcp.on_ip(ctx.now(), p.src, p.dst, &p.payload, &mut out);
         self.tcp_emit(ctx, out);
+    }
+
+    /// For a switch's layer 3 half: the vty ports and `access-class` the switch has configured.
+    pub fn set_vty_policy(&mut self, ports: Vec<u16>, access_class: Option<String>) {
+        self.vty_policy = Some((ports, access_class));
     }
 
     /// Put segments into IP packets and send them; then make sure a retransmission timer is set.
