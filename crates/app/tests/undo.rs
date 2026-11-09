@@ -142,7 +142,11 @@ fn undo_removes_a_cable_that_was_just_drawn() {
         app.node_centre("sw1").unwrap(),
     );
     click(&ctx, &mut app, a);
+    let row = app.popup_row_centre("eth0").unwrap();
+    click(&ctx, &mut app, row);
     click(&ctx, &mut app, b);
+    let row = app.popup_row_centre("Fa0/1").unwrap();
+    click(&ctx, &mut app, row);
     assert_eq!(app.cables().len(), before + 1);
     app.undo();
     assert_eq!(app.cables().len(), before);

@@ -360,6 +360,13 @@ pub enum EditError {
     },
     NoSuchDevice,
     NoSuchLink,
+    NoSuchPort {
+        device: String,
+    },
+    PortBusy {
+        device: String,
+        port: String,
+    },
     /// Not a template this build knows (`router-2g`, `switch-l2-24`, `host-pc`, ...).
     UnknownTemplate(String),
 }
@@ -372,6 +379,10 @@ impl std::fmt::Display for EditError {
             EditError::NoFreePort { device } => write!(f, "{device} has no free port"),
             EditError::NoSuchDevice => write!(f, "no such device"),
             EditError::NoSuchLink => write!(f, "no such cable"),
+            EditError::NoSuchPort { device } => write!(f, "{device} has no such port"),
+            EditError::PortBusy { device, port } => {
+                write!(f, "{device} {port} already has a cable")
+            }
             EditError::UnknownTemplate(t) => write!(f, "unknown device model `{t}`"),
         }
     }
@@ -414,11 +425,33 @@ impl BuiltLab {
 
 /// Lab-file endpoint text for a port, e.g. `r1:GigabitEthernet0/1` or `sw:Fa0/2`.
 fn endpoint(name: &str, kind: LabKind, port: u16) -> String {
+    format!("{name}:{}", port_label(kind, port))
+}
+
+/// What a port is called on its device: `eth0`, `GigabitEthernet0/1`, `Fa0/3`.
+pub fn port_label(kind: LabKind, port: u16) -> String {
     match kind {
-        LabKind::Host => format!("{name}:eth0"),
-        LabKind::Router => format!("{name}:GigabitEthernet0/{port}"),
-        LabKind::Switch => format!("{name}:Fa0/{}", port + 1),
+        LabKind::Host => "eth0".to_string(),
+        LabKind::Router => format!("GigabitEthernet0/{port}"),
+        LabKind::Switch => format!("Fa0/{}", port + 1),
     }
+}
+
+/// How a port stands: nothing plugged in, plugged in and working, or plugged in but not working
+/// (either end shut down).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+pub enum PortStatus {
+    Disconnected,
+    Up,
+    Down,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+pub struct PortInfo {
+    pub name: String,
+    pub status: PortStatus,
+    /// The device at the other end of the cable, if there is one.
+    pub peer: Option<String>,
 }
 
 impl Topology {
@@ -515,6 +548,37 @@ impl Topology {
         };
         let pa = self.free_port(a).ok_or_else(|| no_port(a))?;
         let pb = self.free_port(b).ok_or_else(|| no_port(b))?;
+        self.add_link_ports(world, a, pa, b, pb)
+    }
+
+    /// Cable port `pa` of device `a` to port `pb` of device `b`. Both must exist and be free.
+    pub fn add_link_ports(
+        &mut self,
+        world: &mut World,
+        a: usize,
+        pa: u16,
+        b: usize,
+        pb: u16,
+    ) -> Result<usize, EditError> {
+        if a >= self.devices.len() || b >= self.devices.len() {
+            return Err(EditError::NoSuchDevice);
+        }
+        if a == b {
+            return Err(EditError::SameDevice);
+        }
+        for (d, p) in [(a, pa), (b, pb)] {
+            if p >= self.devices[d].ports {
+                return Err(EditError::NoSuchPort {
+                    device: self.devices[d].name.clone(),
+                });
+            }
+            if self.port_cabled(d, p) {
+                return Err(EditError::PortBusy {
+                    device: self.devices[d].name.clone(),
+                    port: port_label(self.devices[d].kind, p),
+                });
+            }
+        }
         let id = world.connect(
             (self.devices[a].id, pa),
             (self.devices[b].id, pb),
@@ -527,6 +591,63 @@ impl Topology {
         });
         self.links.push(LabLink { a, b, pa, pb, id });
         Ok(self.links.len() - 1)
+    }
+
+    /// Whether a cable is plugged into this port.
+    fn port_cabled(&self, dev: usize, port: u16) -> bool {
+        self.links
+            .iter()
+            .any(|l| (l.a == dev && l.pa == port) || (l.b == dev && l.pb == port))
+    }
+
+    /// Whether the port is switched off on the device itself (shut down).
+    fn port_shut(&self, world: &World, dev: usize, port: u16) -> bool {
+        let d = &self.devices[dev];
+        match d.kind {
+            LabKind::Host => false,
+            LabKind::Router => !world.device::<Router>(d.id).is_up(port as usize),
+            LabKind::Switch => world
+                .device::<L2Switch>(d.id)
+                .port(kernel::PortId(port))
+                .is_some_and(|c| c.shutdown),
+        }
+    }
+
+    /// Every port of a device: its name, whether a cable is in it, and if so whether the line is
+    /// up (neither end shut down) or down.
+    pub fn port_infos(&self, world: &World, dev: usize) -> Vec<PortInfo> {
+        let Some(d) = self.devices.get(dev) else {
+            return Vec::new();
+        };
+        (0..d.ports)
+            .map(|port| {
+                let link = self
+                    .links
+                    .iter()
+                    .find(|l| (l.a == dev && l.pa == port) || (l.b == dev && l.pb == port));
+                let (status, peer) = match link {
+                    None => (PortStatus::Disconnected, None),
+                    Some(l) => {
+                        let (od, op) = if l.a == dev { (l.b, l.pb) } else { (l.a, l.pa) };
+                        let down =
+                            self.port_shut(world, dev, port) || self.port_shut(world, od, op);
+                        (
+                            if down {
+                                PortStatus::Down
+                            } else {
+                                PortStatus::Up
+                            },
+                            Some(self.devices[od].name.clone()),
+                        )
+                    }
+                };
+                PortInfo {
+                    name: port_label(d.kind, port),
+                    status,
+                    peer,
+                }
+            })
+            .collect()
     }
 
     /// The lab as it stands: structure and positions from here, live state from `world`

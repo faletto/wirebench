@@ -400,11 +400,11 @@ impl App {
             Tool::Select => {
                 "Drag a model onto the canvas, or click it and then click the canvas. Click a device to open it."
             }
-            Tool::Place(_) => "Click the canvas to place another; Esc to stop.",
+            Tool::Place(_) => "Click the canvas to place it; Esc to cancel.",
             Tool::Link if self.link_from.is_some() => {
-                "Now click the device at the other end; Esc to cancel."
+                "Now click the device at the other end, then pick its port; Esc to cancel."
             }
-            Tool::Link => "Click a device, then the one to cable it to; Esc to stop.",
+            Tool::Link => "Click a device and pick a port, then the device to cable it to; Esc to stop.",
             Tool::Delete => "Click a device or a cable to remove it; Esc to stop.",
         }
     }
@@ -465,11 +465,8 @@ impl App {
             PaletteItem::Cable => match over {
                 Some(i) => {
                     self.set_tool(Tool::Link);
-                    self.link_from = Some(i);
-                    self.notice = Some(format!(
-                        "cable from {}: click the device at the other end",
-                        self.nodes[i].name
-                    ));
+                    let at = self.popup_spot(i);
+                    self.open_popup(i, at, PopupKind::PickPort);
                 }
                 None => {
                     self.set_tool(Tool::Link);
@@ -598,7 +595,7 @@ impl App {
                         name: n.name.clone(),
                         kind: n.kind,
                         pos: n.pos,
-                        selected: Some(i) == active_node || self.link_from == Some(i),
+                        selected: Some(i) == active_node || self.link_from.map(|l| l.0) == Some(i),
                         has_console: n.tab.is_some(),
                     })
                     .collect();
@@ -622,7 +619,7 @@ impl App {
                         links: &self.links,
                         notes: &self.notes,
                         tool: self.tool,
-                        link_from: self.link_from,
+                        link_from: self.link_from.map(|l| l.0),
                         flights: &flights,
                     },
                 );
@@ -630,6 +627,7 @@ impl App {
             });
         let ctx = ui.ctx().clone();
         self.device_window_ui(&ctx);
+        self.popup_ui(&ctx);
     }
 }
 

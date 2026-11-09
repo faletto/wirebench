@@ -71,6 +71,18 @@ pub enum EngineCmd {
         a: usize,
         b: usize,
     },
+    /// Cable port `pa` of device `a` to port `pb` of device `b` (0-based, indices into the lab
+    /// view). Refused if either port does not exist or already has a cable.
+    AddLinkPorts {
+        a: usize,
+        pa: u16,
+        b: usize,
+        pb: u16,
+    },
+    /// How each port of a device stands (answers with `Ports`).
+    Ports {
+        device: usize,
+    },
     /// Delete a device and its cables, in place: its console closes, the others carry on.
     RemoveDevice {
         device: usize,
@@ -147,6 +159,11 @@ pub enum EngineEvent {
     State {
         device: u32,
         state: crate::panel::DeviceState,
+    },
+    /// Answer to `Ports`: one entry per port, in port order.
+    Ports {
+        device: usize,
+        ports: Vec<crate::lab::PortInfo>,
     },
     /// What the CLI said about the lines of a `Configure`; empty means all went through.
     Configured {
@@ -399,6 +416,7 @@ impl Engine {
                 | EngineCmd::AddModel { .. }
                 | EngineCmd::MoveDevice { .. }
                 | EngineCmd::AddLink { .. }
+                | EngineCmd::AddLinkPorts { .. }
                 | EngineCmd::RemoveDevice { .. }
                 | EngineCmd::RemoveLink { .. }
                 | EngineCmd::Reconcile { .. }
@@ -448,6 +466,18 @@ impl Engine {
             EngineCmd::AddLink { a, b } => {
                 self.edit(|t, w| t.add_link(w, a, b).map(drop).map_err(|e| e.to_string()))
             }
+            EngineCmd::AddLinkPorts { a, pa, b, pb } => self.edit(|t, w| {
+                t.add_link_ports(w, a, pa, b, pb)
+                    .map(drop)
+                    .map_err(|e| e.to_string())
+            }),
+            EngineCmd::Ports { device } => match &self.topology {
+                Some(t) if device < t.devices.len() => vec![EngineEvent::Ports {
+                    device,
+                    ports: t.port_infos(&self.world, device),
+                }],
+                _ => err("no such device"),
+            },
             // Removal happens in place: the rest of the lab keeps its consoles, tables and clock.
             EngineCmd::RemoveDevice { device } => {
                 let id = self

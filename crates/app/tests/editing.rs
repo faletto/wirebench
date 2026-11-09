@@ -71,7 +71,7 @@ fn place_tool_adds_a_device_where_you_click() {
     let c = app.node_centre("pc3").unwrap();
     assert!((c - at).length() < 2.0, "placed at {c:?}, clicked {at:?}");
     // The tool stays active so several devices can be dropped in a row.
-    assert_eq!(app.tool(), Tool::Place(LabKind::Host));
+    assert_eq!(app.tool(), Tool::Select, "one click places one device");
 }
 
 #[test]
@@ -111,14 +111,28 @@ fn cable_tool_connects_two_free_devices_and_reports_full_ports() {
         app.node_centre("pc3").unwrap(),
     );
     click(&ctx, &mut app, a);
+    // The cable asks which port, rather than taking the first free one.
+    let row = app
+        .popup_row_centre("Fa0/3")
+        .expect("the port list is open");
+    click(&ctx, &mut app, row);
     click(&ctx, &mut app, b);
+    let row = app.popup_row_centre("eth0").expect("the port list is open");
+    click(&ctx, &mut app, row);
     assert!(app.cables().contains(&("sw1", "pc3")), "{:?}", app.cables());
+    assert!(
+        app.export_lab().contains("sw1:Fa0/3"),
+        "the chosen port was used:\n{}",
+        app.export_lab()
+    );
     // pc1 already has its one cable; r1 has both ports used.
+    app.set_tool(Tool::Link);
     let (p1, r1) = (
         app.node_centre("pc1").unwrap(),
         app.node_centre("r1").unwrap(),
     );
     click(&ctx, &mut app, p1);
+    assert!(app.status_notice().unwrap().contains("no free port"));
     click(&ctx, &mut app, r1);
     assert_eq!(app.cables().len(), 4, "no cable added");
     assert!(app.status_notice().unwrap().contains("no free port"));
@@ -161,8 +175,11 @@ fn delete_tool_removes_a_cable_by_clicking_on_it() {
 fn escape_returns_to_select_and_cancels_a_half_drawn_cable() {
     let mut app = App::new();
     let ctx = ready(&mut app);
+    app.add_device(LabKind::Switch, [350, 185]);
+    frame(&ctx, &mut app, vec![]);
+    frame(&ctx, &mut app, vec![]);
     app.set_tool(Tool::Link);
-    let a = app.node_centre("pc1").unwrap();
+    let a = app.node_centre("sw1").unwrap();
     click(&ctx, &mut app, a);
     let esc = |pressed| Event::Key {
         key: Key::Escape,
@@ -171,6 +188,11 @@ fn escape_returns_to_select_and_cancels_a_half_drawn_cable() {
         repeat: false,
         modifiers: Modifiers::NONE,
     };
+    // The first Esc closes the port list, the second stops the tool.
+    assert!(app.popup_open());
+    frame(&ctx, &mut app, vec![esc(true)]);
+    frame(&ctx, &mut app, vec![esc(false)]);
+    assert!(!app.popup_open());
     frame(&ctx, &mut app, vec![esc(true)]);
     frame(&ctx, &mut app, vec![esc(false)]);
     assert_eq!(app.tool(), Tool::Select);
@@ -313,4 +335,94 @@ fn a_big_lab_is_drawn_and_navigated_with_the_picker() {
         frame(&ctx, &mut app, vec![]);
         assert_eq!(app.active_device(), app.device_names()[tab]);
     }
+}
+
+fn right_click(ctx: &Context, app: &mut App, at: Pos2) {
+    let b = |pressed| Event::PointerButton {
+        pos: at,
+        button: PointerButton::Secondary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    frame(ctx, app, vec![Event::PointerMoved(at)]);
+    frame(ctx, app, vec![b(true)]);
+    frame(ctx, app, vec![b(false)]);
+    frame(ctx, app, vec![]);
+}
+
+#[test]
+fn right_click_shows_port_status_and_the_device_actions() {
+    use engine::lab::PortStatus;
+    let mut app = App::new();
+    let ctx = ready(&mut app);
+    // A switch with one cable, one of its ports shut down at the other end's request: a free
+    // port, a working one, and a down one.
+    app.add_device(LabKind::Switch, [350, 185]);
+    app.add_device(LabKind::Host, [150, 185]);
+    app.add_device(LabKind::Host, [150, 285]);
+    frame(&ctx, &mut app, vec![]);
+    frame(&ctx, &mut app, vec![]);
+    let (sw, pc3, pc4) = (
+        app.device_names().iter().position(|n| *n == "sw1").unwrap(),
+        app.device_names().iter().position(|n| *n == "pc3").unwrap(),
+        app.device_names().iter().position(|n| *n == "pc4").unwrap(),
+    );
+    app.connect_ports(sw, 0, pc3, 0);
+    app.connect_ports(sw, 1, pc4, 0);
+    app.select(0);
+    frame(&ctx, &mut app, vec![]);
+    let at = app.node_centre("sw1").unwrap();
+    right_click(&ctx, &mut app, at);
+    let ports = app
+        .popup_ports()
+        .expect("the menu is open and has its ports");
+    assert_eq!(ports[0], ("Fa0/1".to_string(), PortStatus::Up));
+    assert_eq!(ports[1], ("Fa0/2".to_string(), PortStatus::Up));
+    assert_eq!(ports[2], ("Fa0/3".to_string(), PortStatus::Disconnected));
+    for label in ["Open console", "Open settings", "Delete"] {
+        assert!(app.popup_row_centre(label).is_some(), "{label}");
+    }
+    // Delete removes the device.
+    let del = app.popup_row_centre("Delete").unwrap();
+    click(&ctx, &mut app, del);
+    assert!(!app.device_names().contains(&"sw1"));
+    assert!(!app.popup_open());
+}
+
+#[test]
+fn the_menu_opens_settings_and_closes_on_an_outside_click() {
+    let mut app = App::new();
+    let ctx = ready(&mut app);
+    let at = app.node_centre("pc2").unwrap();
+    right_click(&ctx, &mut app, at);
+    assert!(app.popup_open());
+    click(&ctx, &mut app, Pos2::new(900.0, 600.0));
+    assert!(!app.popup_open());
+    let at = app.node_centre("pc1").unwrap();
+    right_click(&ctx, &mut app, at);
+    assert!(app.popup_open());
+    let settings = app.popup_row_centre("Open settings").unwrap();
+    click(&ctx, &mut app, settings);
+    assert!(!app.popup_open());
+    assert_eq!(app.active_device(), "pc1");
+    assert_eq!(app.device_tab(), app::DeviceTab::Settings);
+}
+
+#[test]
+fn a_port_in_use_cannot_be_picked() {
+    use engine::lab::PortStatus;
+    let mut app = App::new();
+    let ctx = ready(&mut app);
+    app.add_device(LabKind::Switch, [350, 185]);
+    frame(&ctx, &mut app, vec![]);
+    frame(&ctx, &mut app, vec![]);
+    app.set_tool(Tool::Link);
+    // r1's two ports are both cabled, so the port list refuses to open for it.
+    let r1 = app.node_centre("r1").unwrap();
+    click(&ctx, &mut app, r1);
+    assert!(!app.popup_open());
+    let sw = app.node_centre("sw1").unwrap();
+    click(&ctx, &mut app, sw);
+    let ports = app.popup_ports().unwrap();
+    assert!(ports.iter().all(|p| p.1 == PortStatus::Disconnected));
 }
