@@ -1,3 +1,4 @@
+use crate::psec::{PortSecurity, PsecState, Verdict as PsecVerdict};
 use crate::stp::{Action as StpAction, Mode as StpMode, Stp};
 use crate::vlan::{all_vlans, DEFAULT_VLAN};
 use crate::{Ctx, Device, DeviceEvent, Mgmt, Router};
@@ -53,6 +54,8 @@ pub struct PortConfig {
     pub stp_cost: Option<u32>,
     /// Spanning tree port priority, in steps of 16; `None` is 128.
     pub stp_priority: Option<u8>,
+    /// Port security; `None` is off.
+    pub psec: Option<PortSecurity>,
 }
 
 impl Default for PortConfig {
@@ -67,6 +70,7 @@ impl Default for PortConfig {
             portfast: false,
             stp_cost: None,
             stp_priority: None,
+            psec: None,
         }
     }
 }
@@ -128,6 +132,8 @@ pub struct L2Switch {
     dtp_dirty: bool,
     /// Ticks since DTP was last sent periodically.
     dtp_secs: u32,
+    /// Port security: learned addresses, violations and error-disabled ports.
+    pub psec: PsecState,
 }
 
 /// DTP is repeated this often, and a neighbour not heard from for three times as long is gone.
@@ -158,6 +164,7 @@ impl L2Switch {
             dtp_peer: vec![None; n_ports as usize],
             dtp_dirty: false,
             dtp_secs: 0,
+            psec: PsecState::new(n_ports as usize),
         }
     }
 
@@ -182,6 +189,7 @@ impl L2Switch {
         self.trunking = vec![false; n];
         self.dtp_peer = vec![None; n];
         self.dtp_dirty = false;
+        self.psec = PsecState::new(n);
     }
 
     /// Set before creating SVIs; their MACs are `02:bb:00:<unit>:<vlan>`.
@@ -314,7 +322,31 @@ impl L2Switch {
     /// does when the port's role changes.
     pub fn configure_port(&mut self, p: PortId, f: impl FnOnce(&mut PortConfig)) {
         if let Some(cfg) = self.ports.get_mut(p.0 as usize) {
+            let i = p.0 as usize;
+            let (was_down, had) = (cfg.shutdown, cfg.psec.clone());
             f(cfg);
+            if cfg.shutdown != was_down {
+                // Shutting a port down, or bringing it back, ends the error-disabled state and
+                // forgets what was learned dynamically.
+                self.psec.disabled[i] = None;
+                self.psec.dynamic[i].clear();
+            }
+            let key = |s: &Option<PortSecurity>| s.as_ref().map(|s| s.max);
+            if key(&cfg.psec) != key(&had) {
+                self.psec.dynamic[i].clear();
+            }
+            if let (Some(s), Some(old)) = (&mut cfg.psec, &had) {
+                if old.sticky && !s.sticky {
+                    // Turning sticky off makes the sticky addresses dynamic [verify].
+                    for m in std::mem::take(&mut s.stuck) {
+                        self.psec.dynamic[i].insert(m, cfg.access_vlan);
+                    }
+                } else if !old.sticky && s.sticky {
+                    // ...and turning it on makes the dynamic ones sticky.
+                    s.stuck
+                        .extend(std::mem::take(&mut self.psec.dynamic[i]).into_keys());
+                }
+            }
             self.dtp_dirty = true;
             self.dtp_decide(p);
             self.table.retain(|_, (port, _)| *port != p);
@@ -364,6 +396,7 @@ impl L2Switch {
             return false;
         };
         !cfg.shutdown
+            && self.psec.disabled[p.0 as usize].is_none()
             && self.vlans.contains_key(&v)
             && if self.is_trunk(p) {
                 cfg.allowed.contains(&v)
@@ -590,6 +623,10 @@ impl L2Switch {
                 self.dtp_peer[p] = None;
                 self.dtp_decide(PortId(p as u16));
                 self.dtp_dirty = true;
+                if !up {
+                    // Dynamically learned secure addresses do not outlive the link.
+                    self.psec.dynamic[p].clear();
+                }
             }
         }
         self.sync_stp();
@@ -607,7 +644,10 @@ impl L2Switch {
                 }
             }
         }
-        let busy = self.spanning.mode.is_some() || self.dtp_peer.iter().any(Option::is_some);
+        let busy = self.spanning.mode.is_some()
+            || self.dtp_peer.iter().any(Option::is_some)
+            || self.ports.iter().any(|c| c.psec.is_some())
+            || (self.psec.recover && self.psec.disabled.iter().any(Option::is_some));
         if busy && self.stp_timer.is_none() {
             self.stp_timer = Some(ctx.schedule_background(SimTime::from_secs(1), STP_TIMER));
         }
@@ -616,7 +656,11 @@ impl L2Switch {
     /// Whether the one-second tick has anything to do: spanning tree is running, or some
     /// neighbour is being listened to for DTP.
     fn upkeep_needed(&self) -> bool {
-        self.spanning.mode.is_some() || self.dtp_peer.iter().any(Option::is_some) || self.dtp_dirty
+        self.spanning.mode.is_some()
+            || self.dtp_peer.iter().any(Option::is_some)
+            || self.dtp_dirty
+            || self.ports.iter().any(|c| c.psec.is_some())
+            || (self.psec.recover && self.psec.disabled.iter().any(Option::is_some))
     }
 
     fn stp_tick(&mut self, ctx: &mut Ctx) {
@@ -625,6 +669,7 @@ impl L2Switch {
         }
         // Neighbours not heard for three intervals are gone; the rest hear from us every interval.
         let now = ctx.now();
+        self.psec_recover(now);
         for p in 0..self.ports.len() {
             if let Some((_, heard)) = self.dtp_peer[p] {
                 if now > heard + SimTime::from_secs(u64::from(3 * DTP_INTERVAL)) {
@@ -756,6 +801,79 @@ impl L2Switch {
     }
 }
 
+// ---- port security ----
+
+impl L2Switch {
+    /// Check a source address against the port's security settings; `false` drops the frame.
+    fn psec_admit(&mut self, ctx: &mut Ctx, port: PortId, vlan: u16, src: MacAddr) -> bool {
+        let i = port.0 as usize;
+        let Some(cfg) = self.ports[i].psec.as_mut() else {
+            return true;
+        };
+        match self.psec.admit(i, cfg, src, vlan, ctx.now()) {
+            PsecVerdict::Allow => true,
+            PsecVerdict::Drop => false,
+            PsecVerdict::Disable => {
+                self.psec.dynamic[i].clear();
+                self.table.retain(|_, (p, _)| *p != port);
+                self.refresh_svis();
+                self.sync_stp();
+                // Make sure the tick runs so a recovery timer is noticed.
+                if self.stp_timer.is_none() && self.psec.recover {
+                    self.stp_timer =
+                        Some(ctx.schedule_background(SimTime::from_secs(1), STP_TIMER));
+                }
+                self.flush_stp(ctx);
+                false
+            }
+        }
+    }
+
+    /// Whether port `p` is error-disabled by a security violation.
+    pub fn err_disabled(&self, p: PortId) -> bool {
+        self.psec
+            .disabled
+            .get(p.0 as usize)
+            .is_some_and(Option::is_some)
+    }
+
+    /// Bring back ports whose error-disabled time has run out, when recovery is on.
+    fn psec_recover(&mut self, now: SimTime) {
+        if !self.psec.recover {
+            return;
+        }
+        let wait = SimTime::from_secs(u64::from(self.psec.interval));
+        let mut any = false;
+        for i in 0..self.ports.len() {
+            if self.psec.disabled[i].is_some_and(|t| now >= t + wait) {
+                self.psec.disabled[i] = None;
+                any = true;
+            }
+        }
+        if any {
+            self.refresh_svis();
+            self.sync_stp();
+        }
+    }
+
+    /// `clear port-security dynamic`: forget every dynamically learned secure address.
+    pub fn clear_secure_dynamic(&mut self) {
+        for d in &mut self.psec.dynamic {
+            d.clear();
+        }
+    }
+
+    /// `errdisable recovery cause psecure-violation` and `errdisable recovery interval`.
+    pub fn set_errdisable_recovery(&mut self, on: Option<bool>, interval: Option<u32>) {
+        if let Some(on) = on {
+            self.psec.recover = on;
+        }
+        if let Some(s) = interval {
+            self.psec.interval = s;
+        }
+    }
+}
+
 impl Device for L2Switch {
     fn handle(&mut self, ctx: &mut Ctx, ev: DeviceEvent) {
         let (port, frame) = match ev {
@@ -792,6 +910,9 @@ impl Device for L2Switch {
             None => (true, true),
         };
         if !learns {
+            return;
+        }
+        if !src.is_multicast() && !self.psec_admit(ctx, port, vlan, src) {
             return;
         }
         if !src.is_multicast() {

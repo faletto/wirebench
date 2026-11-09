@@ -15,6 +15,8 @@ use netdev::{
 use std::sync::Arc;
 use wire::{IcmpErrorKind, Ipv4Addr};
 
+mod m3b;
+
 // ---- message catalog (shell-level strings) ----
 const UNKNOWN_INTERFACE: &str = "% No such interface:";
 const NO_ROUTE_ENTRY: &str = "% That static route is not configured.";
@@ -940,6 +942,7 @@ fn switch_grammar() -> (Grammar, Modes) {
     ospf_commands(&mut g, privileged, config, config_if, config_router);
     probe_commands(&mut g, privileged);
     span_commands(&mut g, user, privileged, config, config_if);
+    m3b::port_security_commands(&mut g, user, privileged, config, config_if);
     (
         g,
         Modes {
@@ -3041,6 +3044,7 @@ impl Shell {
             ROUTER_OSPF..=NO_OSPF_DEFAULT_INFO | IF_MTU..=SHOW_PROTOCOLS => {
                 return self.ospf_cmd(w, handler, a, &m)
             }
+            300..=399 => return self.m3b_cmd(w, handler, a),
             ACL_PERMIT | ACL_DENY | ACL_REMARK | ACL_NO_SEQ | ACL_NO_PERMIT | ACL_NO_DENY
             | NO_ACL_NUMBER => return self.acl_entry_cmd(w, handler, a, &m),
             ACL_STD | ACL_EXT | NO_ACL_STD | NO_ACL_EXT => {
@@ -3875,6 +3879,7 @@ pub fn switch_config(s: &L2Switch) -> String {
         o += "!\n";
     }
     o += &spanning_config(s);
+    o += &m3b::errdisable_lines(s);
     if s.l3().routing() {
         o += "ip routing\n!\n";
     }
@@ -3907,6 +3912,7 @@ pub fn switch_config(s: &L2Switch) -> String {
                 format_vlan_list(&c.allowed)
             );
         }
+        o += &m3b::psec_lines(c);
         if c.shutdown {
             o += " shutdown\n";
         }

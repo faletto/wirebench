@@ -10,6 +10,7 @@ mod host;
 mod mgmt;
 mod ospf;
 mod probe;
+mod psec;
 mod router;
 mod stp;
 mod switch;
@@ -37,6 +38,10 @@ pub use ospf::{
     DEFAULT_HELLO as OSPF_DEFAULT_HELLO, DEFAULT_REF_BW as OSPF_DEFAULT_REF_BW,
 };
 pub use probe::{record as record_probe, ProbeBody, ProbeReply, PROBE_LOG_LIMIT};
+pub use psec::{
+    parse_mac, PortSecurity, PsecState, Verdict as PsecVerdict, Violation as PsecViolation,
+    DEFAULT_RECOVERY_SECS,
+};
 pub use router::{EncapError, Interface, Outgoing, Router, StaticRoute, SubInterface};
 pub use stp::{
     port_id, Action as StpAction, Mode as StpMode, PortView, Role as StpRole, State as StpState,
