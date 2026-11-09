@@ -14,16 +14,19 @@ await page.goto(url);
 await page.waitForFunction(() => !document.getElementById('loading'), null, { timeout: 120000 });
 await settle(500);
 const t0 = Date.now();
-const [chooser] = await Promise.all([page.waitForEvent('filechooser'), tap(page, 258, 12)]);
+// The page opens on the home screen: its "Open a file" card (the middle of the top row).
+const [chooser] = await Promise.all([page.waitForEvent('filechooser'), tap(page, 683, 240)]);
 await chooser.setFiles(new URL(process.argv[5] ?? './big-lab.toml', import.meta.url).pathname);
-// How long until the page shows the lab (a tab per device in the top bar)?
+// How long until the page shows the lab?
 await settle(1500);
 console.log(`  open + 1.5 s: ${Date.now() - t0} ms wall`);
 await page.screenshot({ path: `${outdir}/1-opened.png` });
 const live = await frameStats(page, 4000);
 console.log('  frames with the lab running live:', JSON.stringify(live));
 // Typing while the engine is busy: how long until the console answers?
-await tap(page, 700, 90); await settle(300);
+// The device picker's next button (top bar; a lab this big gets a picker, not a chip per device)
+// opens sw2's window with its console ready for typing.
+await tap(page, 965, 28); await settle(300);
 const typed = Date.now();
 await page.keyboard.type('show spanning-tree'); await page.keyboard.press('Enter');
 await settle(2500);

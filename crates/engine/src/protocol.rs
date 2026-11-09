@@ -57,6 +57,11 @@ pub enum EngineCmd {
         kind: ShellKind,
         pos: [i32; 2],
     },
+    /// Add a device made from a template (`router-2g`, `switch-l2-24`, `host-pc`) at this place.
+    AddModel {
+        template: String,
+        pos: [i32; 2],
+    },
     MoveDevice {
         device: usize,
         pos: [i32; 2],
@@ -391,6 +396,7 @@ impl Engine {
             cmd,
             EngineCmd::Load { .. }
                 | EngineCmd::AddDevice { .. }
+                | EngineCmd::AddModel { .. }
                 | EngineCmd::MoveDevice { .. }
                 | EngineCmd::AddLink { .. }
                 | EngineCmd::RemoveDevice { .. }
@@ -427,6 +433,11 @@ impl Engine {
             },
             EngineCmd::AddDevice { kind, pos } => self.edit(|t, w| {
                 t.add_device(w, lab_kind(kind), pos)
+                    .map(drop)
+                    .map_err(|e| e.to_string())
+            }),
+            EngineCmd::AddModel { template, pos } => self.edit(|t, w| {
+                t.add_model(w, &template, pos)
                     .map(drop)
                     .map_err(|e| e.to_string())
             }),

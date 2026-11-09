@@ -1,0 +1,83 @@
+format  = "labsim-lab"
+version = 1
+
+[meta]
+title  = "Router on a stick"
+author = "wirebench"
+seed   = 1
+
+[[device]]
+name     = "r1"
+template = "router-2g"
+pos      = [340, 40]
+startup_config = """
+hostname r1
+!
+interface GigabitEthernet0/0
+ no shutdown
+!
+interface GigabitEthernet0/0.10
+ encapsulation dot1q 10
+ ip address 10.0.10.1 255.255.255.0
+!
+interface GigabitEthernet0/0.20
+ encapsulation dot1q 20
+ ip address 10.0.20.1 255.255.255.0
+"""
+
+[[device]]
+name     = "sw1"
+template = "switch-l2-8"
+pos      = [340, 170]
+startup_config = """
+hostname sw1
+!
+vlan 10
+!
+vlan 20
+!
+interface FastEthernet0/1
+ switchport access vlan 10
+!
+interface FastEthernet0/2
+ switchport access vlan 20
+!
+interface FastEthernet0/8
+ switchport mode trunk
+"""
+
+[[device]]
+name     = "pc1"
+template = "host-pc"
+pos      = [140, 280]
+[device.host]
+ipv4    = "10.0.10.2/24"
+gateway = "10.0.10.1"
+
+[[device]]
+name     = "pc2"
+template = "host-pc"
+pos      = [540, 280]
+[device.host]
+ipv4    = "10.0.20.2/24"
+gateway = "10.0.20.1"
+
+[[link]]
+a = "pc1:eth0"
+b = "sw1:Fa0/1"
+
+[[link]]
+a = "pc2:eth0"
+b = "sw1:Fa0/2"
+
+[[link]]
+a = "sw1:Fa0/8"
+b = "r1:Gi0/0"
+
+[[annotation]]
+text = "One cable from r1 carries both VLANs; a subinterface per VLAN routes between them"
+pos  = [60, 350]
+
+[[annotation]]
+text = "Try: ping 10.0.20.2 from pc1"
+pos  = [60, 380]

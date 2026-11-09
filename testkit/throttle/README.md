@@ -25,7 +25,10 @@ Notes on what this can and cannot say:
 - The stage times printed are dominated by the script's own waits. The numbers worth reading are
   load time, `ready in` and `frame` in the status bar of each screenshot, and the frame pacing lines.
 - The page is driven by pixel coordinates (egui draws everything into one canvas), so a toolbar
-  layout change means updating `TOOL` and `DEVICE_X`.
+  layout change means updating `TOOL` and `DEVICE_X`. `demo.mjs`, `m2.mjs` and `m2b.mjs` still use
+  the layout from before the home screen and component bar (2026-11) and need new coordinates;
+  `load.mjs` (and so `check.mjs`) has them: it opens the file from the home screen's "Open a file"
+  card and a device with the top bar's device picker.
 - `--force-device-scale-factor=1` and `viewport: null` are deliberate; a fixed-viewport context
   doubled the canvas buffer and skewed pointer positions.
 

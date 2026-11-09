@@ -42,7 +42,9 @@ fn key(k: Key, modifiers: Modifiers) -> Event {
 fn ready() -> (Context, App) {
     let ctx = Context::default();
     let mut app = App::new();
-    // First frame lets the terminal take focus (the app requests it on startup).
+    // Consoles live in a device's window: open r1's.
+    app.select(0);
+    // First frame lets the terminal take focus (opening the window asks for it).
     frame(&ctx, &mut app, vec![]);
     frame(&ctx, &mut app, vec![]);
     (ctx, app)
@@ -114,10 +116,47 @@ fn ready_time_is_recorded_on_the_first_frame_and_then_frozen() {
 
 #[test]
 fn terminal_takes_keyboard_focus_on_the_first_frame() {
-    // No warm-up: the app asks for focus on startup, so typing works immediately.
+    // No warm-up: opening a device's window asks for focus, so typing works immediately.
     let ctx = Context::default();
     let mut app = App::new();
+    app.select(0);
     frame(&ctx, &mut app, vec![Event::Text("enable".into())]);
     frame(&ctx, &mut app, vec![key(Key::Enter, Modifiers::NONE)]);
     assert_eq!(app.active_prompt(), "r1#");
+}
+
+#[test]
+fn a_quick_option_digit_works_even_if_option_is_up_by_the_frame() {
+    // What the browser delivers for a quick tap on a Mac: the key event carries Option, the text
+    // it typed is a symbol, and by the time the frame runs Option has been let go.
+    let (ctx, mut app) = ready();
+    let mut raw = RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(900.0, 600.0),
+        )),
+        ..Default::default()
+    };
+    // Option goes down and back up within the one frame.
+    raw.events = vec![
+        Event::ModifiersChanged(Modifiers::ALT),
+        Event::Key {
+            key: Key::Num3,
+            physical_key: Some(Key::Num3),
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::ALT,
+        },
+        Event::Text("£".into()),
+        Event::ModifiersChanged(Modifiers::NONE),
+    ];
+    let mut out = ctx.run_ui(raw, |ui| app.ui(ui));
+    out.textures_delta.clear();
+    frame(&ctx, &mut app, vec![]);
+    assert_eq!(app.active_device(), "pc1");
+    assert_eq!(app.device_window(), Some("pc1"));
+    type_line(&ctx, &mut app, "ipconfig");
+    let out = app.active_scrollback().join("\n");
+    assert!(!out.contains('£'), "the symbol was not typed: {out}");
+    assert!(out.contains("pc1>ipconfig"), "{out}");
 }

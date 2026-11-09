@@ -100,7 +100,6 @@ impl App {
 
     pub(super) fn settings_panel(&mut self, ui: &mut Ui) {
         self.panel_refresh();
-        ui.heading("Settings");
         let (Some(device), Some(state)) = (self.panel.device, self.panel.state.clone()) else {
             ui.weak("Open a device to see its settings.");
             return;
@@ -126,7 +125,6 @@ impl App {
     }
 
     fn host_settings(&mut self, ui: &mut Ui, device: u32, h: &engine::panel::HostState) {
-        ui.strong(&h.name);
         let mut dhcp = h.dhcp;
         ui.horizontal(|ui| {
             ui.label("Address");
@@ -158,7 +156,6 @@ impl App {
     }
 
     fn router_settings(&mut self, ui: &mut Ui, device: u32, r: &engine::panel::RouterState) {
-        ui.strong(&r.name);
         ui.label("Interfaces");
         for i in &r.interfaces {
             ui.horizontal(|ui| {
@@ -223,7 +220,6 @@ impl App {
     }
 
     fn switch_settings(&mut self, ui: &mut Ui, device: u32, s: &engine::panel::SwitchState) {
-        ui.strong(&s.name);
         ui.horizontal(|ui| {
             ui.label("Spanning tree");
             let now = s.spanning_tree.clone().unwrap_or_else(|| "off".into());

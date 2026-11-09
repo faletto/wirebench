@@ -20,6 +20,14 @@ pub trait Store: Debug {
     fn load(&self) -> Option<Autosave>;
     fn save(&mut self, a: &Autosave) -> Result<(), String>;
     fn clear(&mut self);
+    /// The lab that was open most recently, saved or not, for the home screen's "Continue".
+    /// Unlike the autosave it is not cleared by saving.
+    fn last_session(&self) -> Option<Autosave> {
+        None
+    }
+    fn remember_session(&mut self, _a: &Autosave) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// Discards everything. The default, so nothing touches disk by accident.
@@ -36,9 +44,13 @@ impl Store for NullStore {
     fn clear(&mut self) {}
 }
 
-/// In-memory store whose contents the creator can inspect (clones share the cell). For tests.
+/// In-memory store whose contents the creator can inspect (clones share the cells): the autosave,
+/// then the last session. For tests.
 #[derive(Debug, Clone, Default)]
-pub struct MemoryStore(pub Rc<RefCell<Option<Autosave>>>);
+pub struct MemoryStore(
+    pub Rc<RefCell<Option<Autosave>>>,
+    pub Rc<RefCell<Option<Autosave>>>,
+);
 
 impl Store for MemoryStore {
     fn load(&self) -> Option<Autosave> {
@@ -50,6 +62,13 @@ impl Store for MemoryStore {
     }
     fn clear(&mut self) {
         *self.0.borrow_mut() = None;
+    }
+    fn last_session(&self) -> Option<Autosave> {
+        self.1.borrow().clone()
+    }
+    fn remember_session(&mut self, a: &Autosave) -> Result<(), String> {
+        *self.1.borrow_mut() = Some(a.clone());
+        Ok(())
     }
 }
 
@@ -122,18 +141,30 @@ mod native {
         dir.unwrap_or_else(std::env::temp_dir).join("wirebench")
     }
 
-    /// One file, `autosave.lab.toml`, in `dir`.
+    /// `autosave.lab.toml` and `last-session.lab.toml` in `dir`.
     #[derive(Debug)]
     pub struct FileStore {
         path: PathBuf,
+        last: PathBuf,
     }
 
     impl FileStore {
         pub fn new(dir: PathBuf) -> Self {
             FileStore {
                 path: dir.join("autosave.lab.toml"),
+                last: dir.join("last-session.lab.toml"),
             }
         }
+    }
+
+    /// Write beside `path` and rename, so a crash mid-write never leaves half a file.
+    fn write_atomic(path: &std::path::Path, a: &Autosave) -> Result<(), String> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, encode(a)).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, path).map_err(|e| e.to_string())
     }
 
     impl Store for FileStore {
@@ -142,17 +173,19 @@ mod native {
         }
 
         fn save(&mut self, a: &Autosave) -> Result<(), String> {
-            if let Some(dir) = self.path.parent() {
-                std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-            }
-            // Write beside it and rename, so a crash mid-write never leaves half a file.
-            let tmp = self.path.with_extension("tmp");
-            std::fs::write(&tmp, encode(a)).map_err(|e| e.to_string())?;
-            std::fs::rename(&tmp, &self.path).map_err(|e| e.to_string())
+            write_atomic(&self.path, a)
         }
 
         fn clear(&mut self) {
             let _ = std::fs::remove_file(&self.path);
+        }
+
+        fn last_session(&self) -> Option<Autosave> {
+            decode(&std::fs::read_to_string(&self.last).ok()?)
+        }
+
+        fn remember_session(&mut self, a: &Autosave) -> Result<(), String> {
+            write_atomic(&self.last, a)
         }
     }
 }
@@ -165,6 +198,7 @@ mod web {
     use super::*;
 
     const KEY: &str = "wirebench.autosave";
+    const LAST: &str = "wirebench.last-session";
 
     #[derive(Debug, Default)]
     pub struct LocalStorageStore;
@@ -189,6 +223,17 @@ mod web {
             if let Some(s) = storage() {
                 let _ = s.remove_item(KEY);
             }
+        }
+
+        fn last_session(&self) -> Option<Autosave> {
+            decode(&storage()?.get_item(LAST).ok().flatten()?)
+        }
+
+        fn remember_session(&mut self, a: &Autosave) -> Result<(), String> {
+            storage()
+                .ok_or("local storage is unavailable")?
+                .set_item(LAST, &encode(a))
+                .map_err(|e| format!("{e:?}"))
         }
     }
 }
@@ -276,8 +321,18 @@ mod tests {
             !dir.join("nested/autosave.tmp").exists(),
             "no temp file left behind"
         );
+        s.remember_session(&Autosave {
+            text: "last".into(),
+            unix_secs: 3,
+        })
+        .unwrap();
         s.clear();
         assert_eq!(s.load(), None);
+        assert_eq!(
+            s.last_session().map(|a| a.text),
+            Some("last".into()),
+            "clearing the autosave keeps the last session"
+        );
         s.clear(); // clearing nothing is fine
         let _ = std::fs::remove_dir_all(&dir);
     }

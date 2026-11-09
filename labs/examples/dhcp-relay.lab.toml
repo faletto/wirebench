@@ -1,0 +1,110 @@
+format  = "labsim-lab"
+version = 1
+
+[meta]
+title  = "DHCP: a server, a relay and three clients"
+author = "wirebench"
+seed   = 1
+
+[[device]]
+name     = "pc1"
+template = "host-pc"
+pos      = [40, 70]
+[device.host]
+ipv4 = "dhcp"
+
+[[device]]
+name     = "pc2"
+template = "host-pc"
+pos      = [40, 230]
+[device.host]
+ipv4 = "dhcp"
+
+[[device]]
+name     = "sw1"
+template = "switch-l2-8"
+pos      = [200, 150]
+
+[[device]]
+name     = "r1"
+template = "router-2g"
+pos      = [370, 150]
+startup_config = """
+hostname r1
+!
+interface GigabitEthernet0/0
+ ip address 10.0.1.1 255.255.255.0
+ no shutdown
+!
+interface GigabitEthernet0/1
+ ip address 10.0.12.1 255.255.255.252
+ no shutdown
+!
+ip route 10.0.2.0 255.255.255.0 10.0.12.2
+ip dhcp excluded-address 10.0.1.1 10.0.1.9
+ip dhcp excluded-address 10.0.2.1 10.0.2.9
+!
+ip dhcp pool lan1
+ network 10.0.1.0 255.255.255.0
+ default-router 10.0.1.1
+ dns-server 8.8.8.8
+!
+ip dhcp pool lan2
+ network 10.0.2.0 255.255.255.0
+ default-router 10.0.2.1
+ dns-server 8.8.8.8
+"""
+
+[[device]]
+name     = "r2"
+template = "router-2g"
+pos      = [540, 150]
+startup_config = """
+hostname r2
+!
+interface GigabitEthernet0/0
+ ip address 10.0.12.2 255.255.255.252
+ no shutdown
+!
+interface GigabitEthernet0/1
+ ip address 10.0.2.1 255.255.255.0
+ ip helper-address 10.0.12.1
+ no shutdown
+!
+ip route 10.0.1.0 255.255.255.0 10.0.12.1
+"""
+
+[[device]]
+name     = "pc3"
+template = "host-pc"
+pos      = [700, 150]
+[device.host]
+ipv4 = "dhcp"
+
+[[link]]
+a = "pc1:eth0"
+b = "sw1:Fa0/1"
+
+[[link]]
+a = "pc2:eth0"
+b = "sw1:Fa0/2"
+
+[[link]]
+a = "sw1:Fa0/8"
+b = "r1:Gi0/0"
+
+[[link]]
+a = "r1:Gi0/1"
+b = "r2:Gi0/0"
+
+[[link]]
+a = "r2:Gi0/1"
+b = "pc3:eth0"
+
+[[annotation]]
+text = "r1 hands out addresses for both LANs; r2 relays pc3's requests (ip helper-address)"
+pos  = [100, 20]
+
+[[annotation]]
+text = "Try: ipconfig on any PC, then show ip dhcp binding on r1"
+pos  = [100, 300]
