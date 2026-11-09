@@ -1,0 +1,96 @@
+# Discovery is off until asked (unlike a real device, so an idle lab stays idle).
+@sw1
+enable
+show cdp neighbors
+configure terminal
+hostname sw1
+cdp run
+interface fa0/1
+switchport mode access
+end
+@sw2
+enable
+configure terminal
+cdp run
+end
+@r1
+enable
+configure terminal
+cdp run
+interface g0/0
+ip address 10.0.0.1 255.255.255.0
+no shutdown
+interface g0/1
+ip address 10.0.1.1 255.255.255.0
+no shutdown
+end
+@r2
+enable
+configure terminal
+interface g0/1
+ip address 10.0.1.2 255.255.255.0
+no shutdown
+end
+%wait 5
+@sw1
+show cdp
+show cdp neighbors
+show cdp neighbors detail
+@r1
+show cdp neighbors
+show cdp interface
+# r2 does not run CDP, so r1 hears nothing from it; r2 starts listening and announcing.
+@r2
+show cdp neighbors
+configure terminal
+cdp run
+end
+%wait 3
+@r1
+show cdp neighbors
+@r2
+show cdp entry r1
+# A shorter timer and holdtime take effect on the next advertisement.
+configure terminal
+cdp timer 10
+cdp holdtime 30
+interface g0/1
+no cdp enable
+end
+%wait 40
+show cdp neighbors
+@r1
+show cdp neighbors
+show cdp entry nobody
+@sw2
+show running-config
+# LLDP: on its own switch, separate from CDP.
+@r1
+show lldp neighbors
+configure terminal
+lldp run
+end
+@sw1
+configure terminal
+lldp run
+interface fa0/1
+no lldp transmit
+end
+%wait 3
+show lldp
+show lldp neighbors
+show lldp neighbors detail
+show lldp interface
+@r1
+show lldp neighbors
+@sw1
+show running-config
+# Cable and neighbours go together: shutting the port empties the table at once.
+configure terminal
+interface fa0/2
+shutdown
+end
+%wait 2
+show cdp neighbors
+clear cdp table
+show cdp neighbors

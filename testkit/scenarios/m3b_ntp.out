@@ -1,0 +1,175 @@
+
+== r1
+r1>enable
+r1#clock set 12:00:00 8 Nov 2026
+r1#configure terminal
+r1(config)#interface g0/0
+r1(config-if)#ip address 10.0.0.1 255.255.255.0
+r1(config-if)#no shutdown
+r1(config-if)#exit
+r1(config)#ntp master 4
+r1(config)#end
+r1#show clock
+12:00:00.000 UTC Sun Nov 8 2026
+r1#show ntp status
+Clock is synchronized, stratum 4, reference is 127.127.1.1
+nominal freq is 250.0000 Hz, actual freq is 250.0000 Hz, precision is 2**18
+ntp uptime is 0 (1/100 of seconds), resolution is 4000
+reference time is EE9AE2C0.00000000 (12:00:00.000 UTC Sun Nov 8 2026)
+clock offset is 0.0000 msec, root delay is 0.00 msec
+root dispersion is 8.00 msec, peer dispersion is 4.00 msec
+r1#show ntp associations
+  address         ref clock       st   when   poll reach  delay  offset   disp
+*~127.127.1.1     .LOCL.          3    -      16     377  0.000  0.000  0.000
+ * sys.peer, # selected, + candidate, - outlyer, x falseticker, ~ configured
+
+== r2
+r2>enable
+r2#configure terminal
+r2(config)#interface g0/0
+r2(config-if)#ip address 10.0.0.2 255.255.255.0
+r2(config-if)#no shutdown
+r2(config-if)#exit
+r2(config)#ntp server 10.0.0.1
+r2(config)#end
+r2#show clock
+*00:00:00.000 UTC Mon Mar 1 1993
+r2#show ntp status
+Clock is unsynchronized, stratum 16, no reference clock
+nominal freq is 250.0000 Hz, actual freq is 250.0000 Hz, precision is 2**18
+ntp uptime is 0 (1/100 of seconds), resolution is 4000
+reference time is 00000000.00000000 (00:00:00.000 UTC Mon Jan 1 1900)
+clock offset is 0.0000 msec, root delay is 0.00 msec
+root dispersion is 0.00 msec, peer dispersion is 0.00 msec
+
+== sw1
+sw1>enable
+sw1#configure terminal
+sw1(config)#interface vlan 1
+sw1(config-if)#ip address 10.0.0.3 255.255.255.0
+sw1(config-if)#no shutdown
+sw1(config-if)#exit
+sw1(config)#ntp server 10.0.0.2
+sw1(config)#clock timezone EST -5
+sw1(config)#end
+
+-- 60 s pass
+
+== r2
+r2#show ntp status
+Clock is unsynchronized, stratum 16, no reference clock
+nominal freq is 250.0000 Hz, actual freq is 250.0000 Hz, precision is 2**18
+ntp uptime is 0 (1/100 of seconds), resolution is 4000
+reference time is 00000000.00000000 (00:00:00.000 UTC Mon Jan 1 1900)
+clock offset is 0.0000 msec, root delay is 0.00 msec
+root dispersion is 0.00 msec, peer dispersion is 0.00 msec
+r2#show clock
+*00:01:00.000 UTC Mon Mar 1 1993
+
+-- 90 s pass
+r2#show ntp status
+Clock is synchronized, stratum 5, reference is 10.0.0.1
+nominal freq is 250.0000 Hz, actual freq is 250.0000 Hz, precision is 2**18
+ntp uptime is 15000 (1/100 of seconds), resolution is 4000
+reference time is EE9AE341.00022646 (12:02:09.000 UTC Sun Nov 8 2026)
+clock offset is 0.0000 msec, root delay is 0.03 msec
+root dispersion is 8.00 msec, peer dispersion is 4.00 msec
+r2#show ntp associations
+  address         ref clock       st   when   poll reach  delay  offset   disp
+*~10.0.0.1        127.127.1.1     4    20     64       7  0.033  0.000  3.906
+ * sys.peer, # selected, + candidate, - outlyer, x falseticker, ~ configured
+r2#show clock
+12:02:29.999 UTC Sun Nov 8 2026
+
+== sw1
+
+-- 200 s pass
+sw1#show ntp status
+Clock is synchronized, stratum 6, reference is 10.0.0.2
+nominal freq is 250.0000 Hz, actual freq is 250.0000 Hz, precision is 2**18
+ntp uptime is 35000 (1/100 of seconds), resolution is 4000
+reference time is EE9AE401.0001131C (12:05:21.000 UTC Sun Nov 8 2026)
+clock offset is 0.0000 msec, root delay is 0.05 msec
+root dispersion is 8.00 msec, peer dispersion is 4.00 msec
+sw1#show ntp associations
+  address         ref clock       st   when   poll reach  delay  offset   disp
+*~10.0.0.2        10.0.0.1        5    28     64       7  0.016  0.000  3.906
+ * sys.peer, # selected, + candidate, - outlyer, x falseticker, ~ configured
+sw1#show clock
+07:05:49.999 EST Sun Nov 8 2026
+sw1#show running-config
+hostname sw1
+!
+clock timezone EST -5
+ntp server 10.0.0.2
+!
+interface Vlan1
+ ip address 10.0.0.3 255.255.255.0
+!
+end
+
+== r1
+r1#configure terminal
+r1(config)#no ntp master
+r1(config)#end
+
+-- 700 s pass
+
+== r2
+r2#show ntp status
+Clock is unsynchronized, stratum 16, no reference clock
+nominal freq is 250.0000 Hz, actual freq is 250.0000 Hz, precision is 2**18
+ntp uptime is 0 (1/100 of seconds), resolution is 4000
+reference time is 00000000.00000000 (00:00:00.000 UTC Mon Jan 1 1900)
+clock offset is 0.0000 msec, root delay is 0.00 msec
+root dispersion is 0.00 msec, peer dispersion is 0.00 msec
+r2#show clock
+.12:17:29.999 UTC Sun Nov 8 2026
+r2#show ntp associations
+  address         ref clock       st   when   poll reach  delay  offset   disp
+ ~10.0.0.1        127.127.1.1     4    728    64       0  0.033  0.000  3.906
+ * sys.peer, # selected, + candidate, - outlyer, x falseticker, ~ configured
+
+== sw1
+sw1#show ntp status
+Clock is synchronized, stratum 6, reference is 10.0.0.2
+nominal freq is 250.0000 Hz, actual freq is 250.0000 Hz, precision is 2**18
+ntp uptime is 105000 (1/100 of seconds), resolution is 4000
+reference time is EE9AE5C1.0001131C (12:12:49.000 UTC Sun Nov 8 2026)
+clock offset is 0.0000 msec, root delay is 0.05 msec
+root dispersion is 8.00 msec, peer dispersion is 4.00 msec
+
+-- 800 s pass
+sw1#show ntp status
+Clock is unsynchronized, stratum 16, no reference clock
+nominal freq is 250.0000 Hz, actual freq is 250.0000 Hz, precision is 2**18
+ntp uptime is 0 (1/100 of seconds), resolution is 4000
+reference time is 00000000.00000000 (00:00:00.000 UTC Mon Jan 1 1900)
+clock offset is 0.0000 msec, root delay is 0.00 msec
+root dispersion is 0.00 msec, peer dispersion is 0.00 msec
+sw1#show clock
+.07:30:49.999 EST Sun Nov 8 2026
+
+== r2
+r2#clock set 9:30:00 31 Feb 2026
+% Invalid input detected: no such day in that month.
+r2#clock set 9:30:00 1 Mar 2026
+r2#show clock
+.09:30:00.000 UTC Sun Mar 1 2026
+r2#configure terminal
+r2(config)#no ntp server 10.0.0.1
+r2(config)#no ntp server 10.0.0.1
+% That NTP server is not configured.
+r2(config)#end
+r2#show running-config
+hostname r2
+!
+interface GigabitEthernet0/0
+ ip address 10.0.0.2 255.255.255.0
+ no shutdown
+!
+interface GigabitEthernet0/1
+ no ip address
+ shutdown
+!
+end

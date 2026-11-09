@@ -115,6 +115,9 @@ pub struct Kernel {
     /// idle however many background timers are pending.
     foreground: usize,
     links: Vec<Link>,
+    /// Ports whose device has switched its transmitter off (administratively down, or
+    /// error-disabled): the link counts as down at both ends.
+    carrier_off: BTreeSet<(DeviceId, PortId)>,
     delivered: u64,
     pub trace: Trace,
 }
@@ -129,6 +132,7 @@ impl Kernel {
             cancelled: BTreeSet::new(),
             foreground: 0,
             links: Vec::new(),
+            carrier_off: BTreeSet::new(),
             delivered: 0,
             trace,
         }
@@ -167,9 +171,20 @@ impl Kernel {
 
     /// Whether `(device, port)` is cabled to a link that is up.
     pub fn port_up(&self, device: DeviceId, port: PortId) -> bool {
-        self.links
-            .iter()
-            .any(|l| l.up && l.ends.contains(&(device, port)))
+        self.links.iter().any(|l| {
+            l.up && l.ends.contains(&(device, port))
+                && !l.ends.iter().any(|e| self.carrier_off.contains(e))
+        })
+    }
+
+    /// A device turns a port's carrier on or off. With it off the cable is dead for both ends,
+    /// as when a real port is shut down.
+    pub fn set_carrier(&mut self, device: DeviceId, port: PortId, on: bool) {
+        if on {
+            self.carrier_off.remove(&(device, port));
+        } else {
+            self.carrier_off.insert((device, port));
+        }
     }
 
     pub fn set_link_up(&mut self, id: LinkId, up: bool) {
@@ -244,8 +259,12 @@ impl Kernel {
                 .record(now, TraceKind::FrameDrop, device.0, port.0, &frame);
             return;
         };
+        let dead = self.links[idx]
+            .ends
+            .iter()
+            .any(|e| self.carrier_off.contains(e));
         let l = &mut self.links[idx];
-        if !l.up {
+        if !l.up || dead {
             self.trace
                 .record(now, TraceKind::FrameDrop, device.0, port.0, &frame);
             return;

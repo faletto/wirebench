@@ -3,13 +3,18 @@
 
 mod acl;
 mod arp;
+mod channel;
 mod device;
 mod dhcp_server;
+mod discovery;
+mod fhrp;
 mod fib;
 mod host;
 mod mgmt;
+mod ntp;
 mod ospf;
 mod probe;
+mod psec;
 mod router;
 mod stp;
 mod switch;
@@ -22,13 +27,29 @@ pub use acl::{
     Rule as AclRule,
 };
 pub use arp::Resolver;
+pub use channel::{
+    bundle_cost, ChannelMode, ChannelPort, JoinError, LoadBalance, Membership, MAX_GROUP,
+    MAX_MEMBERS,
+};
 pub use device::{Ctx, Device, DeviceEvent};
 pub use dhcp_server::{client_key, Binding, BindingState, DhcpServer, Pool};
+pub use discovery::{
+    Discovery, Identity as DiscoveryIdentity, Neighbour, PortInfo as DiscoveryPort,
+    DEFAULT_CDP_HOLD, DEFAULT_CDP_TIMER, DEFAULT_LLDP_HOLD, DEFAULT_LLDP_TIMER,
+};
+pub use fhrp::{
+    Group as FhrpGroup, Kind as FhrpKind, Msg as FhrpMsg, Proto as FhrpProto, State as FhrpState,
+    DEFAULT_PRIORITY as FHRP_DEFAULT_PRIORITY,
+};
 pub use fib::{mask, Fib, Route, RouteKind};
 pub use host::{DhcpClient, DhcpState, Host, PingResult};
 pub use mgmt::{
     banner_delimiter, check_secret, hash_secret, is_hashed, obscure, password_text, plain_password,
     reveal, stored_secret, Line, Mgmt,
+};
+pub use ntp::{
+    civil_from_unix, unix_from_civil, Assoc as NtpAssoc, Clock, Ntp, SyncState as NtpSync,
+    DEFAULT_MASTER_STRATUM, MONTHS, POLL_SECS as NTP_POLL_SECS,
 };
 pub use ospf::{
     DefaultInfo as OspfDefaultInfo, IfCfg as OspfIfCfg, IfState as OspfIfState,
@@ -37,7 +58,11 @@ pub use ospf::{
     DEFAULT_HELLO as OSPF_DEFAULT_HELLO, DEFAULT_REF_BW as OSPF_DEFAULT_REF_BW,
 };
 pub use probe::{record as record_probe, ProbeBody, ProbeReply, PROBE_LOG_LIMIT};
-pub use router::{EncapError, Interface, Outgoing, Router, StaticRoute, SubInterface};
+pub use psec::{
+    parse_mac, PortSecurity, PsecState, Verdict as PsecVerdict, Violation as PsecViolation,
+    DEFAULT_RECOVERY_SECS,
+};
+pub use router::{EncapError, FhrpEntry, Interface, Outgoing, Router, StaticRoute, SubInterface};
 pub use stp::{
     port_id, Action as StpAction, Mode as StpMode, PortView, Role as StpRole, State as StpState,
     Stp, Vector,

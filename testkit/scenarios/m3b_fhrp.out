@@ -1,0 +1,249 @@
+
+== pc1
+pc1>ipconfig set 10.0.0.10 255.255.255.0
+pc1>ipconfig gateway 10.0.0.254
+
+== srv
+srv>ipconfig set 10.0.1.10 255.255.255.0
+srv>ipconfig gateway 10.0.1.254
+
+== r1
+r1>enable
+r1#configure terminal
+r1(config)#interface g0/1
+r1(config-if)#ip address 10.0.1.1 255.255.255.0
+r1(config-if)#standby 1 ip 10.0.1.254
+r1(config-if)#standby 1 priority 110
+r1(config-if)#standby 1 preempt
+r1(config-if)#no shutdown
+r1(config-if)#interface g0/0
+r1(config-if)#ip address 10.0.0.1 255.255.255.0
+r1(config-if)#standby 1 ip 10.0.0.254
+r1(config-if)#standby 1 priority 110
+r1(config-if)#standby 1 preempt
+r1(config-if)#standby 1 track g0/1 20
+r1(config-if)#no shutdown
+r1(config-if)#end
+
+== r2
+r2>enable
+r2#configure terminal
+r2(config)#interface g0/0
+r2(config-if)#ip address 10.0.0.2 255.255.255.0
+r2(config-if)#standby 1 ip 10.0.0.254
+r2(config-if)#standby 1 preempt
+r2(config-if)#no shutdown
+r2(config-if)#interface g0/1
+r2(config-if)#ip address 10.0.1.2 255.255.255.0
+r2(config-if)#standby 1 ip 10.0.1.254
+r2(config-if)#no shutdown
+r2(config-if)#end
+r2#show standby brief
+                     P indicates configured to preempt.
+                     |
+Interface   Grp  Pri P State   Active          Standby         Virtual IP
+Gi0/0       1    100 P Init    unknown         unknown         10.0.0.254
+Gi0/1       1    100   Init    unknown         unknown         10.0.1.254
+
+-- 5 s pass
+r2#show standby brief
+                     P indicates configured to preempt.
+                     |
+Interface   Grp  Pri P State   Active          Standby         Virtual IP
+Gi0/0       1    100 P Listen  unknown         unknown         10.0.0.254
+Gi0/1       1    100   Listen  unknown         unknown         10.0.1.254
+
+-- 40 s pass
+r2#show standby brief
+                     P indicates configured to preempt.
+                     |
+Interface   Grp  Pri P State   Active          Standby         Virtual IP
+Gi0/0       1    100 P Standby 10.0.0.1        local           10.0.0.254
+Gi0/1       1    100   Standby 10.0.1.1        local           10.0.1.254
+
+== r1
+r1#show standby brief
+                     P indicates configured to preempt.
+                     |
+Interface   Grp  Pri P State   Active          Standby         Virtual IP
+Gi0/1       1    110 P Active  local           10.0.1.2        10.0.1.254
+Gi0/0       1    110 P Active  local           10.0.0.2        10.0.0.254
+r1#show standby
+GigabitEthernet0/1 - Group 1
+  State is Active
+    3 state changes, last state change 00:00:33
+  Virtual IP address is 10.0.1.254
+  Active virtual MAC address is 0000.0c07.ac01
+    Local virtual MAC address is 0000.0c07.ac01 (v1 default)
+  Hello time 3 sec, hold time 10 sec
+  Preemption enabled
+  Active router is local
+  Standby router is 10.0.1.2, priority 100
+  Priority 110 (configured 110)
+  Group name is "hsrp-Gi0/1-1" (default)
+
+GigabitEthernet0/0 - Group 1
+  State is Active
+    3 state changes, last state change 00:00:33
+  Virtual IP address is 10.0.0.254
+  Active virtual MAC address is 0000.0c07.ac01
+    Local virtual MAC address is 0000.0c07.ac01 (v1 default)
+  Hello time 3 sec, hold time 10 sec
+  Preemption enabled
+  Active router is local
+  Standby router is 10.0.0.2, priority 100
+  Priority 110 (configured 110)
+  Track interface Gi0/1 state Up decrement 20
+  Group name is "hsrp-Gi0/0-1" (default)
+
+== pc1
+pc1>ping 10.0.1.10
+Reply from 10.0.1.10: time=124us
+Reply from 10.0.1.10: time=55us
+Reply from 10.0.1.10: time=59us
+Reply from 10.0.1.10: time=55us
+Sent 4, received 4
+pc1>ping 10.0.0.254
+Reply from 10.0.0.254: time=27us
+Reply from 10.0.0.254: time=31us
+Reply from 10.0.0.254: time=27us
+Reply from 10.0.0.254: time=27us
+Sent 4, received 4
+
+== sw1
+sw1>show mac address-table
+Vlan  Mac Address     Port
+1     0000.0c07.ac01  Fa0/2
+1     0200.0000.0001  Fa0/1
+1     02aa.0000.0200  Fa0/2
+1     02aa.0000.0300  Fa0/3
+
+== r1
+r1#configure terminal
+r1(config)#interface g0/1
+r1(config-if)#shutdown
+r1(config-if)#end
+
+-- 5 s pass
+r1#show standby
+GigabitEthernet0/1 - Group 1
+  State is Init
+    4 state changes, last state change 00:00:04
+  Virtual IP address is 10.0.1.254
+  Active virtual MAC address is unknown
+    Local virtual MAC address is 0000.0c07.ac01 (v1 default)
+  Hello time 3 sec, hold time 10 sec
+  Preemption enabled
+  Active router is unknown
+  Standby router is unknown
+  Priority 110 (configured 110)
+  Group name is "hsrp-Gi0/1-1" (default)
+
+GigabitEthernet0/0 - Group 1
+  State is Standby
+    5 state changes, last state change 00:00:03
+  Virtual IP address is 10.0.0.254
+  Active virtual MAC address is unknown
+    Local virtual MAC address is 0000.0c07.ac01 (v1 default)
+  Hello time 3 sec, hold time 10 sec
+  Preemption enabled
+  Active router is 10.0.0.2, priority 100 (expires in 6 sec)
+  Standby router is local
+  Priority 90 (configured 110)
+  Track interface Gi0/1 state Down decrement 20
+  Group name is "hsrp-Gi0/0-1" (default)
+
+== r2
+r2#show standby brief
+                     P indicates configured to preempt.
+                     |
+Interface   Grp  Pri P State   Active          Standby         Virtual IP
+Gi0/0       1    100 P Active  local           10.0.0.1        10.0.0.254
+Gi0/1       1    100   Standby 10.0.1.1        local           10.0.1.254
+
+-- 15 s pass
+r2#show standby brief
+                     P indicates configured to preempt.
+                     |
+Interface   Grp  Pri P State   Active          Standby         Virtual IP
+Gi0/0       1    100 P Active  local           10.0.0.1        10.0.0.254
+Gi0/1       1    100   Active  local           unknown         10.0.1.254
+
+== pc1
+pc1>ping 10.0.1.10
+Reply from 10.0.1.10: time=101us
+Reply from 10.0.1.10: time=59us
+Reply from 10.0.1.10: time=55us
+Reply from 10.0.1.10: time=55us
+Sent 4, received 4
+
+== sw1
+sw1>show mac address-table
+Vlan  Mac Address     Port
+1     0000.0c07.ac01  Fa0/3
+1     0200.0000.0001  Fa0/1
+1     02aa.0000.0200  Fa0/2
+1     02aa.0000.0300  Fa0/3
+
+== r1
+r1#configure terminal
+r1(config)#interface g0/1
+r1(config-if)#no shutdown
+r1(config-if)#end
+
+-- 60 s pass
+r1#show standby brief
+                     P indicates configured to preempt.
+                     |
+Interface   Grp  Pri P State   Active          Standby         Virtual IP
+Gi0/1       1    110 P Active  local           10.0.1.2        10.0.1.254
+Gi0/0       1    110 P Active  local           10.0.0.2        10.0.0.254
+
+== r2
+r2#show standby brief
+                     P indicates configured to preempt.
+                     |
+Interface   Grp  Pri P State   Active          Standby         Virtual IP
+Gi0/0       1    100 P Standby 10.0.0.1        local           10.0.0.254
+Gi0/1       1    100   Standby 10.0.1.1        local           10.0.1.254
+
+== pc1
+pc1>ping 10.0.1.10
+Reply from 10.0.1.10: time=59us
+Reply from 10.0.1.10: time=55us
+Reply from 10.0.1.10: time=55us
+Reply from 10.0.1.10: time=59us
+Sent 4, received 4
+
+== r1
+r1#configure terminal
+r1(config)#interface g0/0
+r1(config-if)#no standby 1
+r1(config-if)#end
+
+-- 2 s pass
+
+== r2
+r2#show standby brief
+                     P indicates configured to preempt.
+                     |
+Interface   Grp  Pri P State   Active          Standby         Virtual IP
+Gi0/0       1    100 P Active  local           unknown         10.0.0.254
+Gi0/1       1    100   Standby 10.0.1.1        local           10.0.1.254
+
+== r1
+r1#show running-config
+hostname r1
+!
+interface GigabitEthernet0/0
+ ip address 10.0.0.1 255.255.255.0
+ no shutdown
+!
+interface GigabitEthernet0/1
+ ip address 10.0.1.1 255.255.255.0
+ standby 1 ip 10.0.1.254
+ standby 1 priority 110
+ standby 1 preempt
+ no shutdown
+!
+end

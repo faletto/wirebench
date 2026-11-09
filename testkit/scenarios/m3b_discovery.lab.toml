@@ -1,0 +1,37 @@
+format = "labsim-lab"
+version = 1
+
+[meta]
+title = "CDP and LLDP: who is on the other end of the cable"
+
+[[device]]
+name = "r1"
+template = "router-2g"
+pos = [0, 60]
+
+[[device]]
+name = "sw1"
+template = "switch-l2-8"
+pos = [180, 60]
+
+[[device]]
+name = "sw2"
+template = "switch-l2-8"
+pos = [360, 60]
+
+[[device]]
+name = "r2"
+template = "router-2g"
+pos = [180, 200]
+
+[[link]]
+a = "r1:Gi0/0"
+b = "sw1:Fa0/1"
+
+[[link]]
+a = "sw1:Fa0/2"
+b = "sw2:Fa0/2"
+
+[[link]]
+a = "r1:Gi0/1"
+b = "r2:Gi0/1"

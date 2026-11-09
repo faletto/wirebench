@@ -1,0 +1,95 @@
+# Two cables between sw1 and sw2, bundled with LACP (sw1 active, sw2 passive). Rapid spanning
+# tree runs on both: with the bundle there is no loop, so nothing is blocked.
+@pc1
+ipconfig set 10.0.0.1 255.255.255.0
+@pc3
+ipconfig set 10.0.0.3 255.255.255.0
+@pc2
+ipconfig set 10.0.0.2 255.255.255.0
+@pc4
+ipconfig set 10.0.0.4 255.255.255.0
+@sw1
+enable
+configure terminal
+spanning-tree mode rapid-pvst
+interface range fa0/1 - 2
+switchport mode trunk
+channel-group 1 mode active
+end
+@sw2
+enable
+configure terminal
+spanning-tree mode rapid-pvst
+interface range fa0/1-2
+switchport mode trunk
+channel-group 1 mode passive
+end
+%wait 40
+@sw1
+show etherchannel summary
+show lacp neighbor
+show lacp internal
+show spanning-tree
+show interfaces trunk
+@sw2
+show etherchannel summary
+show spanning-tree
+@pc1
+ping 10.0.0.2
+@pc3
+ping 10.0.0.4
+@sw1
+show mac address-table
+# One cable goes down: the bundle shrinks to one link and the lab keeps working.
+configure terminal
+interface fa0/1
+shutdown
+end
+%wait 5
+show etherchannel summary
+show spanning-tree
+show mac address-table
+@sw2
+show etherchannel summary
+show spanning-tree
+show mac address-table
+@pc1
+ping 10.0.0.2
+@sw1
+configure terminal
+interface fa0/1
+no shutdown
+end
+%wait 40
+show etherchannel summary
+# Settings typed on the port-channel reach the members.
+configure terminal
+interface port-channel 1
+switchport trunk allowed vlan 1,20
+end
+show running-config
+# Mismatch: sw1 goes static while sw2 still speaks LACP. sw2 hears nothing, so its ports stay on
+# their own.
+configure terminal
+interface range fa0/1 - 2
+channel-group 1 mode on
+no channel-group
+channel-group 1 mode on
+end
+# LACP gives up on a silent neighbour after three slow intervals.
+%wait 100
+show etherchannel summary
+@sw2
+show etherchannel summary
+@pc1
+ping 10.0.0.2
+@sw1
+configure terminal
+interface fa0/1
+channel-group 1 mode active
+end
+show etherchannel load-balance
+configure terminal
+port-channel load-balance src-dst-ip
+end
+show etherchannel load-balance

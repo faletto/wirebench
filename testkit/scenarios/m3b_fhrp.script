@@ -1,0 +1,94 @@
+# pc1 and srv use 10.0.0.254 and 10.0.1.254, addresses that belong to no router but to whichever
+# of r1 and r2 is HSRP active. r1 has the higher priority and preempts.
+@pc1
+ipconfig set 10.0.0.10 255.255.255.0
+ipconfig gateway 10.0.0.254
+@srv
+ipconfig set 10.0.1.10 255.255.255.0
+ipconfig gateway 10.0.1.254
+@r1
+enable
+configure terminal
+interface g0/1
+ip address 10.0.1.1 255.255.255.0
+standby 1 ip 10.0.1.254
+standby 1 priority 110
+standby 1 preempt
+no shutdown
+interface g0/0
+ip address 10.0.0.1 255.255.255.0
+standby 1 ip 10.0.0.254
+standby 1 priority 110
+standby 1 preempt
+standby 1 track g0/1 20
+no shutdown
+end
+@r2
+enable
+configure terminal
+interface g0/0
+ip address 10.0.0.2 255.255.255.0
+standby 1 ip 10.0.0.254
+standby 1 preempt
+no shutdown
+interface g0/1
+ip address 10.0.1.2 255.255.255.0
+standby 1 ip 10.0.1.254
+no shutdown
+end
+# HSRP takes a while: both routers listen for one hold time (10 s) before they speak up.
+show standby brief
+%wait 5
+show standby brief
+%wait 40
+show standby brief
+@r1
+show standby brief
+show standby
+@pc1
+ping 10.0.1.10
+ping 10.0.0.254
+@sw1
+show mac address-table
+# r1 loses its server-side link. Its LAN-side group tracks that interface, so its priority falls
+# to 90 and r2 (priority 100, preempt) takes the LAN side over at once. Without the tracking r1
+# would stay active on the LAN with no way to the servers.
+@r1
+configure terminal
+interface g0/1
+shutdown
+end
+%wait 5
+show standby
+@r2
+show standby brief
+# The server side has no tracking; r2 takes over there when r1's hellos run out (10 s).
+%wait 15
+show standby brief
+@pc1
+ping 10.0.1.10
+@sw1
+show mac address-table
+# Link restored: the priority is back at 110 and r1 preempts on both sides.
+@r1
+configure terminal
+interface g0/1
+no shutdown
+end
+%wait 60
+show standby brief
+@r2
+show standby brief
+@pc1
+ping 10.0.1.10
+# Taking a group away from an active router is polite: it resigns, and r2 is active at once.
+@r1
+configure terminal
+interface g0/0
+no standby 1
+end
+%wait 2
+@r2
+show standby brief
+@r1
+show running-config

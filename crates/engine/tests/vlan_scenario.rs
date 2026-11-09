@@ -78,6 +78,36 @@ const OSPF_AREAS: Scenario = Scenario {
     golden: "../../testkit/scenarios/m3_ospf_areas.out",
 };
 
+const PSEC: Scenario = Scenario {
+    lab: include_str!("../../../testkit/scenarios/m3b_psec.lab.toml"),
+    script: include_str!("../../../testkit/scenarios/m3b_psec.script"),
+    golden: "../../testkit/scenarios/m3b_psec.out",
+};
+
+const ETHERCHANNEL: Scenario = Scenario {
+    lab: include_str!("../../../testkit/scenarios/m3b_etherchannel.lab.toml"),
+    script: include_str!("../../../testkit/scenarios/m3b_etherchannel.script"),
+    golden: "../../testkit/scenarios/m3b_etherchannel.out",
+};
+
+const DISCOVERY: Scenario = Scenario {
+    lab: include_str!("../../../testkit/scenarios/m3b_discovery.lab.toml"),
+    script: include_str!("../../../testkit/scenarios/m3b_discovery.script"),
+    golden: "../../testkit/scenarios/m3b_discovery.out",
+};
+
+const NTP: Scenario = Scenario {
+    lab: include_str!("../../../testkit/scenarios/m3b_ntp.lab.toml"),
+    script: include_str!("../../../testkit/scenarios/m3b_ntp.script"),
+    golden: "../../testkit/scenarios/m3b_ntp.out",
+};
+
+const FHRP: Scenario = Scenario {
+    lab: include_str!("../../../testkit/scenarios/m3b_fhrp.lab.toml"),
+    script: include_str!("../../../testkit/scenarios/m3b_fhrp.script"),
+    golden: "../../testkit/scenarios/m3b_fhrp.out",
+};
+
 fn transcript(sc: &Scenario) -> String {
     let mut lab = load_and_build(sc.lab, Trace::new()).expect("lab builds");
     assert!(lab.warnings.is_empty(), "{:?}", lab.warnings);
@@ -218,6 +248,31 @@ fn the_ospf_lab_matches_its_golden_transcript() {
 #[test]
 fn the_ospf_areas_lab_matches_its_golden_transcript() {
     check_golden(&OSPF_AREAS);
+}
+
+#[test]
+fn the_port_security_lab_matches_its_golden_transcript() {
+    check_golden(&PSEC);
+}
+
+#[test]
+fn the_etherchannel_lab_matches_its_golden_transcript() {
+    check_golden(&ETHERCHANNEL);
+}
+
+#[test]
+fn the_discovery_lab_matches_its_golden_transcript() {
+    check_golden(&DISCOVERY);
+}
+
+#[test]
+fn the_ntp_lab_matches_its_golden_transcript() {
+    check_golden(&NTP);
+}
+
+#[test]
+fn the_fhrp_lab_matches_its_golden_transcript() {
+    check_golden(&FHRP);
 }
 
 #[test]

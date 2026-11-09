@@ -1,0 +1,271 @@
+
+== sw1
+sw1>enable
+sw1#show cdp neighbors
+% CDP is not enabled
+sw1#configure terminal
+sw1(config)#hostname sw1
+sw1(config)#cdp run
+sw1(config)#interface fa0/1
+sw1(config-if)#switchport mode access
+sw1(config-if)#end
+
+== sw2
+sw2>enable
+sw2#configure terminal
+sw2(config)#cdp run
+sw2(config)#end
+
+== r1
+r1>enable
+r1#configure terminal
+r1(config)#cdp run
+r1(config)#interface g0/0
+r1(config-if)#ip address 10.0.0.1 255.255.255.0
+r1(config-if)#no shutdown
+r1(config-if)#interface g0/1
+r1(config-if)#ip address 10.0.1.1 255.255.255.0
+r1(config-if)#no shutdown
+r1(config-if)#end
+
+== r2
+r2>enable
+r2#configure terminal
+r2(config)#interface g0/1
+r2(config-if)#ip address 10.0.1.2 255.255.255.0
+r2(config-if)#no shutdown
+r2(config-if)#end
+
+-- 5 s pass
+
+== sw1
+sw1#show cdp
+Global CDP information:
+	Sending CDP packets every 60 seconds
+	Sending a holdtime value of 180 seconds
+	Sending CDPv2 advertisements is  enabled
+sw1#show cdp neighbors
+Capability Codes: R - Router, S - Switch, H - Host
+
+Device ID        Local Intrfce     Holdtme    Capability  Platform            Port ID
+sw2              Fas 0/2           176        S           wirebench L2 switch Fas 0/2
+r1               Fas 0/1           176        R           wirebench router    Gig 0/0
+sw1#show cdp neighbors detail
+-------------------------
+Device ID: sw2
+Entry address(es):
+Platform: wirebench L2 switch,  Capabilities: Switch
+Interface: FastEthernet0/2,  Port ID (outgoing port): FastEthernet0/2
+Holdtime : 176 sec
+
+Version :
+wirebench simulated switch
+
+advertisement version: 2
+
+-------------------------
+Device ID: r1
+Entry address(es):
+  IP address: 10.0.0.1
+Platform: wirebench router,  Capabilities: Router
+Interface: FastEthernet0/1,  Port ID (outgoing port): GigabitEthernet0/0
+Holdtime : 176 sec
+
+Version :
+wirebench simulated router
+
+advertisement version: 2
+
+== r1
+r1#show cdp neighbors
+Capability Codes: R - Router, S - Switch, H - Host
+
+Device ID        Local Intrfce     Holdtme    Capability  Platform            Port ID
+sw1              Gig 0/0           176        S           wirebench L2 switch Fas 0/1
+r1#show cdp interface
+GigabitEthernet0/0 is up, line protocol is up
+  Encapsulation ARPA
+  Sending CDP packets every 60 seconds
+  Holdtime is 180 seconds
+GigabitEthernet0/1 is up, line protocol is up
+  Encapsulation ARPA
+  Sending CDP packets every 60 seconds
+  Holdtime is 180 seconds
+
+== r2
+r2#show cdp neighbors
+% CDP is not enabled
+r2#configure terminal
+r2(config)#cdp run
+r2(config)#end
+
+-- 3 s pass
+
+== r1
+r1#show cdp neighbors
+Capability Codes: R - Router, S - Switch, H - Host
+
+Device ID        Local Intrfce     Holdtme    Capability  Platform            Port ID
+sw1              Gig 0/0           173        S           wirebench L2 switch Fas 0/1
+r2               Gig 0/1           178        R           wirebench router    Gig 0/1
+
+== r2
+r2#show cdp entry r1
+% No such CDP entry.
+r2#configure terminal
+r2(config)#cdp timer 10
+r2(config)#cdp holdtime 30
+r2(config)#interface g0/1
+r2(config-if)#no cdp enable
+r2(config-if)#end
+
+-- 40 s pass
+r2#show cdp neighbors
+Capability Codes: R - Router, S - Switch, H - Host
+
+Device ID        Local Intrfce     Holdtme    Capability  Platform            Port ID
+
+== r1
+r1#show cdp neighbors
+Capability Codes: R - Router, S - Switch, H - Host
+
+Device ID        Local Intrfce     Holdtme    Capability  Platform            Port ID
+sw1              Gig 0/0           133        S           wirebench L2 switch Fas 0/1
+r2               Gig 0/1           138        R           wirebench router    Gig 0/1
+r1#show cdp entry nobody
+% No such CDP entry.
+
+== sw2
+sw2#show running-config
+hostname sw2
+!
+cdp run
+!
+end
+
+== r1
+r1#show lldp neighbors
+% LLDP is not enabled
+r1#configure terminal
+r1(config)#lldp run
+r1(config)#end
+
+== sw1
+sw1#configure terminal
+sw1(config)#lldp run
+sw1(config)#interface fa0/1
+sw1(config-if)#no lldp transmit
+sw1(config-if)#end
+
+-- 3 s pass
+sw1#show lldp
+Global LLDP Information:
+    Status: ACTIVE
+    LLDP advertisements are sent every 30 seconds
+    LLDP hold time advertised is 120 seconds
+    LLDP interface reinitialisation delay is 2 seconds
+sw1#show lldp neighbors
+Capability codes:
+    (R) Router, (B) Bridge, (S) Station
+
+Device ID           Local Intf     Hold-time  Capability      Port ID
+r1                  Fa0/1          118        R               Gi0/0
+
+Total entries displayed: 1
+sw1#show lldp neighbors detail
+------------------------------------------------
+Local Intf: Fa0/1
+Chassis id: 02aa.0000.0000
+Port id: Gi0/0
+Port Description: GigabitEthernet0/0
+System Name: r1
+
+System Description: 
+wirebench router
+
+Time remaining: 118 seconds
+System Capabilities: R
+Enabled Capabilities: R
+Management Addresses:
+    IP: 10.0.0.1
+
+Total entries displayed: 1
+sw1#show lldp interface
+Fa0/1:
+    Tx: disabled
+    Rx: enabled
+    Tx state: IDLE
+    Rx state: WAIT FOR FRAME
+Fa0/2:
+    Tx: enabled
+    Rx: enabled
+    Tx state: ACTIVE
+    Rx state: WAIT FOR FRAME
+Fa0/3:
+    Tx: enabled
+    Rx: enabled
+    Tx state: ACTIVE
+    Rx state: WAIT FOR FRAME
+Fa0/4:
+    Tx: enabled
+    Rx: enabled
+    Tx state: ACTIVE
+    Rx state: WAIT FOR FRAME
+Fa0/5:
+    Tx: enabled
+    Rx: enabled
+    Tx state: ACTIVE
+    Rx state: WAIT FOR FRAME
+Fa0/6:
+    Tx: enabled
+    Rx: enabled
+    Tx state: ACTIVE
+    Rx state: WAIT FOR FRAME
+Fa0/7:
+    Tx: enabled
+    Rx: enabled
+    Tx state: ACTIVE
+    Rx state: WAIT FOR FRAME
+Fa0/8:
+    Tx: enabled
+    Rx: enabled
+    Tx state: ACTIVE
+    Rx state: WAIT FOR FRAME
+
+== r1
+r1#show lldp neighbors
+Capability codes:
+    (R) Router, (B) Bridge, (S) Station
+
+Device ID           Local Intf     Hold-time  Capability      Port ID
+
+Total entries displayed: 0
+
+== sw1
+sw1#show running-config
+hostname sw1
+!
+cdp run
+lldp run
+!
+interface FastEthernet0/1
+ switchport mode access
+ no lldp transmit
+!
+end
+sw1#configure terminal
+sw1(config)#interface fa0/2
+sw1(config-if)#shutdown
+sw1(config-if)#end
+
+-- 2 s pass
+sw1#show cdp neighbors
+Capability Codes: R - Router, S - Switch, H - Host
+
+Device ID        Local Intrfce     Holdtme    Capability  Platform            Port ID
+r1               Fas 0/1           128        R           wirebench router    Gig 0/0
+sw1#clear cdp table
+sw1#show cdp neighbors
+Capability Codes: R - Router, S - Switch, H - Host
+
+Device ID        Local Intrfce     Holdtme    Capability  Platform            Port ID

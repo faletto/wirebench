@@ -1,0 +1,78 @@
+# r1 is the time source (ntp master 4), r2 follows r1, and the switch follows r2.
+@r1
+enable
+clock set 12:00:00 8 Nov 2026
+configure terminal
+interface g0/0
+ip address 10.0.0.1 255.255.255.0
+no shutdown
+exit
+ntp master 4
+end
+show clock
+show ntp status
+show ntp associations
+@r2
+enable
+configure terminal
+interface g0/0
+ip address 10.0.0.2 255.255.255.0
+no shutdown
+exit
+ntp server 10.0.0.1
+end
+show clock
+show ntp status
+@sw1
+enable
+configure terminal
+interface vlan 1
+ip address 10.0.0.3 255.255.255.0
+no shutdown
+exit
+ntp server 10.0.0.2
+clock timezone EST -5
+end
+# NTP needs a few polls before it trusts a server: nothing yet after one minute.
+%wait 60
+@r2
+show ntp status
+show clock
+# Three answers later the clock follows r1.
+%wait 90
+show ntp status
+show ntp associations
+show clock
+# The switch asked r2, which was not yet synchronised; it needs three answers of its own.
+@sw1
+%wait 200
+show ntp status
+show ntp associations
+show clock
+show running-config
+# Cut the source: r2 falls out of step once eight polls go unanswered. The switch notices later,
+# when r2 has stopped answering it.
+@r1
+configure terminal
+no ntp master
+end
+%wait 700
+@r2
+show ntp status
+show clock
+show ntp associations
+@sw1
+show ntp status
+%wait 800
+show ntp status
+show clock
+# Dates are checked; a clock set by hand stands until a server is trusted.
+@r2
+clock set 9:30:00 31 Feb 2026
+clock set 9:30:00 1 Mar 2026
+show clock
+configure terminal
+no ntp server 10.0.0.1
+no ntp server 10.0.0.1
+end
+show running-config

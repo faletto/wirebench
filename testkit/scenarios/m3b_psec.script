@@ -1,0 +1,78 @@
+# pc1 and pc3 share sw2, which hangs off sw1 Fa0/1. Port security on that port lets one
+# address through; the second one is a violation.
+@pc1
+ipconfig set 10.0.0.1 255.255.255.0
+@pc3
+ipconfig set 10.0.0.3 255.255.255.0
+@pc2
+ipconfig set 10.0.0.2 255.255.255.0
+@sw1
+enable
+configure terminal
+interface fa0/1
+switchport port-security
+switchport mode access
+switchport port-security
+switchport port-security mac-address 0000
+end
+show port-security
+show port-security interface fa0/1
+# pc1 speaks first and becomes the secure address.
+@pc1
+ping 10.0.0.2
+@sw1
+show port-security address
+show port-security
+# pc3 is a second address on the port: shutdown mode, the default.
+@pc3
+ping 10.0.0.2
+@sw1
+show port-security interface fa0/1
+show interfaces status
+show port-security
+@pc1
+ping 10.0.0.2
+# shutdown then no shutdown brings the port back, with the dynamic address forgotten.
+@sw1
+configure terminal
+interface fa0/1
+shutdown
+no shutdown
+end
+show interfaces status
+@pc3
+ping 10.0.0.2
+@sw1
+show port-security address
+# restrict drops the stranger and counts, but leaves the port up.
+configure terminal
+interface fa0/1
+switchport port-security violation restrict
+switchport port-security maximum 1
+end
+show port-security interface fa0/1
+@pc1
+ping 10.0.0.2
+@sw1
+show port-security interface fa0/1
+# Sticky: the learned address lands in the running configuration.
+configure terminal
+interface fa0/1
+no switchport port-security violation
+switchport port-security mac-address sticky
+end
+clear port-security dynamic
+show port-security address
+show running-config
+# Recovery: err-disabled ports come back by themselves after the interval.
+configure terminal
+errdisable recovery cause psecure-violation
+errdisable recovery interval 60
+end
+@pc1
+ping 10.0.0.2
+@sw1
+show interfaces status
+%wait 61
+show interfaces status
+show running-config

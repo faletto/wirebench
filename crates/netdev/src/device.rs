@@ -32,6 +32,11 @@ impl<'a> Ctx<'a> {
         self.kernel.port_up(self.device, port)
     }
 
+    /// Switch this port's carrier on or off (see [`Kernel::set_carrier`]).
+    pub fn set_carrier(&mut self, port: PortId, on: bool) {
+        self.kernel.set_carrier(self.device, port, on);
+    }
+
     pub fn transmit(&mut self, port: PortId, frame: Vec<u8>) {
         self.kernel.transmit(self.device, port, frame);
     }
@@ -69,4 +74,6 @@ pub trait Device: Any {
     }
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
+    /// The device has just been added to a world: start any periodic upkeep it has.
+    fn start(&mut self, _ctx: &mut Ctx) {}
 }
