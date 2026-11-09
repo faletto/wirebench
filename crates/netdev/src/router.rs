@@ -1,8 +1,9 @@
 use crate::discovery::{Discovery, Identity, PortInfo as DiscPort};
 use crate::fib::{mask, Fib, Route, RouteKind};
 use crate::{
-    record_probe, AclPacket, AclSet, Clock, Ctx, Device, DeviceEvent, DhcpServer, Mgmt, Ntp, Ospf,
-    OspfIfCfg, OspfIfView, OspfPathKind, OspfSource, OspfTx, ProbeBody, ProbeReply, Resolver,
+    record_probe, AclPacket, AclSet, Clock, Ctx, Device, DeviceEvent, DhcpServer, FhrpGroup,
+    FhrpKind, FhrpMsg, FhrpProto, FhrpState, Mgmt, Ntp, Ospf, OspfIfCfg, OspfIfView, OspfPathKind,
+    OspfSource, OspfTx, ProbeBody, ProbeReply, Resolver,
 };
 use kernel::{PortId, SimTime};
 use std::any::Any;
@@ -23,6 +24,8 @@ const OSPF_TICK: u64 = 1 << 40;
 const DISC_TICK: u64 = 1 << 41;
 /// The timer token of NTP polling.
 const NTP_TICK: u64 = 1 << 42;
+/// The timer token of the first hop redundancy upkeep.
+const FHRP_TICK: u64 = 1 << 43;
 const ARP_TTL: SimTime = SimTime::from_secs(4 * 3600);
 
 /// A logical interface. The first `n_ports` are the physical ports, in port order; subinterfaces
@@ -71,6 +74,15 @@ pub struct Outgoing {
     pub dst: MacAddr,
     pub ethertype: EtherType,
     pub payload: Vec<u8>,
+    /// Send from this MAC address instead of the interface's own (a virtual router address).
+    pub src: Option<MacAddr>,
+}
+
+/// One first hop redundancy group on one logical interface.
+#[derive(Clone, Debug)]
+pub struct FhrpEntry {
+    pub iface: usize,
+    pub g: FhrpGroup,
 }
 
 /// Why an `encapsulation dot1q` was refused.
@@ -124,6 +136,9 @@ pub struct Router {
     pub clock: Clock,
     pub ntp: Ntp,
     ntp_timer: bool,
+    /// HSRP and VRRP groups.
+    pub fhrp: Vec<FhrpEntry>,
+    fhrp_timer: bool,
     /// Source MAC of the frame being handled (OSPF learns its neighbours' addresses from it).
     rx_src_mac: MacAddr,
     /// Replies to probes this router sent (pings, traceroutes), oldest first.
@@ -178,6 +193,8 @@ impl Router {
             clock: Clock::default(),
             ntp: Ntp::default(),
             ntp_timer: false,
+            fhrp: Vec::new(),
+            fhrp_timer: false,
             rx_src_mac: MacAddr::default(),
             probes: Vec::new(),
             unreachable_after: SimTime::ZERO,
@@ -206,6 +223,7 @@ impl Router {
         self.ospf = None;
         self.disc = Discovery::new(self.n_ports as usize);
         self.ntp.reset();
+        self.fhrp.clear();
         self.probes.clear();
         self.unreachable_after = SimTime::ZERO;
         for ifc in &mut self.ifaces {
@@ -656,9 +674,21 @@ impl Router {
 
     fn owns(&self, ip: Ipv4Addr) -> bool {
         (0..self.ifaces.len()).any(|i| self.live(i).is_some_and(|(a, _)| a == ip))
+            || self.active_vip(ip).is_some()
     }
 
-    fn emit(&mut self, port: PortId, dst: MacAddr, ethertype: EtherType, mut payload: Vec<u8>) {
+    fn emit(&mut self, port: PortId, dst: MacAddr, ethertype: EtherType, payload: Vec<u8>) {
+        self.emit_from(port, None, dst, ethertype, payload);
+    }
+
+    fn emit_from(
+        &mut self,
+        port: PortId,
+        src: Option<MacAddr>,
+        dst: MacAddr,
+        ethertype: EtherType,
+        mut payload: Vec<u8>,
+    ) {
         if payload.len() < 46 {
             payload.resize(46, 0);
         }
@@ -667,6 +697,7 @@ impl Router {
             dst,
             ethertype,
             payload,
+            src,
         });
     }
 
@@ -689,7 +720,7 @@ impl Router {
             };
             let f = EthernetFrame {
                 dst: o.dst,
-                src: ifc.mac,
+                src: o.src.unwrap_or(ifc.mac),
                 vlan,
                 ethertype: o.ethertype,
                 payload: o.payload,
@@ -832,20 +863,28 @@ impl Router {
         let Some((my_ip, _)) = self.live(port.0 as usize) else {
             return;
         };
-        if p.target_ip != my_ip {
+        // The active router of a first hop redundancy group answers for the virtual address with
+        // the virtual MAC.
+        let virt = self
+            .fhrp
+            .iter()
+            .find(|e| e.iface == port.0 as usize && e.g.is_active() && e.g.vip == p.target_ip)
+            .map(|e| e.g.vmac());
+        if p.target_ip != my_ip && virt.is_none() {
             return;
         }
         self.arp
             .learn(p.sender_ip, p.sender_mac, ctx.now() + ARP_TTL);
         if p.op == ArpOp::Request {
+            let mac = virt.unwrap_or(self.ifaces[port.0 as usize].mac);
             let reply = ArpPacket {
                 op: ArpOp::Reply,
-                sender_mac: self.ifaces[port.0 as usize].mac,
-                sender_ip: my_ip,
+                sender_mac: mac,
+                sender_ip: p.target_ip,
                 target_mac: p.sender_mac,
                 target_ip: p.sender_ip,
             };
-            self.emit(port, p.sender_mac, EtherType::ARP, reply.emit());
+            self.emit_from(port, Some(mac), p.sender_mac, EtherType::ARP, reply.emit());
         }
         for pkt in self.arp.take_pending(p.sender_ip) {
             // Re-route rather than emit directly: the FIB may have changed while waiting.
@@ -891,6 +930,14 @@ impl Router {
             {
                 self.ospf_receive(ctx, ingress, &p);
             }
+            return;
+        }
+        if p.proto == IpProto::UDP && p.dst == wire::HSRP_GROUP {
+            self.on_hsrp(ctx, ingress, &p);
+            return;
+        }
+        if p.proto == IpProto(wire::VRRP_PROTO) && p.dst == wire::VRRP_GROUP {
+            self.on_vrrp(ctx, ingress, &p);
             return;
         }
         // Multicast is not routed.
@@ -1099,6 +1146,322 @@ impl Router {
     }
 }
 
+// ---- first hop redundancy (HSRP, VRRP) ----
+
+fn wire_state(s: u8) -> FhrpState {
+    use wire::hsrp_state::*;
+    match s {
+        ACTIVE => FhrpState::Active,
+        STANDBY => FhrpState::Standby,
+        SPEAK => FhrpState::Speak,
+        LISTEN | LEARN => FhrpState::Listen,
+        _ => FhrpState::Init,
+    }
+}
+
+fn state_code(s: FhrpState) -> u8 {
+    use wire::hsrp_state::*;
+    match s {
+        FhrpState::Active | FhrpState::Master => ACTIVE,
+        FhrpState::Standby | FhrpState::Backup => STANDBY,
+        FhrpState::Speak => SPEAK,
+        FhrpState::Listen => LISTEN,
+        FhrpState::Init => INITIAL,
+    }
+}
+
+impl Router {
+    /// The group that is active for the virtual address `ip`.
+    fn active_vip(&self, ip: Ipv4Addr) -> Option<usize> {
+        self.fhrp
+            .iter()
+            .position(|e| e.g.is_active() && e.g.vip == ip && self.live(e.iface).is_some())
+    }
+
+    /// Whether a frame for MAC `dst` is for interface `i`: its address, broadcast, the multicast
+    /// groups of the protocols in use, or the virtual address of a group it is active in.
+    pub fn accepts_mac(&self, i: usize, dst: MacAddr) -> bool {
+        let ospf_group = self.ospf.is_some()
+            && dst.0[..5] == [0x01, 0x00, 0x5e, 0x00, 0x00]
+            && matches!(dst.0[5], 5 | 6);
+        let fhrp_group = self.fhrp.iter().any(|e| {
+            e.iface == i
+                && ((e.g.proto == FhrpProto::Hsrp && dst == wire::HSRP_MAC)
+                    || (e.g.proto == FhrpProto::Vrrp && dst == wire::VRRP_MAC))
+        });
+        dst.is_broadcast() || ospf_group || fhrp_group || self.owns_mac(i, dst)
+    }
+
+    /// Whether `dst` is this router's own unicast address on `i`, real or virtual: a frame to it is
+    /// for this router and must not be bridged on.
+    pub fn owns_mac(&self, i: usize, dst: MacAddr) -> bool {
+        dst == self.ifaces[i].mac
+            || self
+                .fhrp
+                .iter()
+                .any(|e| e.iface == i && e.g.is_active() && e.g.vmac() == dst)
+    }
+
+    /// Create or change group `group` of `proto` on interface `i`.
+    pub fn fhrp_configure(
+        &mut self,
+        i: usize,
+        proto: FhrpProto,
+        group: u8,
+        f: impl FnOnce(&mut FhrpGroup),
+    ) {
+        let idx = match self
+            .fhrp
+            .iter()
+            .position(|e| e.iface == i && e.g.proto == proto && e.g.group == group)
+        {
+            Some(x) => x,
+            None => {
+                self.fhrp.push(FhrpEntry {
+                    iface: i,
+                    g: FhrpGroup::new(proto, group, Ipv4Addr::UNSPECIFIED),
+                });
+                self.fhrp.len() - 1
+            }
+        };
+        f(&mut self.fhrp[idx].g);
+    }
+
+    /// Delete a group, telling the others if this router was in charge.
+    pub fn fhrp_remove(&mut self, ctx: &mut Ctx, i: usize, proto: FhrpProto, group: u8) -> bool {
+        let Some(idx) = self
+            .fhrp
+            .iter()
+            .position(|e| e.iface == i && e.g.proto == proto && e.g.group == group)
+        else {
+            return false;
+        };
+        let mut e = self.fhrp.remove(idx);
+        let me = self.live(i).map_or(Ipv4Addr::UNSPECIFIED, |a| a.0);
+        let mut out = vec![];
+        e.g.step(ctx.now(), me, false, false, &mut out);
+        for m in out {
+            self.fhrp_send(i, &e.g, me, m);
+        }
+        true
+    }
+
+    pub fn fhrp_kick(&mut self, ctx: &mut Ctx) {
+        if !self.fhrp.is_empty() && !self.fhrp_timer {
+            self.fhrp_timer = true;
+            ctx.schedule_background(SimTime::from_secs(1), FHRP_TICK);
+        }
+    }
+
+    fn fhrp_tick(&mut self, ctx: &mut Ctx) {
+        let now = ctx.now();
+        for idx in 0..self.fhrp.len() {
+            let i = self.fhrp[idx].iface;
+            let live = self.live(i);
+            let me = live.map_or(Ipv4Addr::UNSPECIFIED, |a| a.0);
+            let vip = self.fhrp[idx].g.vip;
+            let up = live.is_some() && vip != Ipv4Addr::UNSPECIFIED;
+            let penalty = self.fhrp[idx]
+                .g
+                .tracks
+                .clone()
+                .into_iter()
+                .filter(|(t, _)| !self.line_up(ctx, *t))
+                .fold(0u8, |a, (_, d)| a.saturating_add(d));
+            self.fhrp[idx].g.penalty = penalty;
+            let mut out = vec![];
+            self.fhrp[idx].g.step(now, me, up, vip == me, &mut out);
+            self.fhrp_emit(idx, me, out);
+        }
+        self.fhrp_kick(ctx);
+    }
+
+    /// Whether interface `t` is up at the line level: not shut, and cabled to a live link (for a
+    /// real port).
+    fn line_up(&self, ctx: &Ctx, t: usize) -> bool {
+        let Some(ifc) = self.ifaces.get(t) else {
+            return false;
+        };
+        if ifc.shutdown || ifc.line_down {
+            return false;
+        }
+        let phys = ifc
+            .sub
+            .map(|s| s.parent)
+            .or(ifc.svi.is_none().then_some(PortId(t as u16)));
+        phys.is_none_or(|p| ctx.port_up(p))
+    }
+
+    /// Send what group `idx` produced, and its gratuitous ARP if it has just taken over.
+    fn fhrp_emit(&mut self, idx: usize, me: Ipv4Addr, out: Vec<FhrpMsg>) {
+        let i = self.fhrp[idx].iface;
+        let g = self.fhrp[idx].g.clone();
+        for m in out {
+            self.fhrp_send(i, &g, me, m);
+        }
+        if self.fhrp[idx].g.take_garp() {
+            let vmac = g.vmac();
+            let arp = ArpPacket {
+                op: ArpOp::Reply,
+                sender_mac: vmac,
+                sender_ip: g.vip,
+                target_mac: MacAddr::BROADCAST,
+                target_ip: g.vip,
+            };
+            self.emit_from(
+                PortId(i as u16),
+                Some(vmac),
+                MacAddr::BROADCAST,
+                EtherType::ARP,
+                arp.emit(),
+            );
+        }
+    }
+
+    fn fhrp_send(&mut self, i: usize, g: &FhrpGroup, me: Ipv4Addr, m: FhrpMsg) {
+        if me == Ipv4Addr::UNSPECIFIED {
+            return;
+        }
+        let (dst_ip, dst_mac, proto, payload, src_mac) = match g.proto {
+            FhrpProto::Hsrp => {
+                let h = wire::Hsrp {
+                    op: match m.kind {
+                        FhrpKind::Hello => wire::HsrpOp::Hello,
+                        FhrpKind::Coup => wire::HsrpOp::Coup,
+                        FhrpKind::Resign => wire::HsrpOp::Resign,
+                    },
+                    state: state_code(m.state),
+                    hello: m.hello as u8,
+                    hold: m.hold as u8,
+                    priority: m.priority,
+                    group: g.group,
+                    vip: g.vip,
+                };
+                let udp = UdpDatagram {
+                    src_port: wire::HSRP_PORT,
+                    dst_port: wire::HSRP_PORT,
+                    payload: h.emit(),
+                }
+                .emit(me, wire::HSRP_GROUP);
+                // The active router speaks with the virtual address so switches learn where it is.
+                let src = (m.state == FhrpState::Active).then(|| g.vmac());
+                (wire::HSRP_GROUP, wire::HSRP_MAC, IpProto::UDP, udp, src)
+            }
+            FhrpProto::Vrrp => {
+                let v = wire::Vrrp {
+                    group: g.group,
+                    priority: if m.kind == FhrpKind::Resign {
+                        0
+                    } else {
+                        m.priority
+                    },
+                    advert: m.hello as u8,
+                    ips: vec![g.vip],
+                };
+                (
+                    wire::VRRP_GROUP,
+                    wire::VRRP_MAC,
+                    IpProto(wire::VRRP_PROTO),
+                    v.emit(),
+                    Some(g.vmac()),
+                )
+            }
+        };
+        let pkt = Ipv4Packet {
+            dscp_ecn: 0xc0,
+            ident: self.next_ident(),
+            flags_frag: 0,
+            ttl: if g.proto == FhrpProto::Vrrp { 255 } else { 1 },
+            proto,
+            src: me,
+            dst: dst_ip,
+            payload,
+        };
+        self.emit_from(
+            PortId(i as u16),
+            src_mac,
+            dst_mac,
+            EtherType::IPV4,
+            pkt.emit(),
+        );
+    }
+
+    fn on_hsrp(&mut self, ctx: &mut Ctx, ingress: PortId, p: &Ipv4Packet) {
+        let Ok(u) = UdpDatagram::parse(&p.payload) else {
+            return;
+        };
+        if u.dst_port != wire::HSRP_PORT {
+            return;
+        }
+        let Ok(h) = wire::Hsrp::parse(&u.payload) else {
+            return;
+        };
+        let msg = FhrpMsg {
+            kind: match h.op {
+                wire::HsrpOp::Hello => FhrpKind::Hello,
+                wire::HsrpOp::Coup => FhrpKind::Coup,
+                wire::HsrpOp::Resign => FhrpKind::Resign,
+            },
+            state: wire_state(h.state),
+            priority: h.priority,
+            hello: u32::from(h.hello),
+            hold: u32::from(h.hold),
+        };
+        self.fhrp_receive(ctx, ingress, FhrpProto::Hsrp, h.group, p.src, msg);
+    }
+
+    fn on_vrrp(&mut self, ctx: &mut Ctx, ingress: PortId, p: &Ipv4Packet) {
+        let Ok(v) = wire::Vrrp::parse(&p.payload) else {
+            return;
+        };
+        // RFC 3768: only packets with TTL 255 are accepted, so they cannot come from afar.
+        if p.ttl != 255 {
+            return;
+        }
+        let msg = FhrpMsg {
+            kind: if v.priority == 0 {
+                FhrpKind::Resign
+            } else {
+                FhrpKind::Hello
+            },
+            state: FhrpState::Master,
+            priority: v.priority,
+            hello: u32::from(v.advert),
+            hold: 3 * u32::from(v.advert),
+        };
+        self.fhrp_receive(ctx, ingress, FhrpProto::Vrrp, v.group, p.src, msg);
+    }
+
+    fn fhrp_receive(
+        &mut self,
+        ctx: &mut Ctx,
+        ingress: PortId,
+        proto: FhrpProto,
+        group: u8,
+        from: Ipv4Addr,
+        msg: FhrpMsg,
+    ) {
+        let i = ingress.0 as usize;
+        let Some(idx) = self
+            .fhrp
+            .iter()
+            .position(|e| e.iface == i && e.g.proto == proto && e.g.group == group)
+        else {
+            return;
+        };
+        let Some((me, _)) = self.live(i) else { return };
+        if from == me {
+            return;
+        }
+        let vip = self.fhrp[idx].g.vip;
+        let mut out = vec![];
+        self.fhrp[idx]
+            .g
+            .receive(ctx.now(), me, from, vip == me, msg, &mut out);
+        self.fhrp_emit(idx, me, out);
+    }
+}
+
 impl Router {
     /// A frame that arrived for logical interface `i`. Wrong address or interface down: ignored.
     /// Anything the router wants to send is queued; collect it with [`Router::take_outbox`].
@@ -1106,10 +1469,7 @@ impl Router {
         if self.live(i).is_none() {
             return;
         }
-        let ospf_group = self.ospf.is_some()
-            && f.dst.0[..5] == [0x01, 0x00, 0x5e, 0x00, 0x00]
-            && matches!(f.dst.0[5], 5 | 6);
-        if f.dst != self.ifaces[i].mac && !f.dst.is_broadcast() && !ospf_group {
+        if !self.accepts_mac(i, f.dst) {
             return;
         }
         self.rx_src_mac = f.src;
@@ -1131,6 +1491,11 @@ impl Router {
 
     /// An ARP resolution timer fired (the token is the next hop's address).
     pub fn on_timer(&mut self, ctx: &mut Ctx, token: u64) {
+        if token == FHRP_TICK {
+            self.fhrp_timer = false;
+            self.fhrp_tick(ctx);
+            return;
+        }
         if token == NTP_TICK {
             self.ntp_timer = false;
             self.ntp_tick(ctx);

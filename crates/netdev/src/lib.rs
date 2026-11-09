@@ -7,6 +7,7 @@ mod channel;
 mod device;
 mod dhcp_server;
 mod discovery;
+mod fhrp;
 mod fib;
 mod host;
 mod mgmt;
@@ -36,6 +37,10 @@ pub use discovery::{
     Discovery, Identity as DiscoveryIdentity, Neighbour, PortInfo as DiscoveryPort,
     DEFAULT_CDP_HOLD, DEFAULT_CDP_TIMER, DEFAULT_LLDP_HOLD, DEFAULT_LLDP_TIMER,
 };
+pub use fhrp::{
+    Group as FhrpGroup, Kind as FhrpKind, Msg as FhrpMsg, Proto as FhrpProto, State as FhrpState,
+    DEFAULT_PRIORITY as FHRP_DEFAULT_PRIORITY,
+};
 pub use fib::{mask, Fib, Route, RouteKind};
 pub use host::{DhcpClient, DhcpState, Host, PingResult};
 pub use mgmt::{
@@ -57,7 +62,7 @@ pub use psec::{
     parse_mac, PortSecurity, PsecState, Verdict as PsecVerdict, Violation as PsecViolation,
     DEFAULT_RECOVERY_SECS,
 };
-pub use router::{EncapError, Interface, Outgoing, Router, StaticRoute, SubInterface};
+pub use router::{EncapError, FhrpEntry, Interface, Outgoing, Router, StaticRoute, SubInterface};
 pub use stp::{
     port_id, Action as StpAction, Mode as StpMode, PortView, Role as StpRole, State as StpState,
     Stp, Vector,

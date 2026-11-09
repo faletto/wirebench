@@ -9,6 +9,7 @@ mod discovery;
 mod dissect;
 mod dtp;
 mod ethernet;
+mod fhrp;
 mod icmp;
 mod ipv4;
 mod lacp;
@@ -29,6 +30,10 @@ pub use discovery::{
 pub use dissect::{dissect, hexdump, protocols, Node};
 pub use dtp::{Dtp, DtpMode, DTP_MULTICAST};
 pub use ethernet::{EtherType, EthernetFrame, VlanTag};
+pub use fhrp::{
+    hsrp_state, hsrp_vmac, vrrp_vmac, Hsrp, HsrpOp, Vrrp, HSRP_GROUP, HSRP_MAC, HSRP_PORT,
+    VRRP_GROUP, VRRP_MAC, VRRP_PROTO,
+};
 pub use icmp::{IcmpEcho, IcmpError, IcmpErrorKind};
 pub use ipv4::{IpProto, Ipv4Packet};
 pub use lacp::{

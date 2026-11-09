@@ -536,7 +536,7 @@ impl L2Switch {
             let Some(vlan) = ifc.svi else { continue };
             let bytes = EthernetFrame {
                 dst: o.dst,
-                src: ifc.mac,
+                src: o.src.unwrap_or(ifc.mac),
                 vlan: None,
                 ethertype: o.ethertype,
                 payload: o.payload,
@@ -1449,16 +1449,15 @@ impl Device for L2Switch {
         // The SVI for this VLAN gets frames sent to it and broadcasts. Frames sent to it are not
         // bridged on: its address belongs to the switch, not to a port.
         if let Some(i) = self.l3.svi_index(vlan) {
-            let mac = self.l3.interfaces()[i].mac;
-            // 224.0.0.5 and .6 (OSPF) are heard by the SVI too, and still bridged on.
-            let ospf_group =
-                dst.0[..5] == [0x01, 0x00, 0x5e, 0x00, 0x00] && matches!(dst.0[5], 5 | 6);
-            if dst == mac || dst.is_broadcast() || ospf_group {
+            // 224.0.0.5 and .6 (OSPF), and the HSRP and VRRP groups, are heard by the SVI too, and
+            // still bridged on. A virtual router address it is active for is as good as its own.
+            let own = self.l3.owns_mac(i, dst);
+            if own || self.l3.accepts_mac(i, dst) {
                 if let Ok(f) = EthernetFrame::parse(&plain) {
                     self.l3.receive(ctx, i, f);
                     self.drain_l3(ctx);
                 }
-                if dst == mac {
+                if own {
                     return;
                 }
             }

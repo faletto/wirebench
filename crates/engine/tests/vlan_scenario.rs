@@ -102,6 +102,12 @@ const NTP: Scenario = Scenario {
     golden: "../../testkit/scenarios/m3b_ntp.out",
 };
 
+const FHRP: Scenario = Scenario {
+    lab: include_str!("../../../testkit/scenarios/m3b_fhrp.lab.toml"),
+    script: include_str!("../../../testkit/scenarios/m3b_fhrp.script"),
+    golden: "../../testkit/scenarios/m3b_fhrp.out",
+};
+
 fn transcript(sc: &Scenario) -> String {
     let mut lab = load_and_build(sc.lab, Trace::new()).expect("lab builds");
     assert!(lab.warnings.is_empty(), "{:?}", lab.warnings);
@@ -262,6 +268,11 @@ fn the_discovery_lab_matches_its_golden_transcript() {
 #[test]
 fn the_ntp_lab_matches_its_golden_transcript() {
     check_golden(&NTP);
+}
+
+#[test]
+fn the_fhrp_lab_matches_its_golden_transcript() {
+    check_golden(&FHRP);
 }
 
 #[test]

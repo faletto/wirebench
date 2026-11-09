@@ -18,6 +18,7 @@ use wire::{IcmpErrorKind, Ipv4Addr};
 mod clock;
 mod disc;
 mod etherchannel;
+mod fhrp;
 mod m3b;
 
 // ---- message catalog (shell-level strings) ----
@@ -470,6 +471,7 @@ fn router_grammar() -> (Grammar, Modes) {
     probe_commands(&mut g, privileged);
     disc::discovery_commands(&mut g, user, privileged, config, config_if);
     clock::clock_commands(&mut g, user, privileged, config);
+    fhrp::fhrp_commands(&mut g, user, privileged, config_if);
     (
         g,
         Modes {
@@ -951,6 +953,7 @@ fn switch_grammar() -> (Grammar, Modes) {
     etherchannel::channel_commands(&mut g, user, privileged, config, config_if);
     disc::discovery_commands(&mut g, user, privileged, config, config_if);
     clock::clock_commands(&mut g, user, privileged, config);
+    fhrp::fhrp_commands(&mut g, user, privileged, config_if);
     (
         g,
         Modes {
@@ -3080,6 +3083,7 @@ impl Shell {
             330..=349 => return self.channel_cmd(w, handler, a),
             350..=379 => return self.disc_cmd(w, handler, a),
             380..=399 => return self.clock_cmd(w, handler, a),
+            400..=429 => return self.fhrp_cmd(w, handler, a),
             ACL_PERMIT | ACL_DENY | ACL_REMARK | ACL_NO_SEQ | ACL_NO_PERMIT | ACL_NO_DENY
             | NO_ACL_NUMBER => return self.acl_entry_cmd(w, handler, a, &m),
             ACL_STD | ACL_EXT | NO_ACL_STD | NO_ACL_EXT => {
@@ -3889,6 +3893,7 @@ pub fn running_config(r: &Router) -> String {
         if i < r.n_ports() as usize {
             o += &disc::disc_port_lines(&r.disc, i);
         }
+        o += &fhrp::fhrp_if_lines(r, i);
         // A subinterface is up unless told otherwise, so only a shut one needs a line.
         if ifc.sub.is_none() {
             o += if ifc.shutdown {
@@ -3946,7 +3951,7 @@ pub fn switch_config(s: &L2Switch) -> String {
         o += "!\n";
     }
     let l3 = s.l3();
-    for ifc in l3.interfaces() {
+    for (idx, ifc) in l3.interfaces().iter().enumerate() {
         let Some(v) = ifc.svi else { continue };
         o += &format!("interface Vlan{v}\n");
         match ifc.addr {
@@ -3963,6 +3968,7 @@ pub fn switch_config(s: &L2Switch) -> String {
             o += &format!(" ip access-group {n} out\n");
         }
         o += &ospf_if_lines(&ifc.ospf);
+        o += &fhrp::fhrp_if_lines(l3, idx);
         if ifc.shutdown {
             o += " shutdown\n";
         }
