@@ -41,7 +41,7 @@ fn wait(lab: &mut BuiltLab, secs: u64) {
     lab.world.run_until(to);
 }
 
-fn router<'a>(lab: &'a BuiltLab, dev: usize) -> &'a Router {
+fn router(lab: &BuiltLab, dev: usize) -> &Router {
     lab.world.device::<Router>(lab.devices[dev].id)
 }
 

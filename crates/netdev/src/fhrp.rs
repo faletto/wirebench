@@ -227,7 +227,7 @@ impl Group {
     }
 
     fn skew(&self, prio: u8) -> SimTime {
-        SimTime::from_millis((u64::from(256 - u64::from(prio)) * 1000) / 256)
+        SimTime::from_millis(((256 - u64::from(prio)) * 1000) / 256)
     }
 
     fn master_down_interval(&self, prio: u8) -> SimTime {
