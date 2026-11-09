@@ -15,6 +15,7 @@ use netdev::{
 use std::sync::Arc;
 use wire::{IcmpErrorKind, Ipv4Addr};
 
+mod clock;
 mod disc;
 mod etherchannel;
 mod m3b;
@@ -468,6 +469,7 @@ fn router_grammar() -> (Grammar, Modes) {
     ospf_commands(&mut g, privileged, config, config_if, config_router);
     probe_commands(&mut g, privileged);
     disc::discovery_commands(&mut g, user, privileged, config, config_if);
+    clock::clock_commands(&mut g, user, privileged, config);
     (
         g,
         Modes {
@@ -948,6 +950,7 @@ fn switch_grammar() -> (Grammar, Modes) {
     m3b::port_security_commands(&mut g, user, privileged, config, config_if);
     etherchannel::channel_commands(&mut g, user, privileged, config, config_if);
     disc::discovery_commands(&mut g, user, privileged, config, config_if);
+    clock::clock_commands(&mut g, user, privileged, config);
     (
         g,
         Modes {
@@ -3076,6 +3079,7 @@ impl Shell {
             300..=329 => return self.m3b_cmd(w, handler, a),
             330..=349 => return self.channel_cmd(w, handler, a),
             350..=379 => return self.disc_cmd(w, handler, a),
+            380..=399 => return self.clock_cmd(w, handler, a),
             ACL_PERMIT | ACL_DENY | ACL_REMARK | ACL_NO_SEQ | ACL_NO_PERMIT | ACL_NO_DENY
             | NO_ACL_NUMBER => return self.acl_entry_cmd(w, handler, a, &m),
             ACL_STD | ACL_EXT | NO_ACL_STD | NO_ACL_EXT => {
@@ -3856,6 +3860,7 @@ fn mgmt_tail(m: &Mgmt) -> String {
 pub fn running_config(r: &Router) -> String {
     let mut o = mgmt_head(&r.mgmt, &r.name);
     o += &disc::disc_global_lines(&r.disc);
+    o += &clock::clock_lines(&r.clock, &r.ntp);
     o += &dhcp_config(r);
     for (i, ifc) in r.interfaces().iter().enumerate() {
         o += &format!("interface {}\n", iface_name(r, i));
@@ -3919,6 +3924,7 @@ pub fn switch_config(s: &L2Switch) -> String {
     o += &spanning_config(s);
     o += &m3b::errdisable_lines(s);
     o += &disc::disc_global_lines(&s.disc);
+    o += &clock::clock_lines(&s.l3().clock, &s.l3().ntp);
     if s.l3().routing() {
         o += "ip routing\n!\n";
     }

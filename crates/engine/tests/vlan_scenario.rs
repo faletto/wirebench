@@ -96,6 +96,12 @@ const DISCOVERY: Scenario = Scenario {
     golden: "../../testkit/scenarios/m3b_discovery.out",
 };
 
+const NTP: Scenario = Scenario {
+    lab: include_str!("../../../testkit/scenarios/m3b_ntp.lab.toml"),
+    script: include_str!("../../../testkit/scenarios/m3b_ntp.script"),
+    golden: "../../testkit/scenarios/m3b_ntp.out",
+};
+
 fn transcript(sc: &Scenario) -> String {
     let mut lab = load_and_build(sc.lab, Trace::new()).expect("lab builds");
     assert!(lab.warnings.is_empty(), "{:?}", lab.warnings);
@@ -251,6 +257,11 @@ fn the_etherchannel_lab_matches_its_golden_transcript() {
 #[test]
 fn the_discovery_lab_matches_its_golden_transcript() {
     check_golden(&DISCOVERY);
+}
+
+#[test]
+fn the_ntp_lab_matches_its_golden_transcript() {
+    check_golden(&NTP);
 }
 
 #[test]

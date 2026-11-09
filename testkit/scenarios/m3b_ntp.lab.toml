@@ -1,0 +1,28 @@
+format = "labsim-lab"
+version = 1
+
+[meta]
+title = "NTP: a master, a router and a switch following it"
+
+[[device]]
+name = "r1"
+template = "router-2g"
+pos = [0, 60]
+
+[[device]]
+name = "sw1"
+template = "switch-l2-8"
+pos = [180, 60]
+
+[[device]]
+name = "r2"
+template = "router-2g"
+pos = [360, 60]
+
+[[link]]
+a = "r1:Gi0/0"
+b = "sw1:Fa0/1"
+
+[[link]]
+a = "r2:Gi0/0"
+b = "sw1:Fa0/2"

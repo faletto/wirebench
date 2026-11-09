@@ -1,8 +1,8 @@
 use crate::discovery::{Discovery, Identity, PortInfo as DiscPort};
 use crate::fib::{mask, Fib, Route, RouteKind};
 use crate::{
-    record_probe, AclPacket, AclSet, Ctx, Device, DeviceEvent, DhcpServer, Mgmt, Ospf, OspfIfCfg,
-    OspfIfView, OspfPathKind, OspfSource, OspfTx, ProbeBody, ProbeReply, Resolver,
+    record_probe, AclPacket, AclSet, Clock, Ctx, Device, DeviceEvent, DhcpServer, Mgmt, Ntp, Ospf,
+    OspfIfCfg, OspfIfView, OspfPathKind, OspfSource, OspfTx, ProbeBody, ProbeReply, Resolver,
 };
 use kernel::{PortId, SimTime};
 use std::any::Any;
@@ -21,6 +21,8 @@ const UNREACHABLE_GAP: SimTime = SimTime::from_millis(500);
 const OSPF_TICK: u64 = 1 << 40;
 /// The timer token of the neighbour discovery upkeep.
 const DISC_TICK: u64 = 1 << 41;
+/// The timer token of NTP polling.
+const NTP_TICK: u64 = 1 << 42;
 const ARP_TTL: SimTime = SimTime::from_secs(4 * 3600);
 
 /// A logical interface. The first `n_ports` are the physical ports, in port order; subinterfaces
@@ -118,6 +120,10 @@ pub struct Router {
     /// CDP and LLDP.
     pub disc: Discovery,
     disc_timer: bool,
+    /// The device clock (`clock set`, NTP) and NTP itself.
+    pub clock: Clock,
+    pub ntp: Ntp,
+    ntp_timer: bool,
     /// Source MAC of the frame being handled (OSPF learns its neighbours' addresses from it).
     rx_src_mac: MacAddr,
     /// Replies to probes this router sent (pings, traceroutes), oldest first.
@@ -169,6 +175,9 @@ impl Router {
             ospf_timer: false,
             disc: Discovery::new(n_ports as usize),
             disc_timer: false,
+            clock: Clock::default(),
+            ntp: Ntp::default(),
+            ntp_timer: false,
             rx_src_mac: MacAddr::default(),
             probes: Vec::new(),
             unreachable_after: SimTime::ZERO,
@@ -196,6 +205,7 @@ impl Router {
         self.acls = AclSet::default();
         self.ospf = None;
         self.disc = Discovery::new(self.n_ports as usize);
+        self.ntp.reset();
         self.probes.clear();
         self.unreachable_after = SimTime::ZERO;
         for ifc in &mut self.ifaces {
@@ -893,6 +903,9 @@ impl Router {
         {
             return;
         }
+        if p.proto == IpProto::UDP && self.owns(p.dst) && self.on_ntp(ctx, &p) {
+            return;
+        }
         if self.owns(p.dst) {
             match p.proto {
                 IpProto::ICMP => self.on_icmp_to_me(ctx, &p),
@@ -1118,6 +1131,11 @@ impl Router {
 
     /// An ARP resolution timer fired (the token is the next hop's address).
     pub fn on_timer(&mut self, ctx: &mut Ctx, token: u64) {
+        if token == NTP_TICK {
+            self.ntp_timer = false;
+            self.ntp_tick(ctx);
+            return;
+        }
         if token == DISC_TICK {
             self.disc_timer = false;
             self.disc_tick(ctx);
@@ -1210,6 +1228,44 @@ impl Router {
     /// Change one interface's OSPF settings.
     pub fn set_ospf_cfg(&mut self, i: usize, f: impl FnOnce(&mut OspfIfCfg)) {
         f(&mut self.ifaces[i].ospf);
+    }
+
+    /// Start NTP polling if servers are configured and it is not running.
+    pub fn ntp_kick(&mut self, ctx: &mut Ctx) {
+        if self.ntp.wants_tick() && !self.ntp_timer {
+            self.ntp_timer = true;
+            ctx.schedule_background(SimTime::from_secs(1), NTP_TICK);
+        }
+    }
+
+    fn ntp_tick(&mut self, ctx: &mut Ctx) {
+        if !self.ntp.wants_tick() {
+            return;
+        }
+        let mut out = vec![];
+        self.ntp.tick(ctx.now(), &self.clock, &mut out);
+        for (server, payload) in out {
+            if let Some(src) = self.source_for(server) {
+                self.send_udp(ctx, src, server, wire::NTP_PORT, wire::NTP_PORT, &payload);
+            }
+        }
+        self.ntp_kick(ctx);
+    }
+
+    /// A UDP packet for this router: NTP (port 123), answered or taken in. True if it was NTP.
+    fn on_ntp(&mut self, ctx: &mut Ctx, p: &Ipv4Packet) -> bool {
+        let Ok(u) = UdpDatagram::parse(&p.payload) else {
+            return false;
+        };
+        if u.dst_port != wire::NTP_PORT {
+            return false;
+        }
+        if let Ok(pkt) = wire::NtpPacket::parse(&u.payload) {
+            if let Some(reply) = self.ntp.on_packet(ctx.now(), &mut self.clock, p.src, &pkt) {
+                self.send_udp(ctx, p.dst, p.src, wire::NTP_PORT, u.src_port, &reply);
+            }
+        }
+        true
     }
 
     /// Start the one-second neighbour discovery upkeep if it is wanted and not running.

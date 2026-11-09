@@ -10,6 +10,7 @@ mod discovery;
 mod fib;
 mod host;
 mod mgmt;
+mod ntp;
 mod ospf;
 mod probe;
 mod psec;
@@ -40,6 +41,10 @@ pub use host::{DhcpClient, DhcpState, Host, PingResult};
 pub use mgmt::{
     banner_delimiter, check_secret, hash_secret, is_hashed, obscure, password_text, plain_password,
     reveal, stored_secret, Line, Mgmt,
+};
+pub use ntp::{
+    civil_from_unix, unix_from_civil, Assoc as NtpAssoc, Clock, Ntp, SyncState as NtpSync,
+    DEFAULT_MASTER_STRATUM, MONTHS, POLL_SECS as NTP_POLL_SECS,
 };
 pub use ospf::{
     DefaultInfo as OspfDefaultInfo, IfCfg as OspfIfCfg, IfState as OspfIfState,

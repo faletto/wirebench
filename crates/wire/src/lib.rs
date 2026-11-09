@@ -12,6 +12,7 @@ mod ethernet;
 mod icmp;
 mod ipv4;
 mod lacp;
+mod ntp;
 mod ospf;
 mod summary;
 mod tcp;
@@ -34,6 +35,10 @@ pub use lacp::{
     LacpInfo, Lacpdu, SLOW_PROTOCOLS, SLOW_PROTOCOLS_TYPE, STATE_ACTIVITY, STATE_AGGREGATION,
     STATE_COLLECTING, STATE_DEFAULTED, STATE_DISTRIBUTING, STATE_EXPIRED, STATE_SYNC,
     STATE_TIMEOUT,
+};
+pub use ntp::{
+    from_timestamp as ntp_from_timestamp, to_timestamp as ntp_to_timestamp, NtpPacket, Timestamp,
+    MODE_CLIENT as NTP_MODE_CLIENT, MODE_SERVER as NTP_MODE_SERVER, NTP_PORT,
 };
 pub use ospf::{
     Dbd, Hello, LsRequest, Lsa, LsaBody, LsaHeader, OspfBody, OspfPacket, RouterLink,

@@ -201,9 +201,12 @@ impl L2Switch {
         self.ports = vec![PortConfig::default(); n];
         self.vlans = BTreeMap::from([(DEFAULT_VLAN, "default".to_string())]);
         self.table.clear();
+        // The clock is hardware: a reload does not reset it.
+        let clock = self.l3.clock.clone();
         self.l3 = {
             let mut r = Router::new("switch", 0, 0);
             r.set_routing(false);
+            r.clock = clock;
             r
         };
         self.mgmt = Mgmt::default();
