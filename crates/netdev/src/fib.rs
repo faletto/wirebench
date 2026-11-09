@@ -6,14 +6,32 @@ use wire::Ipv4Addr;
 pub enum RouteKind {
     Connected,
     Static,
+    /// OSPF, within an area.
+    Ospf,
+    /// OSPF, from another area.
+    OspfInter,
+    /// OSPF external, type 1.
+    OspfExt1,
+    /// OSPF external, type 2.
+    OspfExt2,
 }
 
 impl RouteKind {
+    pub fn is_ospf(self) -> bool {
+        matches!(
+            self,
+            RouteKind::Ospf | RouteKind::OspfInter | RouteKind::OspfExt1 | RouteKind::OspfExt2
+        )
+    }
+
     /// Administrative distance: lower wins among routes to the same prefix.
     pub fn distance(self) -> u8 {
         match self {
             RouteKind::Connected => 0,
             RouteKind::Static => 1,
+            RouteKind::Ospf | RouteKind::OspfInter | RouteKind::OspfExt1 | RouteKind::OspfExt2 => {
+                110
+            }
         }
     }
 }
@@ -26,6 +44,8 @@ pub struct Route {
     pub via: Option<Ipv4Addr>,
     pub port: PortId,
     pub kind: RouteKind,
+    /// The routing protocol's cost; 0 for connected and static routes.
+    pub metric: u32,
 }
 
 pub fn mask(len: u8) -> u32 {
@@ -82,6 +102,7 @@ mod tests {
             via: None,
             port: PortId(port),
             kind: RouteKind::Static,
+            metric: 0,
         }
     }
 

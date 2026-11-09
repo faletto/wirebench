@@ -1,0 +1,97 @@
+# pc1 - r1 - r2 - r3 - pc3. r1 and its LAN are in area 1, r3 and its LAN in area 0, and r2 sits
+# between them as the area border router. r3 has a default route (towards pc3, standing in for
+# an upstream router) and tells everyone about it.
+@r1
+enable
+configure terminal
+router ospf 1
+router-id 1.1.1.1
+network 10.1.0.0 0.0.255.255 area 1
+exit
+interface g0/0
+ip address 10.1.12.1 255.255.255.0
+no shutdown
+exit
+interface g0/1
+ip address 10.1.1.1 255.255.255.0
+no shutdown
+end
+
+@r2
+enable
+configure terminal
+router ospf 1
+router-id 2.2.2.2
+network 10.1.12.0 0.0.0.255 area 1
+network 10.0.23.0 0.0.0.255 area 0
+exit
+interface g0/0
+ip address 10.1.12.2 255.255.255.0
+no shutdown
+exit
+interface g0/1
+ip address 10.0.23.2 255.255.255.0
+no shutdown
+end
+
+@r3
+enable
+configure terminal
+router ospf 1
+router-id 3.3.3.3
+network 10.0.0.0 0.0.255.255 area 0
+default-information originate
+exit
+interface g0/0
+ip address 10.0.23.3 255.255.255.0
+no shutdown
+exit
+interface g0/1
+ip address 10.0.3.1 255.255.255.0
+no shutdown
+exit
+ip route 0.0.0.0 0.0.0.0 10.0.3.10
+end
+
+@pc1
+ipconfig set 10.1.1.10 255.255.255.0
+ipconfig gateway 10.1.1.1
+@pc3
+ipconfig set 10.0.3.10 255.255.255.0
+ipconfig gateway 10.0.3.1
+
+%wait 100
+
+# r1 is only in area 1: it learns the other area's networks as inter-area routes from r2, and
+# the default route as an external one.
+@r1
+show ip route
+show ip ospf database
+@r2
+show ip ospf
+show ip ospf neighbor
+show ip ospf database
+@r3
+show ip ospf
+show ip route
+@pc1
+ping 10.0.3.10
+
+# Take the default route away and r3 stops advertising it (it was not told to do so "always").
+@r3
+configure terminal
+no ip route 0.0.0.0 0.0.0.0 10.0.3.10
+end
+%wait 15
+@r1
+show ip route
+@r3
+configure terminal
+router ospf 1
+default-information originate always metric 5 metric-type 1
+end
+%wait 15
+@r1
+show ip route
+@r3
+show running-config

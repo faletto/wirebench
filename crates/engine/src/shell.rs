@@ -8,8 +8,9 @@ use kernel::{DeviceId, PortId, SimTime};
 use netdev::{
     acl_config_text, acl_kind_of_number, acl_show, all_vlans, banner_delimiter, format_vlan_list,
     mask, parse_acl_rule, parse_vlan_list, password_text, plain_password, stored_secret,
-    AclAddError, AclBody, AclKind, EncapError, Host, L2Switch, Mgmt, PortMode, RouteKind, Router,
-    StaticRoute, StpMode, StpRole, StpState, DEFAULT_VLAN,
+    AclAddError, AclBody, AclKind, EncapError, Host, L2Switch, Mgmt, Ospf, OspfNbrState,
+    OspfNetStmt, PortMode, RouteKind, Router, StaticRoute, StpMode, StpRole, StpState,
+    DEFAULT_VLAN,
 };
 use std::sync::Arc;
 use wire::{IcmpErrorKind, Ipv4Addr};
@@ -57,6 +58,11 @@ const NO_SUCH_ACE: &str = "% No such entry in the access list.";
 const NO_SUCH_SEQ: &str = "% No entry has that sequence number.";
 const DUP_SEQ: &str = "% Duplicate sequence number.";
 const SEQ_OVERFLOW: &str = "% Sequence number overflow.";
+const OSPF_ONE_PROCESS: &str = "% Only one OSPF process is supported.";
+const OSPF_NOT_RUNNING: &str = "% OSPF is not configured.";
+const OSPF_BAD_AREA: &str = "% Invalid area: use a number or a dotted address.";
+const OSPF_BAD_OPTION: &str = "% Invalid option: use always, metric <n>, metric-type <1|2>.";
+const OSPF_NO_NETWORK: &str = "% That network statement is not configured.";
 const NAME_TOO_LONG: &str = "% VLAN name may be at most 32 characters.";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -81,6 +87,8 @@ struct Modes {
     /// `ip access-list standard|extended <name>`. Hosts point both at their only mode.
     config_std_nacl: ModeId,
     config_ext_nacl: ModeId,
+    /// `router ospf <n>`. Hosts point it at their only mode.
+    config_router: ModeId,
 }
 
 // Handler ids.
@@ -203,6 +211,40 @@ const SHOW_ACL: u32 = 216;
 const SHOW_ACL_ONE: u32 = 217;
 const CLEAR_ACL: u32 = 218;
 const CLEAR_ACL_ONE: u32 = 219;
+const ROUTER_OSPF: u32 = 230;
+const NO_ROUTER_OSPF: u32 = 231;
+const OSPF_ROUTER_ID: u32 = 232;
+const NO_OSPF_ROUTER_ID: u32 = 233;
+const OSPF_NETWORK: u32 = 234;
+const NO_OSPF_NETWORK: u32 = 235;
+const OSPF_PASSIVE: u32 = 236;
+const NO_OSPF_PASSIVE: u32 = 237;
+const OSPF_REF_BW: u32 = 238;
+const NO_OSPF_REF_BW: u32 = 239;
+const IF_OSPF_COST: u32 = 240;
+const IF_OSPF_PRIORITY: u32 = 241;
+const IF_OSPF_HELLO: u32 = 242;
+const IF_OSPF_DEAD: u32 = 243;
+const IF_OSPF_P2P: u32 = 244;
+const IF_OSPF_BROADCAST: u32 = 245;
+const NO_IF_OSPF_COST: u32 = 246;
+const NO_IF_OSPF_PRIORITY: u32 = 247;
+const NO_IF_OSPF_HELLO: u32 = 248;
+const NO_IF_OSPF_DEAD: u32 = 249;
+const NO_IF_OSPF_NETWORK: u32 = 250;
+const SHOW_OSPF: u32 = 251;
+const SHOW_OSPF_NBR: u32 = 252;
+const SHOW_OSPF_IF: u32 = 253;
+const SHOW_OSPF_DB: u32 = 254;
+const CLEAR_OSPF: u32 = 255;
+const IF_MTU: u32 = 259;
+const NO_IF_MTU: u32 = 260;
+const IF_OSPF_MTU_IGNORE: u32 = 261;
+const NO_IF_OSPF_MTU_IGNORE: u32 = 262;
+const SHOW_PROTOCOLS: u32 = 263;
+const OSPF_DEFAULT_INFO: u32 = 256;
+const OSPF_DEFAULT_INFO_OPTS: u32 = 257;
+const NO_OSPF_DEFAULT_INFO: u32 = 258;
 const SPAN_MODE_PVST: u32 = 160;
 const SPAN_MODE_RAPID: u32 = 161;
 const NO_SPAN_MODE: u32 = 162;
@@ -253,6 +295,12 @@ fn router_grammar() -> (Grammar, Modes) {
     let config_ext_nacl = g.mode(
         "config-ext-nacl",
         "{host}(config-ext-nacl)#",
+        Some(config),
+        Some(config),
+    );
+    let config_router = g.mode(
+        "config-router",
+        "{host}(config-router)#",
         Some(config),
         Some(config),
     );
@@ -413,6 +461,7 @@ fn router_grammar() -> (Grammar, Modes) {
         config_std_nacl,
         config_ext_nacl,
     );
+    ospf_commands(&mut g, privileged, config, config_if, config_router);
     probe_commands(&mut g, privileged);
     (
         g,
@@ -426,6 +475,7 @@ fn router_grammar() -> (Grammar, Modes) {
             config_dhcp,
             config_std_nacl,
             config_ext_nacl,
+            config_router,
         },
     )
 }
@@ -501,6 +551,7 @@ fn host_grammar() -> (Grammar, Modes) {
             config_dhcp: m,
             config_std_nacl: m,
             config_ext_nacl: m,
+            config_router: m,
         },
     )
 }
@@ -543,6 +594,12 @@ fn switch_grammar() -> (Grammar, Modes) {
     let config_ext_nacl = g.mode(
         "config-ext-nacl",
         "{host}(config-ext-nacl)#",
+        Some(config),
+        Some(config),
+    );
+    let config_router = g.mode(
+        "config-router",
+        "{host}(config-router)#",
         Some(config),
         Some(config),
     );
@@ -880,6 +937,7 @@ fn switch_grammar() -> (Grammar, Modes) {
         config_std_nacl,
         config_ext_nacl,
     );
+    ospf_commands(&mut g, privileged, config, config_if, config_router);
     probe_commands(&mut g, privileged);
     span_commands(&mut g, user, privileged, config, config_if);
     (
@@ -894,8 +952,533 @@ fn switch_grammar() -> (Grammar, Modes) {
             config_dhcp,
             config_std_nacl,
             config_ext_nacl,
+            config_router,
         },
     )
+}
+
+impl Shell {
+    /// Start OSPF's upkeep timer if it is not running.
+    fn ospf_kick(&self, w: &mut World) {
+        match self.kind {
+            Kind::Switch => {
+                w.with_device::<L2Switch, _>(self.device, |s, ctx| s.l3_mut().ospf_kick(ctx))
+            }
+            _ => w.with_device::<Router, _>(self.device, |r, ctx| r.ospf_kick(ctx)),
+        }
+    }
+
+    /// The index of the interface a name like `g0/1`, `g0/1.10` or `Vlan10` stands for.
+    fn l3_iface_by_name(&self, w: &World, name: &str) -> Option<usize> {
+        match self.kind {
+            Kind::Switch => parse_vlan_name(name).and_then(|v| self.l3(w).svi_index(v)),
+            _ => {
+                let n = w.device::<Router>(self.device).n_ports() as usize;
+                let (p, sub) = parse_router_ifname(name, n)?;
+                match sub {
+                    None => Some(p),
+                    Some(num) => self.l3(w).interfaces().iter().position(|i| {
+                        i.sub
+                            .is_some_and(|s| s.parent.0 as usize == p && s.number == num)
+                    }),
+                }
+            }
+        }
+    }
+
+    fn ospf_cmd(&mut self, w: &mut World, handler: u32, a: &Args, m: &Modes) -> String {
+        let now = w.kernel.now();
+        match handler {
+            ROUTER_OSPF => {
+                let pid = a.int("pid").unwrap() as u16;
+                let ok = self.with_l3(w, |r| match &r.ospf {
+                    Some(o) => o.process == pid,
+                    None => {
+                        r.ospf = Some(Ospf::new(pid));
+                        true
+                    }
+                });
+                if !ok {
+                    return OSPF_ONE_PROCESS.to_string();
+                }
+                self.ospf_kick(w);
+                self.session.enter(m.config_router, Some(pid.to_string()));
+            }
+            NO_ROUTER_OSPF => {
+                let pid = a.int("pid").unwrap() as u16;
+                let found = self.with_l3(w, |r| {
+                    let found = r.ospf.as_ref().is_some_and(|o| o.process == pid);
+                    if found {
+                        r.remove_ospf();
+                    }
+                    found
+                });
+                if !found {
+                    return OSPF_NOT_RUNNING.to_string();
+                }
+            }
+            OSPF_ROUTER_ID | NO_OSPF_ROUTER_ID => {
+                let id = a.ipv4("id").map(Ipv4Addr);
+                self.with_l3(w, |r| {
+                    if let Some(o) = &mut r.ospf {
+                        o.router_id_cfg = id;
+                        // A new router ID restarts the process.
+                        o.reset();
+                    }
+                    r.ospf_config_changed();
+                });
+            }
+            OSPF_NETWORK | NO_OSPF_NETWORK => {
+                let Some(area) = parse_area(a.word("area").unwrap()) else {
+                    return OSPF_BAD_AREA.to_string();
+                };
+                let stmt = OspfNetStmt {
+                    net: Ipv4Addr(a.ipv4("net").unwrap()),
+                    wild: Ipv4Addr(a.ipv4("wild").unwrap()),
+                    area,
+                };
+                let r = self.with_l3(w, |r| {
+                    let o = r.ospf.as_mut().ok_or(OSPF_NOT_RUNNING)?;
+                    if handler == OSPF_NETWORK {
+                        o.add_network(stmt);
+                    } else {
+                        let n = o.networks.len();
+                        o.networks.retain(|x| *x != stmt);
+                        if o.networks.len() == n {
+                            return Err(OSPF_NO_NETWORK);
+                        }
+                    }
+                    r.ospf_config_changed();
+                    Ok(())
+                });
+                if let Err(e) = r {
+                    return e.to_string();
+                }
+            }
+            OSPF_PASSIVE | NO_OSPF_PASSIVE => {
+                let name = a.word("name").unwrap();
+                let Some(i) = self.l3_iface_by_name(w, name) else {
+                    return format!("{UNKNOWN_INTERFACE} {name}");
+                };
+                let on = handler == OSPF_PASSIVE;
+                self.with_l3(w, |r| {
+                    r.set_ospf_cfg(i, |c| c.passive = on);
+                    r.ospf_config_changed();
+                });
+            }
+            OSPF_REF_BW | NO_OSPF_REF_BW => {
+                let mbps = a
+                    .int("mbps")
+                    .map_or(netdev::OSPF_DEFAULT_REF_BW, |v| v as u32);
+                self.with_l3(w, |r| {
+                    if let Some(o) = &mut r.ospf {
+                        o.ref_bw = mbps;
+                    }
+                    r.ospf_config_changed();
+                });
+            }
+            IF_OSPF_COST..=NO_IF_OSPF_NETWORK | IF_MTU..=NO_IF_OSPF_MTU_IGNORE => {
+                let Some(i) = self.current_iface(w) else {
+                    return NO_SUCH_INTERFACE.to_string();
+                };
+                let n = a.int("n");
+                self.with_l3(w, |r| {
+                    r.set_ospf_cfg(i, |c| match handler {
+                        IF_OSPF_COST => c.cost = n.map(|v| v as u32),
+                        NO_IF_OSPF_COST => c.cost = None,
+                        IF_OSPF_PRIORITY => c.priority = n.unwrap_or(1) as u8,
+                        NO_IF_OSPF_PRIORITY => c.priority = 1,
+                        IF_OSPF_HELLO => c.hello = n.map(|v| v as u16),
+                        NO_IF_OSPF_HELLO => c.hello = None,
+                        IF_OSPF_DEAD => c.dead = n.map(|v| v as u32),
+                        NO_IF_OSPF_DEAD => c.dead = None,
+                        IF_OSPF_P2P => c.point_to_point = true,
+                        IF_MTU => c.mtu = n.map(|v| v as u16),
+                        NO_IF_MTU => c.mtu = None,
+                        IF_OSPF_MTU_IGNORE => c.mtu_ignore = true,
+                        NO_IF_OSPF_MTU_IGNORE => c.mtu_ignore = false,
+                        _ => c.point_to_point = false,
+                    });
+                    r.ospf_config_changed();
+                });
+            }
+            SHOW_OSPF => return show_ospf(self.l3(w)),
+            SHOW_PROTOCOLS => return show_protocols(self.l3(w)),
+            SHOW_OSPF_NBR => return show_ospf_neighbors(self.l3(w), now),
+            SHOW_OSPF_IF => return show_ospf_interfaces(self.l3(w)),
+            SHOW_OSPF_DB => return show_ospf_database(self.l3(w), now),
+            OSPF_DEFAULT_INFO | OSPF_DEFAULT_INFO_OPTS | NO_OSPF_DEFAULT_INFO => {
+                let info = if handler == NO_OSPF_DEFAULT_INFO {
+                    None
+                } else {
+                    let mut d = netdev::OspfDefaultInfo::default();
+                    let opts = a.word("opts").unwrap_or("");
+                    let mut it = opts.split_whitespace();
+                    while let Some(t) = it.next() {
+                        match t {
+                            "always" => d.always = true,
+                            "metric" => match it.next().and_then(|v| v.parse::<u32>().ok()) {
+                                Some(v) if v < 0xff_ffff => d.metric = v,
+                                _ => return OSPF_BAD_OPTION.to_string(),
+                            },
+                            "metric-type" => match it.next() {
+                                Some("1") => d.e2 = false,
+                                Some("2") => d.e2 = true,
+                                _ => return OSPF_BAD_OPTION.to_string(),
+                            },
+                            _ => return OSPF_BAD_OPTION.to_string(),
+                        }
+                    }
+                    Some(d)
+                };
+                let r: Result<(), &str> = self.with_l3(w, |r| {
+                    let o = r.ospf.as_mut().ok_or(OSPF_NOT_RUNNING)?;
+                    o.default_info = info;
+                    r.ospf_config_changed();
+                    Ok(())
+                });
+                if let Err(e) = r {
+                    return e.to_string();
+                }
+            }
+            CLEAR_OSPF => {
+                self.with_l3(w, |r| {
+                    if let Some(o) = &mut r.ospf {
+                        o.reset();
+                    }
+                    r.ospf_config_changed();
+                });
+            }
+            _ => {}
+        }
+        String::new()
+    }
+}
+
+/// `1` or `0.0.0.1`: an OSPF area.
+fn parse_area(s: &str) -> Option<u32> {
+    if let Ok(n) = s.parse::<u32>() {
+        return Some(n);
+    }
+    let parts: Vec<&str> = s.split('.').collect();
+    if parts.len() != 4 {
+        return None;
+    }
+    let mut v = 0u32;
+    for p in parts {
+        v = v << 8 | p.parse::<u8>().ok()? as u32;
+    }
+    Some(v)
+}
+
+fn ospf_config(r: &Router) -> String {
+    let Some(o) = &r.ospf else {
+        return String::new();
+    };
+    let mut s = format!("router ospf {}\n", o.process);
+    if let Some(id) = o.router_id_cfg {
+        s += &format!(" router-id {id}\n");
+    }
+    if o.ref_bw != netdev::OSPF_DEFAULT_REF_BW {
+        s += &format!(" auto-cost reference-bandwidth {}\n", o.ref_bw);
+    }
+    for n in &o.networks {
+        s += &format!(" network {} {} area {}\n", n.net, n.wild, n.area);
+    }
+    if let Some(d) = o.default_info {
+        s += " default-information originate";
+        if d.always {
+            s += " always";
+        }
+        if d.metric != 1 {
+            s += &format!(" metric {}", d.metric);
+        }
+        if !d.e2 {
+            s += " metric-type 1";
+        }
+        s += "\n";
+    }
+    for (i, ifc) in r.interfaces().iter().enumerate() {
+        if ifc.ospf.passive {
+            s += &format!(" passive-interface {}\n", iface_name(r, i));
+        }
+    }
+    s + "!\n"
+}
+
+fn ospf_if_lines(c: &netdev::OspfIfCfg) -> String {
+    let mut s = String::new();
+    if let Some(v) = c.cost {
+        s += &format!(" ip ospf cost {v}\n");
+    }
+    if c.priority != 1 {
+        s += &format!(" ip ospf priority {}\n", c.priority);
+    }
+    if let Some(v) = c.hello {
+        s += &format!(" ip ospf hello-interval {v}\n");
+    }
+    if let Some(v) = c.dead {
+        s += &format!(" ip ospf dead-interval {v}\n");
+    }
+    if c.point_to_point {
+        s += " ip ospf network point-to-point\n";
+    }
+    if let Some(v) = c.mtu {
+        s += &format!(" ip mtu {v}\n");
+    }
+    if c.mtu_ignore {
+        s += " ip ospf mtu-ignore\n";
+    }
+    s
+}
+
+fn show_ospf(r: &Router) -> String {
+    let Some(o) = &r.ospf else {
+        return String::new();
+    };
+    let rid = o
+        .router_id()
+        .map_or("0.0.0.0".to_string(), |i| i.to_string());
+    let mut s = format!(" Routing Process \"ospf {}\" with ID {rid}", o.process);
+    if o.is_asbr() {
+        s += "\n It is an autonomous system boundary router";
+    }
+    if o.is_abr() {
+        s += "\n It is an area border router";
+    }
+    s += &format!("\n Reference bandwidth unit is {} mbps", o.ref_bw);
+    let areas = o.areas();
+    s += &format!(
+        "\n Number of areas in this router is {}. {} normal 0 stub 0 nssa",
+        areas.len(),
+        areas.len()
+    );
+    let db = o.database(SimTime::ZERO);
+    for a in areas {
+        let n = o.interfaces().filter(|f| f.area == a).count();
+        let lsas = db.iter().filter(|(x, _, _)| *x == Some(a)).count();
+        s += &format!(
+            "\n    Area {}\n        Number of interfaces in this area is {n}\n        Number of LSA {lsas}",
+            if a == 0 { "BACKBONE(0)".to_string() } else { a.to_string() }
+        );
+    }
+    s
+}
+
+fn show_protocols(r: &Router) -> String {
+    let Some(o) = &r.ospf else {
+        return String::new();
+    };
+    let rid = o
+        .router_id()
+        .map_or("0.0.0.0".to_string(), |i| i.to_string());
+    let areas = o.areas();
+    let mut s = format!(
+        "Routing Protocol is \"ospf {}\"\n  Router ID {rid}\n  Number of areas in this router is {}. {} normal 0 stub 0 nssa",
+        o.process,
+        areas.len(),
+        areas.len()
+    );
+    if o.is_asbr() {
+        s += "\n  It is an autonomous system boundary router";
+    }
+    if o.is_abr() {
+        s += "\n  It is an area border router";
+    }
+    s += "\n  Routing for Networks:";
+    for n in &o.networks {
+        s += &format!("\n    {} {} area {}", n.net, n.wild, n.area);
+    }
+    let passive: Vec<String> = r
+        .interfaces()
+        .iter()
+        .enumerate()
+        .filter(|(_, ifc)| ifc.ospf.passive)
+        .map(|(i, _)| iface_name(r, i))
+        .collect();
+    if !passive.is_empty() {
+        s += "\n  Passive Interface(s):";
+        for p in passive {
+            s += &format!("\n    {p}");
+        }
+    }
+    s + "\n  Distance: (default is 110)"
+}
+
+fn show_ospf_neighbors(r: &Router, now: SimTime) -> String {
+    let Some(o) = &r.ospf else {
+        return String::new();
+    };
+    let mut s = format!(
+        "{:<16}{:<6}{:<16}{:<12}{:<16}{}",
+        "Neighbor ID", "Pri", "State", "Dead Time", "Address", "Interface"
+    );
+    for f in o.interfaces() {
+        for n in f.nbrs.values() {
+            let role = if f.cfg.point_to_point {
+                "-"
+            } else if n.ip == f.dr {
+                "DR"
+            } else if n.ip == f.bdr {
+                "BDR"
+            } else {
+                "DROTHER"
+            };
+            s += &format!(
+                "\n{:<16}{:<6}{:<16}{:<12}{:<16}{}",
+                n.id.to_string(),
+                n.priority,
+                format!("{}/{}", n.state.name(), role),
+                hms(n.dead_in(now)),
+                n.ip.to_string(),
+                iface_name(r, f.index)
+            );
+        }
+    }
+    s
+}
+
+fn show_ospf_interfaces(r: &Router) -> String {
+    let Some(o) = &r.ospf else {
+        return String::new();
+    };
+    let rid = o.router_id().unwrap_or(Ipv4Addr::UNSPECIFIED);
+    let mut blocks = Vec::new();
+    for f in o.interfaces() {
+        let who = |ip: Ipv4Addr| -> Ipv4Addr {
+            if ip == f.addr {
+                rid
+            } else {
+                f.nbrs
+                    .values()
+                    .find(|n| n.ip == ip)
+                    .map_or(Ipv4Addr::UNSPECIFIED, |n| n.id)
+            }
+        };
+        let p2p = f.cfg.point_to_point;
+        let mut s = format!(
+            "{} is up, line protocol is up\n  Internet Address {}/{}, Area {}\n  Process ID {}, Router ID {rid}, Network Type {}, Cost: {}\n  Transmit Delay is 1 sec, State {}, Priority {}",
+            iface_name(r, f.index),
+            f.addr,
+            f.len,
+            f.area,
+            o.process,
+            if p2p { "POINT_TO_POINT" } else { "BROADCAST" },
+            o.cost_of(&f.cfg),
+            if f.cfg.passive { "DR" } else { f.state.name() },
+            f.cfg.priority,
+        );
+        if f.cfg.passive {
+            s += "\n  No Hellos (Passive interface)";
+        } else {
+            if f.dr != Ipv4Addr::UNSPECIFIED {
+                s += &format!(
+                    "\n  Designated Router (ID) {}, Interface address {}",
+                    who(f.dr),
+                    f.dr
+                );
+            }
+            if f.bdr != Ipv4Addr::UNSPECIFIED {
+                s += &format!(
+                    "\n  Backup Designated router (ID) {}, Interface address {}",
+                    who(f.bdr),
+                    f.bdr
+                );
+            }
+            let dead = f.cfg.dead_interval();
+            s += &format!(
+                "\n  Timer intervals configured, Hello {}, Dead {dead}, Wait {dead}, Retransmit 5",
+                f.cfg.hello_interval()
+            );
+            let adj = f
+                .nbrs
+                .values()
+                .filter(|n| n.state == OspfNbrState::Full)
+                .count();
+            s += &format!(
+                "\n  Neighbor Count is {}, Adjacent neighbor count is {adj}",
+                f.nbrs.len()
+            );
+        }
+        blocks.push(s);
+    }
+    blocks.join("\n")
+}
+
+fn show_ospf_database(r: &Router, now: SimTime) -> String {
+    use wire::{LSA_ASBR_SUMMARY, LSA_EXTERNAL, LSA_NETWORK, LSA_ROUTER, LSA_SUMMARY};
+    let Some(o) = &r.ospf else {
+        return String::new();
+    };
+    let rid = o
+        .router_id()
+        .map_or("0.0.0.0".to_string(), |i| i.to_string());
+    let db = o.database(now);
+    let mut s = format!(
+        "            OSPF Router with ID ({rid}) (Process ID {})",
+        o.process
+    );
+    let row = |h: &wire::LsaHeader, tail: String| {
+        format!(
+            "\n{:<16}{:<16}{:<12}0x{:08X} 0x{:04X}{tail}",
+            h.id.to_string(),
+            h.adv_router.to_string(),
+            h.age,
+            h.seq as u32,
+            h.checksum
+        )
+    };
+    let mut areas: Vec<u32> = db.iter().filter_map(|(a, _, _)| *a).collect();
+    areas.sort();
+    areas.dedup();
+    for a in areas {
+        for (ty, title, tail_head) in [
+            (LSA_ROUTER, "Router Link States", "Link count"),
+            (LSA_NETWORK, "Net Link States", ""),
+            (LSA_SUMMARY, "Summary Net Link States", ""),
+            (LSA_ASBR_SUMMARY, "Summary ASB Link States", ""),
+        ] {
+            let rows: Vec<_> = db
+                .iter()
+                .filter(|(x, h, _)| *x == Some(a) && h.ls_type == ty)
+                .collect();
+            if rows.is_empty() {
+                continue;
+            }
+            s += &format!("\n\n                {title} (Area {a})\n\n");
+            s += format!(
+                "{:<16}{:<16}{:<12}{:<11}{:<9}{tail_head}",
+                "Link ID", "ADV Router", "Age", "Seq#", "Checksum"
+            )
+            .trim_end();
+            for (_, h, b) in rows {
+                let tail = match b {
+                    wire::LsaBody::Router { links, .. } => format!("   {}", links.len()),
+                    _ => String::new(),
+                };
+                s += &row(h, tail);
+            }
+        }
+    }
+    let ext: Vec<_> = db
+        .iter()
+        .filter(|(x, h, _)| x.is_none() && h.ls_type == LSA_EXTERNAL)
+        .collect();
+    if !ext.is_empty() {
+        s += "\n\n                Type-5 AS External Link States\n\n";
+        s += &format!(
+            "{:<16}{:<16}{:<12}{:<11}{:<9}{}",
+            "Link ID", "ADV Router", "Age", "Seq#", "Checksum", "Tag"
+        );
+        for (_, h, b) in ext {
+            let tag = match b {
+                wire::LsaBody::External { tag, .. } => *tag,
+                _ => 0,
+            };
+            s += &row(h, format!("   {tag}"));
+        }
+    }
+    s
 }
 
 /// `ping` and `traceroute` on routers and layer 3 switches.
@@ -1626,6 +2209,266 @@ fn acl_commands(
     );
 }
 
+/// OSPF commands, the same on routers and layer 3 switches.
+fn ospf_commands(
+    g: &mut Grammar,
+    privileged: ModeId,
+    config: ModeId,
+    config_if: ModeId,
+    router: ModeId,
+) {
+    let h = Action::Handler;
+    for (pattern, help, id) in [
+        (
+            "router ospf <pid:int(1..65535)>",
+            &[
+                "Routing protocol",
+                "Open Shortest Path First",
+                "Process number",
+            ][..],
+            ROUTER_OSPF,
+        ),
+        (
+            "no router ospf <pid:int(1..65535)>",
+            &[
+                "Negate",
+                "Routing protocol",
+                "Open Shortest Path First",
+                "Process number",
+            ][..],
+            NO_ROUTER_OSPF,
+        ),
+    ] {
+        g.cmd(&[config], pattern, help, h(id));
+    }
+    for (pattern, help, id) in [
+        (
+            "router-id <id:ipv4>",
+            &["Set the router ID", "Router ID"][..],
+            OSPF_ROUTER_ID,
+        ),
+        (
+            "no router-id",
+            &["Negate", "Use the highest interface address"][..],
+            NO_OSPF_ROUTER_ID,
+        ),
+        (
+            "network <net:ipv4> <wild:ipv4> area <area:word>",
+            &[
+                "Enable OSPF on interfaces",
+                "Address",
+                "Wildcard bits",
+                "Set the area",
+                "Area number or address",
+            ][..],
+            OSPF_NETWORK,
+        ),
+        (
+            "no network <net:ipv4> <wild:ipv4> area <area:word>",
+            &[
+                "Negate",
+                "Enable OSPF on interfaces",
+                "Address",
+                "Wildcard bits",
+                "Set the area",
+                "Area number or address",
+            ][..],
+            NO_OSPF_NETWORK,
+        ),
+        (
+            "passive-interface <name:word>",
+            &["Send no hellos and form no neighbours", "Interface"][..],
+            OSPF_PASSIVE,
+        ),
+        (
+            "no passive-interface <name:word>",
+            &[
+                "Negate",
+                "Send no hellos and form no neighbours",
+                "Interface",
+            ][..],
+            NO_OSPF_PASSIVE,
+        ),
+        (
+            "auto-cost reference-bandwidth <mbps:int(1..4294967)>",
+            &[
+                "Interface cost",
+                "Reference bandwidth",
+                "Megabits per second",
+            ][..],
+            OSPF_REF_BW,
+        ),
+        (
+            "no auto-cost reference-bandwidth",
+            &["Negate", "Interface cost", "Reference bandwidth"][..],
+            NO_OSPF_REF_BW,
+        ),
+        (
+            "default-information originate",
+            &[
+                "Control distribution of default information",
+                "Advertise a default route",
+            ][..],
+            OSPF_DEFAULT_INFO,
+        ),
+        (
+            "default-information originate <opts:rest>",
+            &[
+                "Control distribution of default information",
+                "Advertise a default route",
+                "always, metric <n>, metric-type <1|2>",
+            ][..],
+            OSPF_DEFAULT_INFO_OPTS,
+        ),
+        (
+            "no default-information originate",
+            &[
+                "Negate",
+                "Control distribution of default information",
+                "Advertise a default route",
+            ][..],
+            NO_OSPF_DEFAULT_INFO,
+        ),
+    ] {
+        g.cmd(&[router], pattern, help, h(id));
+    }
+    g.cmd(
+        &[config, router],
+        "end",
+        &["Back to privileged"],
+        Action::End(privileged),
+    );
+    g.cmd(&[router], "exit", &["Up one level"], Action::Exit);
+    for (pattern, help, id) in [
+        (
+            "ip ospf cost <n:int(1..65535)>",
+            &["IP", "OSPF", "Interface cost", "Cost"][..],
+            IF_OSPF_COST,
+        ),
+        (
+            "ip ospf priority <n:int(0..255)>",
+            &[
+                "IP",
+                "OSPF",
+                "Priority in the designated router election",
+                "Priority",
+            ][..],
+            IF_OSPF_PRIORITY,
+        ),
+        (
+            "ip ospf hello-interval <n:int(1..65535)>",
+            &["IP", "OSPF", "Time between hellos", "Seconds"][..],
+            IF_OSPF_HELLO,
+        ),
+        (
+            "ip ospf dead-interval <n:int(1..65535)>",
+            &[
+                "IP",
+                "OSPF",
+                "Time before a silent neighbour is dead",
+                "Seconds",
+            ][..],
+            IF_OSPF_DEAD,
+        ),
+        (
+            "ip ospf network point-to-point",
+            &["IP", "OSPF", "Network type", "Point to point"][..],
+            IF_OSPF_P2P,
+        ),
+        (
+            "ip ospf network broadcast",
+            &["IP", "OSPF", "Network type", "Broadcast"][..],
+            IF_OSPF_BROADCAST,
+        ),
+        (
+            "no ip ospf cost",
+            &["Negate", "IP", "OSPF", "Interface cost"][..],
+            NO_IF_OSPF_COST,
+        ),
+        (
+            "no ip ospf priority",
+            &["Negate", "IP", "OSPF", "Priority"][..],
+            NO_IF_OSPF_PRIORITY,
+        ),
+        (
+            "no ip ospf hello-interval",
+            &["Negate", "IP", "OSPF", "Time between hellos"][..],
+            NO_IF_OSPF_HELLO,
+        ),
+        (
+            "no ip ospf dead-interval",
+            &[
+                "Negate",
+                "IP",
+                "OSPF",
+                "Time before a silent neighbour is dead",
+            ][..],
+            NO_IF_OSPF_DEAD,
+        ),
+        (
+            "ip mtu <n:int(68..1500)>",
+            &["IP", "Maximum transmission unit (OSPF only)", "Bytes"][..],
+            IF_MTU,
+        ),
+        (
+            "no ip mtu",
+            &["Negate", "IP", "Maximum transmission unit"][..],
+            NO_IF_MTU,
+        ),
+        (
+            "ip ospf mtu-ignore",
+            &["IP", "OSPF", "Do not check the neighbour's MTU"][..],
+            IF_OSPF_MTU_IGNORE,
+        ),
+        (
+            "no ip ospf mtu-ignore",
+            &["Negate", "IP", "OSPF", "Do not check the neighbour's MTU"][..],
+            NO_IF_OSPF_MTU_IGNORE,
+        ),
+        (
+            "no ip ospf network",
+            &["Negate", "IP", "OSPF", "Network type"][..],
+            NO_IF_OSPF_NETWORK,
+        ),
+    ] {
+        g.cmd(&[config_if], pattern, help, h(id));
+    }
+    for (pattern, help, id) in [
+        (
+            "show ip ospf",
+            &["Show", "IP information", "OSPF"][..],
+            SHOW_OSPF,
+        ),
+        (
+            "show ip protocols",
+            &["Show", "IP information", "Routing protocols"][..],
+            SHOW_PROTOCOLS,
+        ),
+        (
+            "show ip ospf neighbor",
+            &["Show", "IP information", "OSPF", "Neighbours"][..],
+            SHOW_OSPF_NBR,
+        ),
+        (
+            "show ip ospf interface",
+            &["Show", "IP information", "OSPF", "Interfaces"][..],
+            SHOW_OSPF_IF,
+        ),
+        (
+            "show ip ospf database",
+            &["Show", "IP information", "OSPF", "Link state database"][..],
+            SHOW_OSPF_DB,
+        ),
+        (
+            "clear ip ospf process",
+            &["Clear", "IP information", "OSPF", "Restart the process"][..],
+            CLEAR_OSPF,
+        ),
+    ] {
+        g.cmd(&[privileged], pattern, help, h(id));
+    }
+}
+
 /// Management-plane commands, the same on routers and switches.
 fn mgmt_commands(g: &mut Grammar, privileged: ModeId, config: ModeId, line: ModeId) {
     let h = Action::Handler;
@@ -2194,6 +3037,9 @@ impl Shell {
                 } else if !self.with_l3(w, |r| r.dhcp.include(low, high)) {
                     return NO_SUCH_EXCLUSION.to_string();
                 }
+            }
+            ROUTER_OSPF..=NO_OSPF_DEFAULT_INFO | IF_MTU..=SHOW_PROTOCOLS => {
+                return self.ospf_cmd(w, handler, a, &m)
             }
             ACL_PERMIT | ACL_DENY | ACL_REMARK | ACL_NO_SEQ | ACL_NO_PERMIT | ACL_NO_DENY
             | NO_ACL_NUMBER => return self.acl_entry_cmd(w, handler, a, &m),
@@ -2995,6 +3841,7 @@ pub fn running_config(r: &Router) -> String {
         if let Some(n) = &ifc.acl_out {
             o += &format!(" ip access-group {n} out\n");
         }
+        o += &ospf_if_lines(&ifc.ospf);
         // A subinterface is up unless told otherwise, so only a shut one needs a line.
         if ifc.sub.is_none() {
             o += if ifc.shutdown {
@@ -3007,6 +3854,7 @@ pub fn running_config(r: &Router) -> String {
         }
         o += "!\n";
     }
+    o += &ospf_config(r);
     for s in r.statics() {
         o += &format!("ip route {} {} {}\n", s.net, dotted(s.len), s.via);
     }
@@ -3090,11 +3938,13 @@ pub fn switch_config(s: &L2Switch) -> String {
         if let Some(n) = &ifc.acl_out {
             o += &format!(" ip access-group {n} out\n");
         }
+        o += &ospf_if_lines(&ifc.ospf);
         if ifc.shutdown {
             o += " shutdown\n";
         }
         o += "!\n";
     }
+    o += &ospf_config(l3);
     if let Some(gw) = l3.default_gateway() {
         o += &format!("ip default-gateway {gw}\n");
     }
@@ -3340,7 +4190,11 @@ fn show_trunks(s: &L2Switch) -> String {
 }
 
 fn show_routes(r: &Router) -> String {
-    let mut o = String::from("Codes: C connected, S static\n");
+    let mut o = String::from(if r.ospf.is_some() {
+        "Codes: C connected, S static, O OSPF, IA OSPF inter area, E1/E2 OSPF external type 1/2\n"
+    } else {
+        "Codes: C connected, S static\n"
+    });
     let mut any = false;
     for rt in r.fib().routes() {
         any = true;
@@ -3357,6 +4211,26 @@ fn show_routes(r: &Router) -> String {
                 o += &format!("S  {net}  via {v}, {}", iface_name(r, rt.port.0 as usize))
             }
             (RouteKind::Static, None) => o += &format!("S  {net}"),
+            (
+                k @ (RouteKind::Ospf
+                | RouteKind::OspfInter
+                | RouteKind::OspfExt1
+                | RouteKind::OspfExt2),
+                v,
+            ) => {
+                let code = match k {
+                    RouteKind::Ospf => "O",
+                    RouteKind::OspfInter => "O IA",
+                    RouteKind::OspfExt1 => "O E1",
+                    _ => "O E2",
+                };
+                o += &format!(
+                    "{code}  {net}  [110/{}] via {}, {}",
+                    rt.metric,
+                    v.map_or("?".to_string(), |v| v.to_string()),
+                    iface_name(r, rt.port.0 as usize)
+                )
+            }
         }
     }
     if !any {

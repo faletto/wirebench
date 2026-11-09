@@ -1,0 +1,187 @@
+
+== r1
+r1>enable
+r1#configure terminal
+r1(config)#router ospf 1
+r1(config-router)#router-id 1.1.1.1
+r1(config-router)#network 10.0.0.0 0.255.255.255 area 0
+r1(config-router)#exit
+r1(config)#interface g0/0
+r1(config-if)#ip address 10.0.0.1 255.255.255.0
+r1(config-if)#no shutdown
+r1(config-if)#exit
+r1(config)#interface g0/1
+r1(config-if)#ip address 10.0.1.1 255.255.255.0
+r1(config-if)#no shutdown
+r1(config-if)#end
+
+== r2
+r2>enable
+r2#configure terminal
+r2(config)#router ospf 1
+r2(config-router)#router-id 2.2.2.2
+r2(config-router)#network 10.0.0.0 0.255.255.255 area 0
+r2(config-router)#exit
+r2(config)#interface g0/0
+r2(config-if)#ip address 10.0.0.2 255.255.255.0
+r2(config-if)#no shutdown
+r2(config-if)#exit
+r2(config)#interface g0/1
+r2(config-if)#ip address 10.0.2.1 255.255.255.0
+r2(config-if)#no shutdown
+r2(config-if)#end
+
+== r3
+r3>enable
+r3#configure terminal
+r3(config)#router ospf 1
+r3(config-router)#router-id 3.3.3.3
+r3(config-router)#network 10.0.0.0 0.255.255.255 area 0
+r3(config-router)#exit
+r3(config)#interface g0/0
+r3(config-if)#ip address 10.0.0.3 255.255.255.0
+r3(config-if)#no shutdown
+r3(config-if)#exit
+r3(config)#interface g0/1
+r3(config-if)#ip address 10.0.3.1 255.255.255.0
+r3(config-if)#no shutdown
+r3(config-if)#end
+
+== pc1
+pc1>ipconfig set 10.0.1.10 255.255.255.0
+pc1>ipconfig gateway 10.0.1.1
+
+== pc2
+pc2>ipconfig set 10.0.2.10 255.255.255.0
+pc2>ipconfig gateway 10.0.2.1
+
+== pc3
+pc3>ipconfig set 10.0.3.10 255.255.255.0
+pc3>ipconfig gateway 10.0.3.1
+
+-- 60 s pass
+
+== r1
+r1#show ip ospf neighbor
+Neighbor ID     Pri   State           Dead Time   Address         Interface
+2.2.2.2         1     FULL/BDR        00:00:31    10.0.0.2        GigabitEthernet0/0
+3.3.3.3         1     FULL/DR         00:00:31    10.0.0.3        GigabitEthernet0/0
+r1#show ip ospf interface
+GigabitEthernet0/0 is up, line protocol is up
+  Internet Address 10.0.0.1/24, Area 0
+  Process ID 1, Router ID 1.1.1.1, Network Type BROADCAST, Cost: 1
+  Transmit Delay is 1 sec, State DROTHER, Priority 1
+  Designated Router (ID) 3.3.3.3, Interface address 10.0.0.3
+  Backup Designated router (ID) 2.2.2.2, Interface address 10.0.0.2
+  Timer intervals configured, Hello 10, Dead 40, Wait 40, Retransmit 5
+  Neighbor Count is 2, Adjacent neighbor count is 2
+GigabitEthernet0/1 is up, line protocol is up
+  Internet Address 10.0.1.1/24, Area 0
+  Process ID 1, Router ID 1.1.1.1, Network Type BROADCAST, Cost: 1
+  Transmit Delay is 1 sec, State DR, Priority 1
+  Designated Router (ID) 1.1.1.1, Interface address 10.0.1.1
+  Timer intervals configured, Hello 10, Dead 40, Wait 40, Retransmit 5
+  Neighbor Count is 0, Adjacent neighbor count is 0
+
+== r3
+r3#show ip ospf neighbor
+Neighbor ID     Pri   State           Dead Time   Address         Interface
+1.1.1.1         1     FULL/DROTHER    00:00:31    10.0.0.1        GigabitEthernet0/0
+2.2.2.2         1     FULL/BDR        00:00:31    10.0.0.2        GigabitEthernet0/0
+
+== r1
+r1#show ip route
+Codes: C connected, S static, O OSPF, IA OSPF inter area, E1/E2 OSPF external type 1/2
+
+C  10.0.0.0/24  directly connected, GigabitEthernet0/0
+C  10.0.1.0/24  directly connected, GigabitEthernet0/1
+O  10.0.2.0/24  [110/2] via 10.0.0.2, GigabitEthernet0/0
+O  10.0.3.0/24  [110/2] via 10.0.0.3, GigabitEthernet0/0
+r1#show ip ospf database
+            OSPF Router with ID (1.1.1.1) (Process ID 1)
+
+                Router Link States (Area 0)
+
+Link ID         ADV Router      Age         Seq#       Checksum Link count
+1.1.1.1         1.1.1.1         18          0x80000002 0xC154   2
+2.2.2.2         2.2.2.2         19          0x80000002 0x9873   2
+3.3.3.3         3.3.3.3         19          0x80000002 0x6F92   2
+
+                Net Link States (Area 0)
+
+Link ID         ADV Router      Age         Seq#       Checksum
+10.0.0.3        3.3.3.3         19          0x80000002 0xD94A
+
+== pc1
+pc1>ping 10.0.3.10
+Reply from 10.0.3.10: time=101us
+Reply from 10.0.3.10: time=63us
+Reply from 10.0.3.10: time=55us
+Reply from 10.0.3.10: time=55us
+Sent 4, received 4
+pc1>ping 10.0.2.10
+Reply from 10.0.2.10: time=90us
+Reply from 10.0.2.10: time=55us
+Reply from 10.0.2.10: time=55us
+Reply from 10.0.2.10: time=55us
+Sent 4, received 4
+
+== r1
+r1#configure terminal
+r1(config)#interface g0/1
+r1(config-if)#ip ospf cost 20
+r1(config-if)#end
+
+-- 5 s pass
+
+== r2
+r2#show ip route
+Codes: C connected, S static, O OSPF, IA OSPF inter area, E1/E2 OSPF external type 1/2
+
+C  10.0.0.0/24  directly connected, GigabitEthernet0/0
+O  10.0.1.0/24  [110/21] via 10.0.0.1, GigabitEthernet0/0
+C  10.0.2.0/24  directly connected, GigabitEthernet0/1
+O  10.0.3.0/24  [110/2] via 10.0.0.3, GigabitEthernet0/0
+
+== r3
+r3#configure terminal
+r3(config)#interface g0/1
+r3(config-if)#shutdown
+r3(config-if)#end
+
+-- 10 s pass
+
+== r1
+r1#show ip route
+Codes: C connected, S static, O OSPF, IA OSPF inter area, E1/E2 OSPF external type 1/2
+
+C  10.0.0.0/24  directly connected, GigabitEthernet0/0
+C  10.0.1.0/24  directly connected, GigabitEthernet0/1
+O  10.0.2.0/24  [110/2] via 10.0.0.2, GigabitEthernet0/0
+
+== pc1
+pc1>ping 10.0.3.10
+Destination unreachable.
+Destination unreachable.
+Destination unreachable.
+Destination unreachable.
+Sent 4, received 0
+
+== r1
+r1#show running-config
+hostname r1
+!
+interface GigabitEthernet0/0
+ ip address 10.0.0.1 255.255.255.0
+ no shutdown
+!
+interface GigabitEthernet0/1
+ ip address 10.0.1.1 255.255.255.0
+ ip ospf cost 20
+ no shutdown
+!
+router ospf 1
+ router-id 1.1.1.1
+ network 10.0.0.0 0.255.255.255 area 0
+!
+end

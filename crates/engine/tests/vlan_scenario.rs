@@ -66,6 +66,18 @@ const ACL: Scenario = Scenario {
     golden: "../../testkit/scenarios/m3_acl.out",
 };
 
+const OSPF: Scenario = Scenario {
+    lab: include_str!("../../../testkit/scenarios/m3_ospf.lab.toml"),
+    script: include_str!("../../../testkit/scenarios/m3_ospf.script"),
+    golden: "../../testkit/scenarios/m3_ospf.out",
+};
+
+const OSPF_AREAS: Scenario = Scenario {
+    lab: include_str!("../../../testkit/scenarios/m3_ospf_areas.lab.toml"),
+    script: include_str!("../../../testkit/scenarios/m3_ospf_areas.script"),
+    golden: "../../testkit/scenarios/m3_ospf_areas.out",
+};
+
 fn transcript(sc: &Scenario) -> String {
     let mut lab = load_and_build(sc.lab, Trace::new()).expect("lab builds");
     assert!(lab.warnings.is_empty(), "{:?}", lab.warnings);
@@ -196,6 +208,16 @@ fn the_svi_lab_matches_its_golden_transcript() {
 #[test]
 fn the_acl_lab_matches_its_golden_transcript() {
     check_golden(&ACL);
+}
+
+#[test]
+fn the_ospf_lab_matches_its_golden_transcript() {
+    check_golden(&OSPF);
+}
+
+#[test]
+fn the_ospf_areas_lab_matches_its_golden_transcript() {
+    check_golden(&OSPF_AREAS);
 }
 
 #[test]
