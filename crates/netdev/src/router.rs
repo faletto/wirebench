@@ -2,8 +2,9 @@ use crate::discovery::{Discovery, Identity, PortInfo as DiscPort};
 use crate::fib::{mask, Fib, Route, RouteKind};
 use crate::{
     record_probe, AclPacket, AclSet, Clock, Ctx, Device, DeviceEvent, DhcpServer, FhrpGroup,
-    FhrpKind, FhrpMsg, FhrpProto, FhrpState, Mgmt, Ntp, Ospf, OspfIfCfg, OspfIfView, OspfPathKind,
-    OspfSource, OspfTx, ProbeBody, ProbeReply, Resolver, Tcp, TcpTx,
+    FhrpKind, FhrpMsg, FhrpProto, FhrpState, Mgmt, Nat, NatFlow, NatSide, NatTarget, Ntp, Ospf,
+    OspfIfCfg, OspfIfView, OspfPathKind, OspfSource, OspfTx, ProbeBody, ProbeReply, Resolver, Tcp,
+    TcpTx,
 };
 use kernel::{PortId, SimTime};
 use std::any::Any;
@@ -53,6 +54,8 @@ pub struct Interface {
     /// `ip access-group <acl> out`: applied to packets forwarded out of it (never to packets the
     /// router itself sends).
     pub acl_out: Option<String>,
+    /// `ip nat inside` / `ip nat outside`.
+    pub nat: Option<NatSide>,
     /// `ip ospf ...` and `passive-interface`.
     pub ospf: OspfIfCfg,
 }
@@ -143,6 +146,8 @@ pub struct Router {
     fhrp_timer: bool,
     /// TCP connections and UDP sockets (telnet and SSH sessions live here).
     pub tcp: Tcp,
+    /// Address translation (`ip nat ...`).
+    pub nat: Nat,
     /// Set by a switch for its layer 3 half: vty ports and `access-class`, which the switch holds.
     vty_policy: Option<(Vec<u16>, Option<String>)>,
     tcp_armed: Option<SimTime>,
@@ -175,6 +180,7 @@ impl Router {
                 line_down: false,
                 acl_in: None,
                 acl_out: None,
+                nat: None,
                 ospf: OspfIfCfg::default(),
             })
             .collect();
@@ -202,6 +208,7 @@ impl Router {
             ntp_timer: false,
             tcp: Tcp::new(u32::from(unit) * 0x0101_0101),
             vty_policy: None,
+            nat: Nat::default(),
             tcp_armed: None,
             fhrp: Vec::new(),
             fhrp_timer: false,
@@ -234,6 +241,7 @@ impl Router {
         self.dhcp = DhcpServer::default();
         self.acls = AclSet::default();
         self.ospf = None;
+        self.nat = Nat::default();
         self.disc = Discovery::new(self.n_ports as usize);
         self.ntp.reset();
         self.fhrp.clear();
@@ -243,6 +251,7 @@ impl Router {
             ifc.helpers.clear();
             ifc.acl_in = None;
             ifc.acl_out = None;
+            ifc.nat = None;
             ifc.ospf = OspfIfCfg::default();
         }
         self.rebuild_fib();
@@ -257,6 +266,11 @@ impl Router {
         } else {
             ifc.acl_out = name;
         }
+    }
+
+    /// `ip nat inside` / `ip nat outside` on interface `i`; `None` takes it off.
+    pub fn set_nat_side(&mut self, i: usize, side: Option<NatSide>) {
+        self.ifaces[i].nat = side;
     }
 
     /// Every logical interface: the physical ports, then subinterfaces.
@@ -315,6 +329,7 @@ impl Router {
             line_down: false,
             acl_in: None,
             acl_out: None,
+            nat: None,
             ospf: OspfIfCfg::default(),
             sub: Some(SubInterface {
                 parent,
@@ -474,6 +489,7 @@ impl Router {
             line_down: false,
             acl_in: None,
             acl_out: None,
+            nat: None,
             ospf: OspfIfCfg::default(),
         });
         self.ifaces.len() - 1
@@ -883,7 +899,11 @@ impl Router {
             .iter()
             .find(|e| e.iface == port.0 as usize && e.g.is_active() && e.g.vip == p.target_ip)
             .map(|e| e.g.vmac());
-        if p.target_ip != my_ip && virt.is_none() {
+        // On an outside interface the router also answers for the global addresses it translates
+        // (a static mapping's, or one in use), so the neighbour needs no route to them.
+        let proxy = self.ifaces[port.0 as usize].nat == Some(NatSide::Outside)
+            && (self.nat.is_global(p.target_ip) || self.nat_virtual(p.target_ip));
+        if p.target_ip != my_ip && virt.is_none() && !proxy {
             return;
         }
         self.arp
@@ -935,6 +955,14 @@ impl Router {
         if !self.acl_permits(acl_in.as_deref(), &p) {
             self.acl_refused(ctx, ingress, &p);
             return;
+        }
+        // From outside, a packet for a translated address goes back to the inside host before
+        // anything else looks at it (the address may be the router's own, for PAT).
+        if self.nat.is_configured() && self.ifaces[ingress.0 as usize].nat == Some(NatSide::Outside)
+        {
+            if let Some(q) = self.nat_inbound(ctx.now(), &p) {
+                p = q;
+            }
         }
         if p.proto == IpProto::OSPF {
             // Never forwarded and never answered with an error.
@@ -998,6 +1026,17 @@ impl Router {
             return;
         };
         p.ttl -= 1;
+        // Inside to outside: translate the source once the route is known, before the outbound
+        // access list sees the packet.
+        if self.nat.is_configured()
+            && self.ifaces[ingress.0 as usize].nat == Some(NatSide::Inside)
+            && self.ifaces[out.0 as usize].nat == Some(NatSide::Outside)
+        {
+            match self.nat_outbound(ctx, ingress, p) {
+                Some(q) => p = q,
+                None => return,
+            }
+        }
         // The outbound access list judges forwarded packets only, after the routing decision.
         let acl_out = self.ifaces[out.0 as usize].acl_out.clone();
         if !self.acl_permits(acl_out.as_deref(), &p) {
@@ -1160,6 +1199,117 @@ impl Router {
             payload: udp.emit(src, dst),
         };
         self.route(ctx, pkt);
+    }
+}
+
+// ---- address translation ----
+
+impl Router {
+    /// Whether `ip` is a virtual address one of the inside destination rules covers. The rule's
+    /// list is read against the destination, so it is tried as if `ip` were a source.
+    fn nat_virtual(&mut self, ip: Ipv4Addr) -> bool {
+        for rule in self.nat.dest_rules.clone() {
+            let probe = Ipv4Packet {
+                dscp_ecn: 0,
+                ident: 0,
+                flags_frag: 0,
+                ttl: 1,
+                proto: IpProto::TCP,
+                src: ip,
+                dst: ip,
+                payload: vec![],
+            };
+            if self.acls.get(&rule.acl).is_some() && self.acl_permits(Some(&rule.acl), &probe) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// A packet from outside: an existing translation, or for a new connection to a virtual
+    /// address, the next real host of its pool.
+    fn nat_inbound(&mut self, now: SimTime, p: &Ipv4Packet) -> Option<Ipv4Packet> {
+        if let Some(q) = self.nat.inbound(now, p) {
+            return Some(q);
+        }
+        let f = NatFlow::of(p)?;
+        // Only a SYN opens a connection; a stray segment does not.
+        if f.proto != 6
+            || f.flags & (wire::TcpSegment::SYN | wire::TcpSegment::ACK) != wire::TcpSegment::SYN
+        {
+            return None;
+        }
+        for (i, rule) in self.nat.dest_rules.clone().into_iter().enumerate() {
+            // The list names the address being called, not the caller.
+            let mut probe = p.clone();
+            probe.src = p.dst;
+            if self.acls.get(&rule.acl).is_none() || !self.acl_permits(Some(&rule.acl), &probe) {
+                continue;
+            }
+            let addrs = self
+                .nat
+                .pool(&rule.pool)
+                .map(|x| x.addrs())
+                .unwrap_or_default();
+            let real = self.nat.create_dest(now, &f, i, &addrs)?;
+            self.nat.stats.misses += 1;
+            return Nat::apply_in(p, &f, real);
+        }
+        None
+    }
+
+    /// Translate a packet from an inside interface leaving by an outside one. Without a rule
+    /// that covers it the packet goes on as it is; when the rule has no address left it is dropped
+    /// and the sender told host unreachable.
+    fn nat_outbound(
+        &mut self,
+        ctx: &mut Ctx,
+        ingress: PortId,
+        p: Ipv4Packet,
+    ) -> Option<Ipv4Packet> {
+        let now = ctx.now();
+        // To an outside local address: the destination becomes the global one first.
+        let p = match self.nat.outside_dst(&p) {
+            Some(q) => q,
+            None => p,
+        };
+        // An inside host's ICMP error leaves from its global address too.
+        if p.proto == IpProto::ICMP {
+            if let Some(q) = self.nat.outbound_error(now, &p) {
+                return Some(q);
+            }
+        }
+        let Some(f) = NatFlow::of(&p) else {
+            return Some(p);
+        };
+        if let Some(g) = self.nat.find_out(now, &f) {
+            self.nat.stats.hits += 1;
+            return Nat::apply_out(&p, &f, g).or(Some(p));
+        }
+        for rule in self.nat.rules.clone() {
+            if self.acls.get(&rule.acl).is_none() || !self.acl_permits(Some(&rule.acl), &p) {
+                continue;
+            }
+            let addrs = match &rule.target {
+                NatTarget::Pool(n) => self.nat.pool(n).map(|p| p.addrs()).unwrap_or_default(),
+                NatTarget::Interface(i) => self.live(*i).map(|(a, _)| vec![a]).unwrap_or_default(),
+            };
+            return match self.nat.create(now, &f, &rule.acl, &addrs, rule.overload) {
+                Some(g) => {
+                    self.nat.stats.misses += 1;
+                    Nat::apply_out(&p, &f, g)
+                }
+                None => {
+                    self.nat.stats.misses += 1;
+                    ctx.note("nat: no address left");
+                    if self.unreachable_allowed(now) {
+                        self.send_icmp_error(ctx, ingress, &p, IcmpErrorKind::DestUnreachable(1));
+                    }
+                    None
+                }
+            };
+        }
+        Some(p)
     }
 }
 

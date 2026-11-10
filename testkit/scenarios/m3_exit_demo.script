@@ -1,0 +1,160 @@
+# M3a exit demo. r1-r4 share the corporate LAN 10.0.0.0/24 (through sw1) and run OSPF area 0;
+# r1, r3 and r4 each have a PC network. r2 is the edge: it translates (NAT) towards r5, the
+# "internet" router, and hands a default route to the others. srv sits behind r5.
+# Everything is typed at the consoles.
+@r1
+enable
+configure terminal
+router ospf 1
+router-id 1.1.1.1
+network 10.0.0.0 0.255.255.255 area 0
+exit
+interface g0/0
+ip address 10.0.0.1 255.255.255.0
+no shutdown
+exit
+interface g0/1
+ip address 10.0.1.1 255.255.255.0
+no shutdown
+end
+
+@r2
+enable
+configure terminal
+hostname r2
+router ospf 1
+router-id 2.2.2.2
+network 10.0.0.0 0.255.255.255 area 0
+default-information originate
+exit
+interface g0/0
+ip address 10.0.0.2 255.255.255.0
+ip nat inside
+no shutdown
+exit
+interface g0/1
+ip address 203.0.113.1 255.255.255.248
+ip nat outside
+no shutdown
+exit
+ip route 0.0.0.0 0.0.0.0 203.0.113.2
+# Everything in 10.0.0.0/8 is translated through the outside address (PAT), except pc1, which
+# has a fixed public address of its own, on the outside link, so the internet can reach it: r2
+# answers ARP for it, so the internet router needs no route.
+access-list 1 permit 10.0.0.0 0.255.255.255
+ip nat inside source list 1 interface g0/1 overload
+ip nat inside source static 10.0.1.10 203.0.113.5
+# Only the corporate network may log in to r2's VTY lines.
+access-list 20 permit 10.0.0.0 0.255.255.255
+line vty 0 4
+password cisco
+login
+access-class 20 in
+end
+
+@r3
+enable
+configure terminal
+router ospf 1
+router-id 3.3.3.3
+network 10.0.0.0 0.255.255.255 area 0
+exit
+interface g0/0
+ip address 10.0.0.3 255.255.255.0
+no shutdown
+exit
+interface g0/1
+ip address 10.0.3.1 255.255.255.0
+no shutdown
+end
+
+@r4
+enable
+configure terminal
+router ospf 1
+router-id 4.4.4.4
+network 10.0.0.0 0.255.255.255 area 0
+exit
+interface g0/0
+ip address 10.0.0.4 255.255.255.0
+no shutdown
+exit
+interface g0/1
+ip address 10.0.4.1 255.255.255.0
+no shutdown
+end
+
+@r5
+enable
+configure terminal
+hostname isp
+interface g0/0
+ip address 203.0.113.2 255.255.255.248
+no shutdown
+exit
+interface g0/1
+ip address 198.51.100.1 255.255.255.0
+no shutdown
+exit
+line vty 0 4
+password isp
+login
+end
+
+@pc1
+netsh interface ip set address Ethernet static 10.0.1.10 255.255.255.0 10.0.1.1
+@pc3
+netsh interface ip set address Ethernet static 10.0.3.10 255.255.255.0 10.0.3.1
+@pc4
+netsh interface ip set address Ethernet static 10.0.4.10 255.255.255.0 10.0.4.1
+@srv
+netsh interface ip set address Ethernet static 198.51.100.10 255.255.255.0 198.51.100.1
+
+# OSPF waits 40 seconds to elect a designated router, and the switch ports need their 30 seconds.
+%wait 90
+@r1
+show ip route
+@r2
+show ip ospf neighbor
+
+# pc3 and pc4 reach the server through PAT; pc1 through its static address.
+@pc3
+ping 198.51.100.10
+@pc4
+ping 198.51.100.10
+@pc1
+ping 198.51.100.10
+@r2
+show ip nat translations
+show ip nat statistics
+
+# The internet reaches pc1 at 203.0.113.5, and nothing else inside.
+@r5
+ping 203.0.113.5
+ping 10.0.3.10
+ping 203.0.113.1
+
+# A traceroute from inside shows the way out; the NAT is invisible to it.
+@pc3
+tracert 198.51.100.10
+
+# r2's VTY lines only let the corporate network in: pc3 can, the internet cannot.
+@pc3
+telnet 10.0.0.2
+cisco
+show ip nat statistics
+exit
+@r5
+telnet 203.0.113.1
+
+# From inside, r1 logs in to the internet router through the NAT. r5 sees r2's outside address.
+@r1
+telnet 203.0.113.2
+isp
+show tcp brief
+exit
+@r2
+show ip nat translations
+
+@r2
+show running-config

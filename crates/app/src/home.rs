@@ -48,6 +48,12 @@ pub const EXAMPLES: &[Example] = &[
         text: include_str!("../../../labs/examples/spanning-tree.lab.toml"),
         kinds: &[LabKind::Switch, LabKind::Switch, LabKind::Switch],
     },
+    Example {
+        title: "NAT: two PCs, one public address",
+        blurb: "A router translates the inside network to its outside address (PAT) so the PCs reach a server on the internet side.",
+        text: include_str!("../../../labs/examples/nat-pat.lab.toml"),
+        kinds: &[LabKind::Host, LabKind::Switch, LabKind::Router, LabKind::Router],
+    },
 ];
 
 /// A lab with nothing in it but its title.

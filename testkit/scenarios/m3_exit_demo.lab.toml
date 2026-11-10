@@ -1,0 +1,94 @@
+format = "labsim-lab"
+version = 1
+
+[meta]
+title = "M3a exit demo: five routers, OSPF, NAT to an internet router, ACLs on the VTY lines"
+
+[[device]]
+name = "r1"
+template = "router-2g"
+pos = [120, 0]
+
+[[device]]
+name = "r2"
+template = "router-2g"
+pos = [120, 120]
+
+[[device]]
+name = "r3"
+template = "router-2g"
+pos = [120, 240]
+
+[[device]]
+name = "r4"
+template = "router-2g"
+pos = [120, 360]
+
+[[device]]
+name = "sw1"
+template = "switch-l2-8"
+pos = [0, 180]
+
+[[device]]
+name = "r5"
+template = "router-2g"
+pos = [300, 120]
+
+[[device]]
+name = "pc1"
+template = "host-pc"
+pos = [240, 0]
+
+[[device]]
+name = "pc3"
+template = "host-pc"
+pos = [240, 240]
+
+[[device]]
+name = "pc4"
+template = "host-pc"
+pos = [240, 360]
+
+[[device]]
+name = "srv"
+template = "host-pc"
+pos = [420, 120]
+
+# The corporate segment.
+[[link]]
+a = "r1:Gi0/0"
+b = "sw1:Fa0/1"
+
+[[link]]
+a = "r2:Gi0/0"
+b = "sw1:Fa0/2"
+
+[[link]]
+a = "r3:Gi0/0"
+b = "sw1:Fa0/3"
+
+[[link]]
+a = "r4:Gi0/0"
+b = "sw1:Fa0/4"
+
+# PC networks.
+[[link]]
+a = "r1:Gi0/1"
+b = "pc1:eth0"
+
+[[link]]
+a = "r3:Gi0/1"
+b = "pc3:eth0"
+
+[[link]]
+a = "r4:Gi0/1"
+b = "pc4:eth0"
+
+# The way out: r2 to the "internet" router, and its server.
+[[link]]
+a = "r2:Gi0/1"
+b = "r5:Gi0/0"
+
+[[link]]
+a = "r5:Gi0/1"
+b = "srv:eth0"
