@@ -27,5 +27,7 @@ This is the wire layer only: no neighbours, flooding or SPF exist yet.
   breaks the LSA checksum; the age may change freely; arbitrary bytes never panic the parsers.
 - Hand-checked byte layouts of a Hello and a router LSA against the appendix.
 - **The LSA checksum is checked only against its defining property** (the sum over the whole LSA
-  is zero), not against a published vector or another implementation. The FRR oracle comparison the
-  plan calls for will be the first outside check of it.
+  is zero), not against a published vector or another implementation. **Checked against FRR on
+  2026-11-11:** `crates/wire/tests/frr_capture.rs` parses 1,581 packets recorded from FRR 10.2.1's
+  ospfd (`testkit/frr-oracle/captures/`); all packet and LSA checksums verify and every packet emits
+  again byte for byte.

@@ -1134,3 +1134,114 @@ fn a_larger_mtu_on_one_side_holds_the_exchange_in_exstart_until_it_is_ignored() 
     assert_eq!(state(&net, 0), Some(OspfNbrState::Full));
     assert_eq!(state(&net, 1), Some(OspfNbrState::Full));
 }
+
+// ---- FRR oracle ----
+
+/// Read a `testkit/frr-oracle/cases/*.case` file: the network, and the routers that originate a
+/// default route (node, metric, type 2).
+fn read_case(text: &str) -> (Spec, Vec<(usize, u32, bool)>) {
+    let (mut n, mut segs, mut areas, mut defaults) = (0, Vec::new(), Vec::new(), Vec::new());
+    for line in text.lines() {
+        let line = line.split('#').next().unwrap();
+        let w: Vec<&str> = line.split_whitespace().collect();
+        match w.first().copied() {
+            Some("nodes") => n = w[1].parse().unwrap(),
+            Some("seg") => {
+                areas.push(w[2].parse().unwrap());
+                let members = w[4..]
+                    .iter()
+                    .map(|m| {
+                        let f: Vec<&str> = m.split('/').collect();
+                        (
+                            f[0].parse().unwrap(),
+                            f[1].parse().unwrap(),
+                            f[2].parse().unwrap(),
+                        )
+                    })
+                    .collect();
+                segs.push((w[1] == "p2p", members));
+            }
+            Some("default") => {
+                defaults.push((w[1].parse().unwrap(), w[3].parse().unwrap(), w[2] == "e2"))
+            }
+            _ => {}
+        }
+    }
+    (Spec { n, segs, areas }, defaults)
+}
+
+/// The routes FRR's ospfd computed for the networks in `testkit/frr-oracle/cases` (recorded by
+/// `run.py`; see the README there) are the routes we compute: same prefixes, kinds and costs.
+#[test]
+fn routes_match_the_ones_frr_recorded() {
+    let dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testkit/frr-oracle/cases");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) != Some("case") {
+            continue;
+        }
+        let (spec, defaults) = read_case(&std::fs::read_to_string(&path).unwrap());
+        let expected = std::fs::read_to_string(path.with_extension("expected")).unwrap();
+        let mut net = Net::new(&spec);
+        for (node, metric, e2) in defaults {
+            net.nodes[node].default_info = Some(OspfDefaultInfo {
+                always: true,
+                metric,
+                e2,
+            });
+        }
+        net.run_for(150);
+        let mut want = BTreeSet::new();
+        for line in expected.lines() {
+            let f: Vec<&str> = line.split('\t').collect();
+            want.insert((
+                f[0].parse::<usize>().unwrap(),
+                f[1].to_string(),
+                f[2].to_string(),
+                f[3].parse::<u32>().unwrap(),
+            ));
+        }
+        let mut got = BTreeSet::new();
+        for node in 0..spec.n {
+            for r in net.nodes[node].routes() {
+                let kind = match r.kind {
+                    OspfPathKind::Intra => "intra",
+                    OspfPathKind::Inter => "inter",
+                    OspfPathKind::External1 => "e1",
+                    OspfPathKind::External2 => "e2",
+                };
+                got.insert((
+                    node,
+                    format!("{}/{}", r.net, r.len),
+                    kind.to_string(),
+                    r.cost,
+                ));
+            }
+        }
+        // FRR's list includes the networks a router is attached to, which are connected routes
+        // here; ours includes only what SPF installs. Compare without the attached ones.
+        let attached = |node: usize, prefix: &str| {
+            net.ifaces[node].iter().any(|f| {
+                let s = f.seg;
+                prefix == format!("10.{}.{}.0/24", spec.areas[s], s)
+            })
+        };
+        want.retain(|(n, p, _, _)| !attached(*n, p));
+        got.retain(|(n, p, _, _)| !attached(*n, p));
+        let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+        assert_eq!(
+            got.difference(&want).collect::<Vec<_>>(),
+            Vec::<&(usize, String, String, u32)>::new(),
+            "{name}: routes we have and FRR does not"
+        );
+        assert_eq!(
+            want.difference(&got).collect::<Vec<_>>(),
+            Vec::<&(usize, String, String, u32)>::new(),
+            "{name}: routes FRR has and we do not"
+        );
+        checked += 1;
+    }
+    assert!(checked >= 3, "cases are missing");
+}
