@@ -19,6 +19,7 @@ mod psec;
 mod router;
 mod stp;
 mod switch;
+mod syslog;
 mod tcp;
 mod vlan;
 
@@ -76,6 +77,13 @@ pub use stp::{
 };
 pub use switch::{
     L2Switch, MacEntry, PortConfig, PortMode, SpanningConfig, DEFAULT_BRIDGE_PRIORITY,
+};
+pub use syslog::{
+    level_name as log_level_name, parse_level as parse_log_level, Collector, LineSeen, Logging,
+    Received as SyslogReceived, BUFFER_DEFAULT, DEBUGGING as LOG_DEBUGGING,
+    DEFAULT_FACILITY as LOG_DEFAULT_FACILITY, ERRORS as LOG_ERRORS,
+    INFORMATIONAL as LOG_INFORMATIONAL, NOTIFICATIONS as LOG_NOTIFICATIONS,
+    WARNINGS as LOG_WARNINGS,
 };
 pub use tcp::{
     Conn as TcpConn, Failure as TcpFailure, State as TcpState, Tcp, Tx as TcpTx, UdpSocket,

@@ -731,6 +731,18 @@ impl L2Switch {
     }
 
     /// Keep the one-second tick going while neighbour discovery is running.
+    /// Log changes in the state of the switch's own ports (the SVIs are the router half's).
+    fn watch_ports_for_log(&mut self, ctx: &mut Ctx) {
+        for p in 0..self.ports.len() {
+            let now = crate::LineSeen {
+                admin_down: self.ports[p].shutdown,
+                up: ctx.port_up(PortId(p as u16)),
+            };
+            self.l3
+                .log_watch(ctx, format!("FastEthernet0/{}", p + 1), now, true);
+        }
+    }
+
     fn ensure_tick(&mut self, ctx: &mut Ctx) {
         if self.disc.wants_tick() && self.stp_timer.is_none() {
             self.stp_timer = Some(ctx.schedule_background(SimTime::from_secs(1), STP_TIMER));
@@ -1396,6 +1408,9 @@ impl Device for L2Switch {
                 return;
             }
             DeviceEvent::Timer { token, .. } => {
+                if token == crate::router::LOG_TICK && self.l3.log.wants_tick() {
+                    self.watch_ports_for_log(ctx);
+                }
                 self.l3.on_timer(ctx, token);
                 self.drain_l3(ctx);
                 return;

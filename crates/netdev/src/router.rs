@@ -1,5 +1,7 @@
 use crate::discovery::{Discovery, Identity, PortInfo as DiscPort};
 use crate::fib::{mask, Fib, Route, RouteKind};
+use crate::syslog::{LineSeen, Logging, ERRORS, NOTIFICATIONS};
+use crate::{civil_from_unix, MONTHS};
 use crate::{
     record_probe, AclPacket, AclSet, Clock, Ctx, Device, DeviceEvent, DhcpServer, FhrpGroup,
     FhrpKind, FhrpMsg, FhrpProto, FhrpState, Mgmt, Nat, NatFlow, NatSide, NatTarget, Ntp, Ospf,
@@ -27,6 +29,8 @@ const DISC_TICK: u64 = 1 << 41;
 const NTP_TICK: u64 = 1 << 42;
 /// The timer token of the first hop redundancy upkeep.
 const FHRP_TICK: u64 = 1 << 43;
+/// The timer token of the interface watcher that feeds the log.
+pub(crate) const LOG_TICK: u64 = 1 << 45;
 /// The timer token of TCP retransmission.
 const TCP_TICK: u64 = 1 << 44;
 const ARP_TTL: SimTime = SimTime::from_secs(4 * 3600);
@@ -141,6 +145,9 @@ pub struct Router {
     pub clock: Clock,
     pub ntp: Ntp,
     ntp_timer: bool,
+    /// The message log, syslog hosts and trap level.
+    pub log: Logging,
+    log_timer: bool,
     /// HSRP and VRRP groups.
     pub fhrp: Vec<FhrpEntry>,
     fhrp_timer: bool,
@@ -206,6 +213,8 @@ impl Router {
             clock: Clock::default(),
             ntp: Ntp::default(),
             ntp_timer: false,
+            log: Logging::default(),
+            log_timer: false,
             tcp: Tcp::new(u32::from(unit) * 0x0101_0101),
             vty_policy: None,
             nat: Nat::default(),
@@ -244,6 +253,7 @@ impl Router {
         self.nat = Nat::default();
         self.disc = Discovery::new(self.n_ports as usize);
         self.ntp.reset();
+        self.log.reset();
         self.fhrp.clear();
         self.probes.clear();
         self.unreachable_after = SimTime::ZERO;
@@ -1792,6 +1802,11 @@ impl Router {
             self.tcp_emit(ctx, out);
             return;
         }
+        if token == LOG_TICK {
+            self.log_timer = false;
+            self.log_tick(ctx);
+            return;
+        }
         if token == NTP_TICK {
             self.ntp_timer = false;
             self.ntp_tick(ctx);
@@ -1889,6 +1904,102 @@ impl Router {
     /// Change one interface's OSPF settings.
     pub fn set_ospf_cfg(&mut self, i: usize, f: impl FnOnce(&mut OspfIfCfg)) {
         f(&mut self.ifaces[i].ospf);
+    }
+
+    /// The timestamp of a log line: `*Mar  1 00:00:05.123`, with the same flag `show clock` puts
+    /// in front (`*` clock not trustworthy, `.` time source lost).
+    pub fn log_stamp(&self, now: SimTime) -> String {
+        let (_, mo, d, h, mi, s, _) = civil_from_unix(self.clock.local_secs(now));
+        let ms = self.clock.now_ns(now).rem_euclid(1_000_000_000) / 1_000_000;
+        let trusted = self.clock.set_by_hand || self.clock.ever_synced || self.ntp.master.is_some();
+        let flag = if !trusted {
+            "*"
+        } else if self.ntp.wants_tick() && self.ntp.state().is_none() {
+            "."
+        } else {
+            ""
+        };
+        format!(
+            "{flag}{} {d:>2} {h:02}:{mi:02}:{s:02}.{ms:03}",
+            MONTHS[mo - 1]
+        )
+    }
+
+    /// Log a message (`tag` like `LINK-3-UPDOWN`) and send it to the syslog hosts.
+    pub fn syslog(&mut self, ctx: &mut Ctx, sev: u8, tag: &str, text: &str) {
+        let stamp = self.log_stamp(ctx.now());
+        for (host, payload) in self.log.log(&stamp, sev, tag, text) {
+            if let Some(src) = self.source_for(host) {
+                self.send_udp(
+                    ctx,
+                    src,
+                    host,
+                    wire::SYSLOG_PORT,
+                    wire::SYSLOG_PORT,
+                    &payload,
+                );
+            }
+        }
+    }
+
+    /// The name an interface goes by in messages.
+    pub fn if_long_name(&self, i: usize) -> String {
+        let ifc = &self.ifaces[i];
+        match (ifc.svi, ifc.sub) {
+            (Some(v), _) => format!("Vlan{v}"),
+            (None, Some(sub)) => format!("GigabitEthernet0/{}.{}", sub.parent.0, sub.number),
+            _ => format!("GigabitEthernet0/{i}"),
+        }
+    }
+
+    /// Start watching interfaces for the log if somebody will read it and it is not running.
+    pub fn log_kick(&mut self, ctx: &mut Ctx) {
+        if self.log.wants_tick() && !self.log_timer {
+            self.log_timer = true;
+            ctx.schedule_background(SimTime::from_secs(1), LOG_TICK);
+        }
+    }
+
+    /// Compare each interface with how it was last seen and log what changed.
+    fn log_tick(&mut self, ctx: &mut Ctx) {
+        if !self.log.wants_tick() {
+            return;
+        }
+        for i in 0..self.ifaces.len() {
+            let name = self.if_long_name(i);
+            let now = LineSeen {
+                admin_down: self.ifaces[i].shutdown,
+                up: self.line_up(ctx, i),
+            };
+            self.log_watch(ctx, name, now, self.ifaces[i].svi.is_none());
+        }
+        self.log_kick(ctx);
+    }
+
+    /// One interface's state as of now. A change is logged: `%LINK` for a physical port (down by
+    /// `shutdown` reads "administratively down") and `%LINEPROTO` for every kind. The first sight
+    /// of an interface logs nothing.
+    pub(crate) fn log_watch(&mut self, ctx: &mut Ctx, name: String, now: LineSeen, physical: bool) {
+        let Some(before) = self.log.seen.insert(name.clone(), now) else {
+            return;
+        };
+        if before == now {
+            return;
+        }
+        let st = if now.up { "up" } else { "down" };
+        if physical {
+            if now.admin_down {
+                let text = format!("Interface {name}, changed state to administratively down");
+                self.syslog(ctx, NOTIFICATIONS, "LINK-5-CHANGED", &text);
+            } else {
+                let text = format!("Interface {name}, changed state to {st}");
+                self.syslog(ctx, ERRORS, "LINK-3-UPDOWN", &text);
+            }
+        }
+        if before.up != now.up {
+            let text = format!("Line protocol on Interface {name}, changed state to {st}");
+            self.syslog(ctx, NOTIFICATIONS, "LINEPROTO-5-UPDOWN", &text);
+        }
     }
 
     /// Start NTP polling if servers are configured and it is not running.

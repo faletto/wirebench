@@ -1,4 +1,6 @@
-use crate::{record_probe, Ctx, Device, DeviceEvent, ProbeBody, ProbeReply, Resolver, Tcp, TcpTx};
+use crate::{
+    record_probe, Collector, Ctx, Device, DeviceEvent, ProbeBody, ProbeReply, Resolver, Tcp, TcpTx,
+};
 use kernel::{PortId, SimTime};
 use std::any::Any;
 use std::collections::BTreeMap;
@@ -117,6 +119,8 @@ pub struct Host {
     pub probes: Vec<ProbeReply>,
     /// TCP connections and UDP sockets.
     pub tcp: Tcp,
+    /// A syslog server, when the PC runs one.
+    pub syslogd: Collector,
     tcp_armed: Option<SimTime>,
 }
 
@@ -140,6 +144,7 @@ impl Host {
             dhcp: DhcpClient::default(),
             probes: Vec::new(),
             tcp: Tcp::new(mac.0[5] as u32 * 0x0101_0101),
+            syslogd: Collector::default(),
             tcp_armed: None,
         }
     }
@@ -350,6 +355,10 @@ impl Host {
         }
         if p.proto == IpProto::UDP && p.dst == self.ip {
             if let Ok(u) = UdpDatagram::parse(&p.payload) {
+                if self.syslogd.running && u.dst_port == wire::SYSLOG_PORT {
+                    self.syslogd.on_datagram(ctx.now(), p.src, &u.payload);
+                    return;
+                }
                 if self
                     .tcp
                     .udp_deliver(p.src, u.src_port, u.dst_port, &u.payload)
