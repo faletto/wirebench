@@ -1,5 +1,6 @@
 use crate::{
     record_probe, Collector, Ctx, Device, DeviceEvent, ProbeBody, ProbeReply, Resolver, Tcp, TcpTx,
+    TftpOut, TftpServer,
 };
 use kernel::{PortId, SimTime};
 use std::any::Any;
@@ -19,6 +20,8 @@ const ARP_TIMEOUT: SimTime = SimTime::from_secs(1);
 const DHCP_TIMER: u64 = 1 << 62;
 /// The timer token of TCP retransmission (ARP's tokens are 32-bit addresses).
 const TCP_TICK: u64 = 1 << 44;
+/// The timer token of the TFTP server's retransmission.
+const TFTP_TICK: u64 = 1 << 45;
 /// First retransmission delay for DISCOVER and REQUEST; it doubles each time up to a cap.
 const DHCP_RETRY: SimTime = SimTime::from_secs(2);
 const DHCP_RETRY_CAP: SimTime = SimTime::from_secs(16);
@@ -121,7 +124,10 @@ pub struct Host {
     pub tcp: Tcp,
     /// A syslog server, when the PC runs one.
     pub syslogd: Collector,
+    /// A TFTP server, when the PC runs one.
+    pub tftpd: TftpServer,
     tcp_armed: Option<SimTime>,
+    tftp_timer: bool,
 }
 
 impl Host {
@@ -145,7 +151,9 @@ impl Host {
             probes: Vec::new(),
             tcp: Tcp::new(mac.0[5] as u32 * 0x0101_0101),
             syslogd: Collector::default(),
+            tftpd: TftpServer::default(),
             tcp_armed: None,
+            tftp_timer: false,
         }
     }
 
@@ -194,6 +202,18 @@ impl Host {
                 self.tcp_armed = Some(d);
                 ctx.schedule(SimTime(d.0.saturating_sub(ctx.now().0)), TCP_TICK);
             }
+        }
+    }
+
+    /// Send what the TFTP server produced and keep its retransmission timer running while
+    /// transfers are open.
+    pub fn tftp_send(&mut self, ctx: &mut Ctx, out: Vec<TftpOut>) {
+        for o in out {
+            self.udp_send(ctx, o.dst, o.src_port, o.dst_port, &o.payload);
+        }
+        if self.tftpd.wants_tick() && !self.tftp_timer {
+            self.tftp_timer = true;
+            ctx.schedule(SimTime::from_secs(1), TFTP_TICK);
         }
     }
 
@@ -355,6 +375,15 @@ impl Host {
         }
         if p.proto == IpProto::UDP && p.dst == self.ip {
             if let Ok(u) = UdpDatagram::parse(&p.payload) {
+                if self.tftpd.running
+                    && (u.dst_port == wire::TFTP_PORT || self.tftpd.owns_port(u.dst_port))
+                {
+                    let out =
+                        self.tftpd
+                            .on_packet(ctx.now(), p.src, u.src_port, u.dst_port, &u.payload);
+                    self.tftp_send(ctx, out);
+                    return;
+                }
                 if self.syslogd.running && u.dst_port == wire::SYSLOG_PORT {
                     self.syslogd.on_datagram(ctx.now(), p.src, &u.payload);
                     return;
@@ -755,6 +784,11 @@ impl Device for Host {
             }
             DeviceEvent::Timer { token, .. } if token & DHCP_TIMER != 0 => {
                 self.dhcp_timer(ctx, (token & 0xffff_ffff) as u32);
+            }
+            DeviceEvent::Timer { token, .. } if token == TFTP_TICK => {
+                self.tftp_timer = false;
+                let out = self.tftpd.tick(ctx.now());
+                self.tftp_send(ctx, out);
             }
             DeviceEvent::Timer { token, .. } if token == TCP_TICK => {
                 self.tcp_armed = None;

@@ -28,6 +28,7 @@ mod nat;
 mod pc;
 pub use pc::{CLEAR_SCREEN, GREETING as PC_GREETING};
 mod remote;
+mod tftp;
 
 // ---- message catalog (shell-level strings) ----
 const UNKNOWN_INTERFACE: &str = "% No such interface:";
@@ -480,6 +481,7 @@ fn router_grammar() -> (Grammar, Modes) {
     disc::discovery_commands(&mut g, user, privileged, config, config_if);
     clock::clock_commands(&mut g, user, privileged, config);
     logging::logging_commands(&mut g, user, privileged, config);
+    tftp::copy_commands(&mut g, privileged);
     fhrp::fhrp_commands(&mut g, user, privileged, config_if);
     remote::remote_commands(&mut g, user, privileged, config, config_line);
     nat::nat_commands(&mut g, user, privileged, config, config_if);
@@ -561,6 +563,7 @@ fn host_grammar() -> (Grammar, Modes) {
     );
     remote::host_remote_commands(&mut g, m);
     pc::pc_commands(&mut g, m);
+    tftp::tftpd_commands(&mut g, m);
     (
         g,
         Modes {
@@ -967,6 +970,7 @@ fn switch_grammar() -> (Grammar, Modes) {
     disc::discovery_commands(&mut g, user, privileged, config, config_if);
     clock::clock_commands(&mut g, user, privileged, config);
     logging::logging_commands(&mut g, user, privileged, config);
+    tftp::copy_commands(&mut g, privileged);
     fhrp::fhrp_commands(&mut g, user, privileged, config_if);
     remote::remote_commands(&mut g, user, privileged, config, config_line);
     nat::nat_commands(&mut g, user, privileged, config, config_if);
@@ -3188,7 +3192,9 @@ impl Shell {
             330..=349 => return self.channel_cmd(w, handler, a),
             350..=379 => return self.disc_cmd(w, handler, a),
             380..=399 => return self.clock_cmd(w, handler, a),
-            530..=549 => return self.logging_cmd(w, handler, a),
+            530..=541 => return self.logging_cmd(w, handler, a),
+            542..=549 => return self.copy_tftp_cmd(w, handler, a),
+            550..=559 => return self.tftpd_cmd(w, handler, a),
             400..=429 => return self.fhrp_cmd(w, handler, a),
             ACL_PERMIT | ACL_DENY | ACL_REMARK | ACL_NO_SEQ | ACL_NO_PERMIT | ACL_NO_DENY
             | NO_ACL_NUMBER => return self.acl_entry_cmd(w, handler, a, &m),

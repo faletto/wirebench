@@ -21,6 +21,7 @@ mod stp;
 mod switch;
 mod syslog;
 mod tcp;
+mod tftp;
 mod vlan;
 
 pub use acl::{
@@ -89,4 +90,5 @@ pub use tcp::{
     Conn as TcpConn, Failure as TcpFailure, State as TcpState, Tcp, Tx as TcpTx, UdpSocket,
     EPHEMERAL_START as TCP_EPHEMERAL_START, MAX_RETRIES as TCP_MAX_RETRIES,
 };
+pub use tftp::{Out as TftpOut, TftpServer, MAX_RETRIES as TFTP_MAX_RETRIES, RETRY as TFTP_RETRY};
 pub use vlan::{all_vlans, format_vlan_list, parse_vlan_list, DEFAULT_VLAN, MAX_VLAN};

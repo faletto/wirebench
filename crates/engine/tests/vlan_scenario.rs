@@ -114,6 +114,12 @@ const SYSLOG: Scenario = Scenario {
     golden: "../../testkit/scenarios/m3b_syslog.out",
 };
 
+const TFTP: Scenario = Scenario {
+    lab: include_str!("../../../testkit/scenarios/m3b_syslog.lab.toml"),
+    script: include_str!("../../../testkit/scenarios/m3b_tftp.script"),
+    golden: "../../testkit/scenarios/m3b_tftp.out",
+};
+
 const FHRP: Scenario = Scenario {
     lab: include_str!("../../../testkit/scenarios/m3b_fhrp.lab.toml"),
     script: include_str!("../../../testkit/scenarios/m3b_fhrp.script"),
@@ -275,6 +281,11 @@ fn the_etherchannel_lab_matches_its_golden_transcript() {
 #[test]
 fn the_discovery_lab_matches_its_golden_transcript() {
     check_golden(&DISCOVERY);
+}
+
+#[test]
+fn the_tftp_lab_matches_its_golden_transcript() {
+    check_golden(&TFTP);
 }
 
 #[test]

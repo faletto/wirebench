@@ -1,0 +1,31 @@
+# pc1 is a TFTP server; r1 backs its configuration up to it, the configuration is changed, and
+# restored from the copy. sw1 does the same through its VLAN interface.
+@pc1
+tftpd start
+@r1
+enable
+configure terminal
+interface g0/0
+ip address 10.0.0.1 255.255.255.0
+no shutdown
+end
+copy running-config tftp://10.0.0.10/r1-confg
+configure terminal
+hostname changed
+end
+copy tftp://10.0.0.10/r1-confg running-config
+show running-config
+copy tftp://10.0.0.10/missing running-config
+copy running-config tftp://10.0.0.99/r1-confg
+@sw1
+enable
+configure terminal
+interface vlan 1
+ip address 10.0.0.3 255.255.255.0
+no shutdown
+end
+copy running-config tftp://10.0.0.10/sw1-confg
+@pc1
+tftpd list
+tftpd show sw1-confg
+tftpd log

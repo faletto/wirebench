@@ -35,6 +35,8 @@ SSH -l user address
                   Open an SSH connection
 SYSLOGD START | STOP | SHOW | CLEAR
                   Run a syslog server and show what devices sent it
+TFTPD START | STOP | LIST | LOG | SHOW file | DELETE file
+                  Run a TFTP server for device backups
 CLS               Clear the screen
 HELP              This list
 EXIT              Close the window";
