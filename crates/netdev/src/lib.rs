@@ -7,6 +7,7 @@ mod channel;
 mod device;
 mod dhcp_server;
 mod discovery;
+mod dns;
 mod fhrp;
 mod fib;
 mod host;
@@ -40,6 +41,10 @@ pub use dhcp_server::{client_key, Binding, BindingState, DhcpServer, Pool};
 pub use discovery::{
     Discovery, Identity as DiscoveryIdentity, Neighbour, PortInfo as DiscoveryPort,
     DEFAULT_CDP_HOLD, DEFAULT_CDP_TIMER, DEFAULT_LLDP_HOLD, DEFAULT_LLDP_TIMER,
+};
+pub use dns::{
+    answer as dns_answer, canonical as dns_canonical, DnsServer, Resolver as DnsResolver,
+    MAX_SERVERS as DNS_MAX_SERVERS,
 };
 pub use fhrp::{
     Group as FhrpGroup, Kind as FhrpKind, Msg as FhrpMsg, Proto as FhrpProto, State as FhrpState,

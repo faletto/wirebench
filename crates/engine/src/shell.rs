@@ -20,6 +20,7 @@ use wire::{IcmpErrorKind, Ipv4Addr};
 
 mod clock;
 mod disc;
+mod dns;
 mod etherchannel;
 mod fhrp;
 mod logging;
@@ -481,6 +482,7 @@ fn router_grammar() -> (Grammar, Modes) {
     disc::discovery_commands(&mut g, user, privileged, config, config_if);
     clock::clock_commands(&mut g, user, privileged, config);
     logging::logging_commands(&mut g, user, privileged, config);
+    dns::dns_commands(&mut g, user, privileged, config);
     tftp::copy_commands(&mut g, privileged);
     fhrp::fhrp_commands(&mut g, user, privileged, config_if);
     remote::remote_commands(&mut g, user, privileged, config, config_line);
@@ -564,6 +566,7 @@ fn host_grammar() -> (Grammar, Modes) {
     remote::host_remote_commands(&mut g, m);
     pc::pc_commands(&mut g, m);
     tftp::tftpd_commands(&mut g, m);
+    dns::pc_dns_commands(&mut g, m);
     (
         g,
         Modes {
@@ -970,6 +973,7 @@ fn switch_grammar() -> (Grammar, Modes) {
     disc::discovery_commands(&mut g, user, privileged, config, config_if);
     clock::clock_commands(&mut g, user, privileged, config);
     logging::logging_commands(&mut g, user, privileged, config);
+    dns::dns_commands(&mut g, user, privileged, config);
     tftp::copy_commands(&mut g, privileged);
     fhrp::fhrp_commands(&mut g, user, privileged, config_if);
     remote::remote_commands(&mut g, user, privileged, config, config_line);
@@ -3094,6 +3098,18 @@ impl Shell {
         } else {
             line
         };
+        let mut name_note = String::new();
+        let resolved;
+        let mut line = line;
+        match self.resolve_in_line(w, line) {
+            Ok(Some((l, note))) => {
+                resolved = l;
+                line = resolved.as_str();
+                name_note = note;
+            }
+            Ok(None) => {}
+            Err(e) => return Some(e),
+        }
         let mode_before = self.session.mode();
         match self.session.exec(&self.grammar, line) {
             Exec::Empty => Some(String::new()),
@@ -3120,7 +3136,11 @@ impl Shell {
             Exec::Run { handler, args } => {
                 let out = self.run(w, handler, &args, line);
                 self.settle(w);
-                Some(out)
+                Some(if name_note.is_empty() {
+                    out
+                } else {
+                    format!("{name_note}\n{out}")
+                })
             }
         }
     }
@@ -3195,6 +3215,7 @@ impl Shell {
             530..=541 => return self.logging_cmd(w, handler, a),
             542..=549 => return self.copy_tftp_cmd(w, handler, a),
             550..=559 => return self.tftpd_cmd(w, handler, a),
+            560..=579 => return self.dns_cmd(w, handler, a),
             400..=429 => return self.fhrp_cmd(w, handler, a),
             ACL_PERMIT | ACL_DENY | ACL_REMARK | ACL_NO_SEQ | ACL_NO_PERMIT | ACL_NO_DENY
             | NO_ACL_NUMBER => return self.acl_entry_cmd(w, handler, a, &m),
@@ -3991,6 +4012,7 @@ pub fn running_config(r: &Router) -> String {
     o += &disc::disc_global_lines(&r.disc);
     o += &clock::clock_lines(&r.clock, &r.ntp);
     o += &logging::logging_lines(&r.log);
+    o += &dns::dns_lines(&r.dns);
     o += &dhcp_config(r);
     for (i, ifc) in r.interfaces().iter().enumerate() {
         o += &format!("interface {}\n", iface_name(r, i));
@@ -4063,6 +4085,7 @@ pub fn switch_config(s: &L2Switch) -> String {
     o += &disc::disc_global_lines(&s.disc);
     o += &clock::clock_lines(&s.l3().clock, &s.l3().ntp);
     o += &logging::logging_lines(&s.l3().log);
+    o += &dns::dns_lines(&s.l3().dns);
     if s.l3().routing() {
         o += "ip routing\n!\n";
     }

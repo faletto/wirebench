@@ -36,6 +36,11 @@ fn unknown_commands_get_the_command_prompt_wording() {
     );
     assert_eq!(
         sh.exec(&mut lab.world, "ping not-an-address").unwrap(),
+        "Ping request could not find host not-an-address. Please check the name and try again."
+    );
+    // Something that is neither an address nor a name is still a syntax error.
+    assert_eq!(
+        sh.exec(&mut lab.world, "ping 1.2.3").unwrap(),
         "The syntax of the command is incorrect."
     );
 }

@@ -125,3 +125,9 @@ name = "wire_tftp"
 path = "fuzz_targets/wire_tftp.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "wire_dns"
+path = "fuzz_targets/wire_dns.rs"
+test = false
+doc = false

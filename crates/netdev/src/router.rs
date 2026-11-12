@@ -148,6 +148,8 @@ pub struct Router {
     ntp_timer: bool,
     /// The message log, syslog hosts and trap level.
     pub log: Logging,
+    /// `ip name-server`, `ip host`, `ip dns server`.
+    pub dns: crate::DnsResolver,
     log_timer: bool,
     /// OSPF neighbour and FHRP group states as last looked at, to log what changed.
     ospf_seen: BTreeMap<(usize, Ipv4Addr), OspfNbrState>,
@@ -218,6 +220,7 @@ impl Router {
             ntp: Ntp::default(),
             ntp_timer: false,
             log: Logging::default(),
+            dns: crate::DnsResolver::default(),
             log_timer: false,
             ospf_seen: BTreeMap::new(),
             fhrp_seen: BTreeMap::new(),
@@ -260,6 +263,7 @@ impl Router {
         self.disc = Discovery::new(self.n_ports as usize);
         self.ntp.reset();
         self.log.reset();
+        self.dns = crate::DnsResolver::default();
         self.ospf_seen.clear();
         self.fhrp_seen.clear();
         self.fhrp.clear();
@@ -1009,7 +1013,10 @@ impl Router {
         {
             return;
         }
-        if p.proto == IpProto::UDP && self.owns(p.dst) && self.on_ntp(ctx, &p) {
+        if p.proto == IpProto::UDP
+            && self.owns(p.dst)
+            && (self.on_dns(ctx, &p) || self.on_ntp(ctx, &p))
+        {
             return;
         }
         if p.proto == IpProto::UDP && self.owns(p.dst) && self.on_udp_socket(&p) {
@@ -2119,6 +2126,24 @@ impl Router {
             }
         }
         self.ntp_kick(ctx);
+    }
+
+    /// A UDP packet for this router: a DNS query (port 53) when `ip dns server` is on, answered
+    /// from the `ip host` table. True if it was taken.
+    fn on_dns(&mut self, ctx: &mut Ctx, p: &Ipv4Packet) -> bool {
+        if !self.dns.serve {
+            return false;
+        }
+        let Ok(u) = UdpDatagram::parse(&p.payload) else {
+            return false;
+        };
+        if u.dst_port != wire::DNS_PORT {
+            return false;
+        }
+        if let Some(reply) = crate::dns_answer(&self.dns.hosts, &u.payload) {
+            self.send_udp(ctx, p.dst, p.src, wire::DNS_PORT, u.src_port, &reply);
+        }
+        true
     }
 
     /// A UDP packet for this router: NTP (port 123), answered or taken in. True if it was NTP.

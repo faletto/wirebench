@@ -116,7 +116,7 @@ fn parse_url(url: &str) -> Option<(Ipv4Addr, String)> {
     (!file.is_empty()).then(|| (Ipv4Addr(addr), file.to_string()))
 }
 
-fn with_udp<R>(
+pub(super) fn with_udp<R>(
     w: &mut World,
     kind: Kind,
     dev: DeviceId,
@@ -166,7 +166,7 @@ fn with_udp<R>(
     }
 }
 
-fn udp_of(w: &World, kind: Kind, dev: DeviceId) -> &Tcp {
+pub(super) fn udp_of(w: &World, kind: Kind, dev: DeviceId) -> &Tcp {
     match kind {
         Kind::Host => &w.device::<Host>(dev).tcp,
         Kind::Router => &w.device::<Router>(dev).tcp,

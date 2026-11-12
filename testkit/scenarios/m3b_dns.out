@@ -1,0 +1,82 @@
+
+== pc1
+C:\>dnsd start
+DNS server listening on UDP port 53.
+C:\>dnsd add web.example.com 10.0.0.2
+C:\>dnsd list
+DNS server is running. 1 name, 0 queries answered.
+10.0.0.2 web.example.com
+
+== r2
+r2>enable
+r2#configure terminal
+r2(config)#interface g0/0
+r2(config-if)#ip address 10.0.0.2 255.255.255.0
+r2(config-if)#no shutdown
+r2(config-if)#exit
+r2(config)#ip host files.example.com 10.0.0.1
+r2(config)#ip dns server
+r2(config)#end
+
+== r1
+r1>enable
+r1#configure terminal
+r1(config)#interface g0/0
+r1(config-if)#ip address 10.0.0.1 255.255.255.0
+r1(config-if)#no shutdown
+r1(config-if)#exit
+r1(config)#ip name-server 10.0.0.10
+r1(config)#ip domain-name example.com
+r1(config)#ip host printer 10.0.0.1
+r1(config)#end
+r1#ping web
+Translating "web"...domain server (10.0.0.10) [OK]
+Type escape sequence to abort.
+Sending 5, 100-byte ICMP Echos to 10.0.0.2, timeout is 2 seconds:
+!!!!!
+Success rate is 100 percent (5/5), round-trip min/avg/max = 27/31/50 usec
+r1#ping nosuch
+Translating "nosuch"...domain server (10.0.0.10)
+% Unrecognized host or address, or protocol not running.
+r1#ping printer
+Type escape sequence to abort.
+Sending 5, 100-byte ICMP Echos to 10.0.0.1, timeout is 2 seconds:
+!!!!!
+Success rate is 100 percent (5/5), round-trip min/avg/max = 0/0/0 usec
+r1#show hosts
+Default domain is example.com
+Name/address lookup uses domain service
+Name servers are 10.0.0.10
+
+Codes: UN - unknown, EX - expired, OK - OK, ?? - revalidate
+       temp - temporary, perm - permanent
+       NA - Not Applicable None - Not defined
+
+Host                      Port Flags      Age Type   Address(es)
+printer                   None (perm, OK)  0   IP      10.0.0.1
+
+== pc1
+C:\>nslookup files.example.com 10.0.0.2
+Server:  UnKnown
+Address:  10.0.0.2
+
+Name:    files.example.com
+Address:  10.0.0.1
+C:\>nslookup nothing.example.com 10.0.0.2
+Server:  UnKnown
+Address:  10.0.0.2
+
+*** UnKnown can't find nothing.example.com: Non-existent domain
+C:\>netsh interface ip set dns eth0 static 10.0.0.2
+C:\>ping files.example.com
+Pinging files.example.com [10.0.0.1]:
+Reply from 10.0.0.1: time=27us
+Reply from 10.0.0.1: time=27us
+Reply from 10.0.0.1: time=27us
+Reply from 10.0.0.1: time=27us
+Sent 4, received 4
+C:\>ping nothing.example.com
+Ping request could not find host nothing.example.com. Please check the name and try again.
+C:\>dnsd list
+DNS server is running. 1 name, 3 queries answered.
+10.0.0.2 web.example.com
