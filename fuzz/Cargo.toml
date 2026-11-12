@@ -113,3 +113,15 @@ name = "wire_dissect"
 path = "fuzz_targets/wire_dissect.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "wire_syslog"
+path = "fuzz_targets/wire_syslog.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "wire_tftp"
+path = "fuzz_targets/wire_tftp.rs"
+test = false
+doc = false
