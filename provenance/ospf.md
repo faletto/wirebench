@@ -6,8 +6,11 @@ database exchange 10.6-10.8, flooding 13, origination 12.4, shortest path 16.1-1
 packet checksum; packet formats in `provenance/ospf-wire.md`); public doc (general knowledge of how
 IOS configures OSPF and prints `show ip ospf ...`, recalled rather than re-read; no Packet Tracer
 material); own test (`crates/netdev/tests/ospf_net.rs`, `crates/engine/tests/ospf_shell.rs`, golden
-`testkit/scenarios/m3_ospf.*`). [verify] marks choices not checked against a real device. **The plan's
-oracle (FRR ospfd) has not been run**; nothing here has been compared with another implementation.
+`testkit/scenarios/m3_ospf.*`). [verify] marks choices not checked against a real device. **Compared
+with FRR ospfd 10.2.1 on 2026-11-11** (`testkit/frr-oracle`): the routes (prefix, kind, cost) for
+three networks (broadcast and point to point, two leaf areas, an E2 default route) are the same, and
+FRR's packets parse here. Only those cases were compared: not the database, timing, equal-cost
+paths, stub areas or NSSA.
 
 ## What is modelled
 

@@ -1,0 +1,6 @@
+# Router 3 is an autonomous system boundary router that always originates a default route (type 2, metric 20).
+nodes 4
+seg bcast 0 : 0/1/1 1/1/1
+seg p2p   0 : 1/0/10 2/0/10
+seg p2p   0 : 2/0/5 3/0/5
+default 3 e2 20
