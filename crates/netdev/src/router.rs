@@ -1,15 +1,16 @@
 use crate::discovery::{Discovery, Identity, PortInfo as DiscPort};
 use crate::fib::{mask, Fib, Route, RouteKind};
-use crate::syslog::{LineSeen, Logging, ERRORS, NOTIFICATIONS};
+use crate::syslog::{LineSeen, Logging, ERRORS, INFORMATIONAL, NOTIFICATIONS};
 use crate::{civil_from_unix, MONTHS};
 use crate::{
     record_probe, AclPacket, AclSet, Clock, Ctx, Device, DeviceEvent, DhcpServer, FhrpGroup,
     FhrpKind, FhrpMsg, FhrpProto, FhrpState, Mgmt, Nat, NatFlow, NatSide, NatTarget, Ntp, Ospf,
-    OspfIfCfg, OspfIfView, OspfPathKind, OspfSource, OspfTx, ProbeBody, ProbeReply, Resolver, Tcp,
-    TcpTx,
+    OspfIfCfg, OspfIfView, OspfNbrState, OspfPathKind, OspfSource, OspfTx, ProbeBody, ProbeReply,
+    Resolver, Tcp, TcpTx,
 };
 use kernel::{PortId, SimTime};
 use std::any::Any;
+use std::collections::BTreeMap;
 use wire::{
     ArpOp, ArpPacket, EtherType, EthernetFrame, IcmpEcho, IcmpError, IcmpErrorKind, IpProto,
     Ipv4Addr, Ipv4Packet, MacAddr, OspfPacket, UdpDatagram, VlanTag, ALL_DR_ROUTERS,
@@ -148,6 +149,9 @@ pub struct Router {
     /// The message log, syslog hosts and trap level.
     pub log: Logging,
     log_timer: bool,
+    /// OSPF neighbour and FHRP group states as last looked at, to log what changed.
+    ospf_seen: BTreeMap<(usize, Ipv4Addr), OspfNbrState>,
+    fhrp_seen: BTreeMap<(usize, u8), FhrpState>,
     /// HSRP and VRRP groups.
     pub fhrp: Vec<FhrpEntry>,
     fhrp_timer: bool,
@@ -215,6 +219,8 @@ impl Router {
             ntp_timer: false,
             log: Logging::default(),
             log_timer: false,
+            ospf_seen: BTreeMap::new(),
+            fhrp_seen: BTreeMap::new(),
             tcp: Tcp::new(u32::from(unit) * 0x0101_0101),
             vty_policy: None,
             nat: Nat::default(),
@@ -254,6 +260,8 @@ impl Router {
         self.disc = Discovery::new(self.n_ports as usize);
         self.ntp.reset();
         self.log.reset();
+        self.ospf_seen.clear();
+        self.fhrp_seen.clear();
         self.fhrp.clear();
         self.probes.clear();
         self.unreachable_after = SimTime::ZERO;
@@ -1847,6 +1855,7 @@ impl Device for Router {
             }
             DeviceEvent::Timer { token, .. } => self.on_timer(ctx, token),
         }
+        self.log_changes(ctx);
         self.flush(ctx);
     }
 
@@ -1949,6 +1958,94 @@ impl Router {
             (Some(v), _) => format!("Vlan{v}"),
             (None, Some(sub)) => format!("GigabitEthernet0/{}.{}", sub.parent.0, sub.number),
             _ => format!("GigabitEthernet0/{i}"),
+        }
+    }
+
+    /// Log what OSPF neighbours and first hop redundancy groups did since the last look:
+    /// `%OSPF-5-ADJCHG` for an adjacency reaching or leaving FULL and `%STANDBY-6-STATECHANGE` or
+    /// `%VRRP-6-STATECHANGE` for a group changing state. Looked at after every event, so what is
+    /// reported as the old state is the last one seen, not always the one just before.
+    pub(crate) fn log_changes(&mut self, ctx: &mut Ctx) {
+        if !self.log.wants_tick() {
+            return;
+        }
+        let mut msgs: Vec<(u8, &'static str, String)> = Vec::new();
+        let mut now_nbrs = BTreeMap::new();
+        let mut pid = 0;
+        if let Some(o) = &self.ospf {
+            pid = o.process;
+            for ifc in o.interfaces() {
+                for (id, n) in &ifc.nbrs {
+                    now_nbrs.insert((ifc.index, *id), n.state);
+                }
+            }
+        }
+        let seen = std::mem::take(&mut self.ospf_seen);
+        for (&(i, id), &st) in &now_nbrs {
+            let prev = seen.get(&(i, id)).copied();
+            let name = self.if_long_name(i);
+            if st == OspfNbrState::Full && prev != Some(OspfNbrState::Full) {
+                let from = prev.map_or("DOWN", OspfNbrState::name);
+                let why = if prev == Some(OspfNbrState::Exchange) {
+                    "Exchange Done"
+                } else {
+                    "Loading Done"
+                };
+                msgs.push((
+                    NOTIFICATIONS,
+                    "OSPF-5-ADJCHG",
+                    format!("Process {pid}, Nbr {id} on {name} from {from} to FULL, {why}"),
+                ));
+            } else if prev == Some(OspfNbrState::Full) && st != OspfNbrState::Full {
+                msgs.push((NOTIFICATIONS, "OSPF-5-ADJCHG", format!("Process {pid}, Nbr {id} on {name} from FULL to {}, Adjacency forced to reset", st.name())));
+            }
+        }
+        for (&(i, id), &prev) in &seen {
+            if prev == OspfNbrState::Full && !now_nbrs.contains_key(&(i, id)) {
+                let name = self.if_long_name(i);
+                let why = if self.line_up(ctx, i) {
+                    "Neighbor Down: Dead timer expired"
+                } else {
+                    "Neighbor Down: Interface down or detached"
+                };
+                msgs.push((
+                    NOTIFICATIONS,
+                    "OSPF-5-ADJCHG",
+                    format!("Process {pid}, Nbr {id} on {name} from FULL to DOWN, {why}"),
+                ));
+            }
+        }
+        self.ospf_seen = now_nbrs;
+        let mut now_groups = BTreeMap::new();
+        for e in &self.fhrp {
+            now_groups.insert((e.iface, e.g.group), e.g.state());
+        }
+        for e in &self.fhrp {
+            let key = (e.iface, e.g.group);
+            let st = e.g.state();
+            let prev = self.fhrp_seen.get(&key).copied().unwrap_or(FhrpState::Init);
+            if prev != st {
+                let tag = if e.g.proto == FhrpProto::Vrrp {
+                    "VRRP-6-STATECHANGE"
+                } else {
+                    "STANDBY-6-STATECHANGE"
+                };
+                msgs.push((
+                    INFORMATIONAL,
+                    tag,
+                    format!(
+                        "{} Grp {} state {} -> {}",
+                        self.if_long_name(e.iface),
+                        e.g.group,
+                        prev.name(),
+                        st.name()
+                    ),
+                ));
+            }
+        }
+        self.fhrp_seen = now_groups;
+        for (sev, tag, text) in msgs {
+            self.syslog(ctx, sev, tag, &text);
         }
     }
 

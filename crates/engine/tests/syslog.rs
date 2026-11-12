@@ -261,3 +261,88 @@ fn logging_settings_are_checked_and_come_back_from_the_saved_config() {
         "{log}"
     );
 }
+
+#[test]
+fn ospf_adjacencies_hsrp_groups_and_port_security_violations_are_logged() {
+    let mut lab = lab();
+    console(
+        &mut lab,
+        R1,
+        &[
+            "configure terminal",
+            "logging buffered",
+            "logging host 10.0.0.10",
+            "end",
+        ],
+    );
+    console(
+        &mut lab,
+        SW1,
+        &["configure terminal", "logging buffered", "end"],
+    );
+    for (d, rid) in [(R1, "1.1.1.1"), (R2, "2.2.2.2")] {
+        console(
+            &mut lab,
+            d,
+            &[
+                "configure terminal",
+                "router ospf 1",
+                &format!("router-id {rid}"),
+                "network 10.0.0.0 0.0.0.255 area 0",
+                "exit",
+                "interface g0/0",
+                "standby 1 ip 10.0.0.100",
+                "standby 1 priority 110",
+                "standby 1 preempt",
+                "end",
+            ],
+        );
+    }
+    wait(&mut lab, 90);
+    let log = console(&mut lab, R1, &["show logging"]);
+    assert!(
+        log.contains("%OSPF-5-ADJCHG: Process 1, Nbr 2.2.2.2 on GigabitEthernet0/0 from LOADING to FULL, Loading Done")
+            || log.contains("%OSPF-5-ADJCHG: Process 1, Nbr 2.2.2.2 on GigabitEthernet0/0 from EXCHANGE to FULL, Exchange Done"),
+        "{log}"
+    );
+    assert!(
+        log.contains("%STANDBY-6-STATECHANGE: GigabitEthernet0/0 Grp 1 state "),
+        "{log}"
+    );
+    assert!(log.contains(" -> Active"), "{log}");
+    let got = collected(&mut lab);
+    assert!(
+        got.contains("%OSPF-5-ADJCHG") && got.contains("local7.informational"),
+        "{got}"
+    );
+    // The neighbour goes: the switch drops r2's port and the dead timer ends the adjacency.
+    console(
+        &mut lab,
+        SW1,
+        &["configure terminal", "interface fa0/3", "shutdown", "end"],
+    );
+    wait(&mut lab, 60);
+    let log = console(&mut lab, R1, &["show logging"]);
+    assert!(
+        log.contains("from FULL to DOWN, Neighbor Down: Dead timer expired"),
+        "{log}"
+    );
+    // Port security: pc1's address is not the one allowed on its port.
+    console(
+        &mut lab,
+        SW1,
+        &[
+            "configure terminal",
+            "interface fa0/1",
+            "switchport mode access",
+            "switchport port-security",
+            "switchport port-security maximum 1",
+            "switchport port-security mac-address 0000.0000.0001",
+            "end",
+        ],
+    );
+    console(&mut lab, PC1, &["ping 10.0.0.1"]);
+    let sw = console(&mut lab, SW1, &["show logging"]);
+    assert!(sw.contains("%PORT_SECURITY-2-PSECURE_VIOLATION: Security violation occurred, caused by MAC address "), "{sw}");
+    assert!(sw.contains("%PM-4-ERR_DISABLE: psecure-violation error detected on Fa0/1, putting Fa0/1 in err-disable state"), "{sw}");
+}
