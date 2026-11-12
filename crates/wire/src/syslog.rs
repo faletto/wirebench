@@ -78,7 +78,7 @@ mod tests {
             text: "12: *Mar  1 00:00:05.123: %LINK-3-UPDOWN: Interface Fa0/1, changed state to up"
                 .into(),
         };
-        assert_eq!(m.emit().starts_with(b"<189>12: "), true);
+        assert!(m.emit().starts_with(b"<189>12: "));
         assert_eq!(SyslogMessage::parse(&m.emit()), Ok(m));
     }
 
