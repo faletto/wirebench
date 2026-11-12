@@ -1,0 +1,42 @@
+# pc1 collects syslog; r1 and sw1 log link changes and configuration changes to it.
+@pc1
+syslogd start
+@r1
+enable
+configure terminal
+interface g0/0
+ip address 10.0.0.1 255.255.255.0
+no shutdown
+exit
+logging host 10.0.0.10
+logging buffered
+end
+%wait 3
+@sw1
+enable
+configure terminal
+logging buffered
+logging host 10.0.0.10
+interface vlan 1
+ip address 10.0.0.3 255.255.255.0
+no shutdown
+end
+%wait 3
+# The switch drops r1's port: r1 logs it but cannot send; when the port is back, both reach pc1.
+@sw1
+configure terminal
+interface fa0/2
+shutdown
+end
+%wait 3
+configure terminal
+interface fa0/2
+no shutdown
+end
+%wait 8
+show logging
+@r1
+show logging
+show running-config
+@pc1
+syslogd show

@@ -19,7 +19,9 @@ mod psec;
 mod router;
 mod stp;
 mod switch;
+mod syslog;
 mod tcp;
+mod tftp;
 mod vlan;
 
 pub use acl::{
@@ -77,8 +79,16 @@ pub use stp::{
 pub use switch::{
     L2Switch, MacEntry, PortConfig, PortMode, SpanningConfig, DEFAULT_BRIDGE_PRIORITY,
 };
+pub use syslog::{
+    level_name as log_level_name, parse_level as parse_log_level, Collector, LineSeen, Logging,
+    Received as SyslogReceived, BUFFER_DEFAULT, DEBUGGING as LOG_DEBUGGING,
+    DEFAULT_FACILITY as LOG_DEFAULT_FACILITY, ERRORS as LOG_ERRORS,
+    INFORMATIONAL as LOG_INFORMATIONAL, NOTIFICATIONS as LOG_NOTIFICATIONS,
+    WARNINGS as LOG_WARNINGS,
+};
 pub use tcp::{
     Conn as TcpConn, Failure as TcpFailure, State as TcpState, Tcp, Tx as TcpTx, UdpSocket,
     EPHEMERAL_START as TCP_EPHEMERAL_START, MAX_RETRIES as TCP_MAX_RETRIES,
 };
+pub use tftp::{Out as TftpOut, TftpServer, MAX_RETRIES as TFTP_MAX_RETRIES, RETRY as TFTP_RETRY};
 pub use vlan::{all_vlans, format_vlan_list, parse_vlan_list, DEFAULT_VLAN, MAX_VLAN};

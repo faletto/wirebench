@@ -17,8 +17,10 @@ mod ntp;
 mod ospf;
 mod ssh;
 mod summary;
+mod syslog;
 mod tcp;
 mod telnet;
+mod tftp;
 mod udp;
 
 pub use addr::{Ipv4Addr, MacAddr};
@@ -61,10 +63,19 @@ pub use ssh::{
     MSG_USERAUTH_SUCCESS as SSH_MSG_USERAUTH_SUCCESS, SOFTWARE as SSH_SOFTWARE,
 };
 pub use summary::summarize;
+pub use syslog::{
+    SyslogMessage, MAX_LEN as SYSLOG_MAX_LEN, SEVERITIES as SYSLOG_SEVERITIES, SYSLOG_PORT,
+};
 pub use tcp::TcpSegment;
 pub use telnet::{
     escape as telnet_escape, Decoder as TelnetDecoder, Negotiation as TelnetNegotiation,
     Options as TelnetOptions, DO as TELNET_DO, OPT_ECHO as TELNET_ECHO, OPT_SGA as TELNET_SGA,
+};
+pub use tftp::{
+    Mode as TftpMode, TftpPacket, BLOCK_SIZE as TFTP_BLOCK_SIZE, ERR_ACCESS as TFTP_ERR_ACCESS,
+    ERR_DISK_FULL as TFTP_ERR_DISK_FULL, ERR_EXISTS as TFTP_ERR_EXISTS,
+    ERR_FILE_NOT_FOUND as TFTP_ERR_FILE_NOT_FOUND, ERR_ILLEGAL_OP as TFTP_ERR_ILLEGAL_OP,
+    ERR_UNDEFINED as TFTP_ERR_UNDEFINED, ERR_UNKNOWN_ID as TFTP_ERR_UNKNOWN_ID, TFTP_PORT,
 };
 pub use udp::UdpDatagram;
 

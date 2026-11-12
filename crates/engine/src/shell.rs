@@ -22,11 +22,13 @@ mod clock;
 mod disc;
 mod etherchannel;
 mod fhrp;
+mod logging;
 mod m3b;
 mod nat;
 mod pc;
 pub use pc::{CLEAR_SCREEN, GREETING as PC_GREETING};
 mod remote;
+mod tftp;
 
 // ---- message catalog (shell-level strings) ----
 const UNKNOWN_INTERFACE: &str = "% No such interface:";
@@ -478,6 +480,8 @@ fn router_grammar() -> (Grammar, Modes) {
     probe_commands(&mut g, privileged);
     disc::discovery_commands(&mut g, user, privileged, config, config_if);
     clock::clock_commands(&mut g, user, privileged, config);
+    logging::logging_commands(&mut g, user, privileged, config);
+    tftp::copy_commands(&mut g, privileged);
     fhrp::fhrp_commands(&mut g, user, privileged, config_if);
     remote::remote_commands(&mut g, user, privileged, config, config_line);
     nat::nat_commands(&mut g, user, privileged, config, config_if);
@@ -559,6 +563,7 @@ fn host_grammar() -> (Grammar, Modes) {
     );
     remote::host_remote_commands(&mut g, m);
     pc::pc_commands(&mut g, m);
+    tftp::tftpd_commands(&mut g, m);
     (
         g,
         Modes {
@@ -964,6 +969,8 @@ fn switch_grammar() -> (Grammar, Modes) {
     etherchannel::channel_commands(&mut g, user, privileged, config, config_if);
     disc::discovery_commands(&mut g, user, privileged, config, config_if);
     clock::clock_commands(&mut g, user, privileged, config);
+    logging::logging_commands(&mut g, user, privileged, config);
+    tftp::copy_commands(&mut g, privileged);
     fhrp::fhrp_commands(&mut g, user, privileged, config_if);
     remote::remote_commands(&mut g, user, privileged, config, config_line);
     nat::nat_commands(&mut g, user, privileged, config, config_if);
@@ -3087,8 +3094,26 @@ impl Shell {
         } else {
             line
         };
+        let mode_before = self.session.mode();
         match self.session.exec(&self.grammar, line) {
-            Exec::Empty | Exec::Moved => Some(String::new()),
+            Exec::Empty => Some(String::new()),
+            Exec::Moved => {
+                // Leaving configuration mode is logged, as a real device does.
+                let m = &self.modes;
+                if self.kind != Kind::Host
+                    && mode_before != m.user
+                    && mode_before != m.privileged
+                    && self.session.mode() == m.privileged
+                {
+                    self.log_event(
+                        w,
+                        netdev::LOG_NOTIFICATIONS,
+                        "SYS-5-CONFIG_I",
+                        "Configured from console by console",
+                    );
+                }
+                Some(String::new())
+            }
             Exec::Logout => None,
             Exec::Error(e) if self.kind == Kind::Host => Some(pc::error_text(line, &e)),
             Exec::Error(e) => Some(render_error(&prompt, &e)),
@@ -3125,8 +3150,14 @@ impl Shell {
     /// After a command: a switch looks at its cables and gets spanning tree going if it is on.
     fn settle(&self, w: &mut World) {
         match self.kind {
-            Kind::Switch => w.with_device::<L2Switch, _>(self.device, |s, ctx| s.refresh(ctx)),
-            Kind::Router => w.with_device::<Router, _>(self.device, |r, ctx| r.disc_kick(ctx)),
+            Kind::Switch => w.with_device::<L2Switch, _>(self.device, |s, ctx| {
+                s.refresh(ctx);
+                s.originate(ctx, |r, ctx| r.log_kick(ctx));
+            }),
+            Kind::Router => w.with_device::<Router, _>(self.device, |r, ctx| {
+                r.disc_kick(ctx);
+                r.log_kick(ctx);
+            }),
             Kind::Host => {}
         }
     }
@@ -3161,6 +3192,9 @@ impl Shell {
             330..=349 => return self.channel_cmd(w, handler, a),
             350..=379 => return self.disc_cmd(w, handler, a),
             380..=399 => return self.clock_cmd(w, handler, a),
+            530..=541 => return self.logging_cmd(w, handler, a),
+            542..=549 => return self.copy_tftp_cmd(w, handler, a),
+            550..=559 => return self.tftpd_cmd(w, handler, a),
             400..=429 => return self.fhrp_cmd(w, handler, a),
             ACL_PERMIT | ACL_DENY | ACL_REMARK | ACL_NO_SEQ | ACL_NO_PERMIT | ACL_NO_DENY
             | NO_ACL_NUMBER => return self.acl_entry_cmd(w, handler, a, &m),
@@ -3956,6 +3990,7 @@ pub fn running_config(r: &Router) -> String {
     let mut o = mgmt_head(&r.mgmt, &r.name);
     o += &disc::disc_global_lines(&r.disc);
     o += &clock::clock_lines(&r.clock, &r.ntp);
+    o += &logging::logging_lines(&r.log);
     o += &dhcp_config(r);
     for (i, ifc) in r.interfaces().iter().enumerate() {
         o += &format!("interface {}\n", iface_name(r, i));
@@ -4027,6 +4062,7 @@ pub fn switch_config(s: &L2Switch) -> String {
     o += &m3b::errdisable_lines(s);
     o += &disc::disc_global_lines(&s.disc);
     o += &clock::clock_lines(&s.l3().clock, &s.l3().ntp);
+    o += &logging::logging_lines(&s.l3().log);
     if s.l3().routing() {
         o += "ip routing\n!\n";
     }

@@ -1,0 +1,69 @@
+
+== pc1
+C:\>tftpd start
+TFTP server listening on UDP port 69.
+
+== r1
+r1>enable
+r1#configure terminal
+r1(config)#interface g0/0
+r1(config-if)#ip address 10.0.0.1 255.255.255.0
+r1(config-if)#no shutdown
+r1(config-if)#end
+r1#copy running-config tftp://10.0.0.10/r1-confg
+Writing r1-confg !
+153 bytes copied in 0.000 secs (1665940 bytes/sec)
+r1#configure terminal
+r1(config)#hostname changed
+changed(config)#end
+changed#copy tftp://10.0.0.10/r1-confg running-config
+Accessing tftp://10.0.0.10/r1-confg...
+Loading r1-confg from 10.0.0.10: !
+[OK - 153 bytes]
+
+153 bytes copied in 0.000 secs (3367077 bytes/sec)
+r1#show running-config
+hostname r1
+!
+interface GigabitEthernet0/0
+ ip address 10.0.0.1 255.255.255.0
+ no shutdown
+!
+interface GigabitEthernet0/1
+ no ip address
+ shutdown
+!
+end
+r1#copy tftp://10.0.0.10/missing running-config
+%Error opening tftp://10.0.0.10/missing (File not found)
+r1#copy running-config tftp://10.0.0.99/r1-confg
+%Error opening tftp://10.0.0.99/r1-confg (Timed out)
+
+== sw1
+sw1>enable
+sw1#configure terminal
+sw1(config)#interface vlan 1
+sw1(config-if)#ip address 10.0.0.3 255.255.255.0
+sw1(config-if)#no shutdown
+sw1(config-if)#end
+sw1#copy running-config tftp://10.0.0.10/sw1-confg
+Writing sw1-confg !
+72 bytes copied in 0.000 secs (1825557 bytes/sec)
+
+== pc1
+C:\>tftpd list
+TFTP server is running. 2 files.
+     153  r1-confg
+      72  sw1-confg
+C:\>tftpd show sw1-confg
+hostname sw1
+!
+interface Vlan1
+ ip address 10.0.0.3 255.255.255.0
+!
+end
+C:\>tftpd log
+received r1-confg (153 bytes) from 10.0.0.1
+sent r1-confg (153 bytes) to 10.0.0.1
+10.0.0.1 asked for missing: not found
+received sw1-confg (72 bytes) from 10.0.0.3

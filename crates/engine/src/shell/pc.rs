@@ -8,6 +8,10 @@ pub(super) const NETSH_STATIC: u32 = 470;
 pub(super) const NETSH_STATIC_GW: u32 = 471;
 pub(super) const HELP: u32 = 472;
 pub(super) const CLS: u32 = 473;
+pub(super) const SYSLOGD_START: u32 = 474;
+pub(super) const SYSLOGD_STOP: u32 = 475;
+pub(super) const SYSLOGD_SHOW: u32 = 476;
+pub(super) const SYSLOGD_CLEAR: u32 = 477;
 
 /// Output that asks the terminal to clear its screen (what `cls` returns).
 pub const CLEAR_SCREEN: &str = "\u{c}";
@@ -29,6 +33,10 @@ TRACERT [-h max] address
 TELNET address    Open a telnet connection
 SSH -l user address
                   Open an SSH connection
+SYSLOGD START | STOP | SHOW | CLEAR
+                  Run a syslog server and show what devices sent it
+TFTPD START | STOP | LIST | LOG | SHOW file | DELETE file
+                  Run a TFTP server for device backups
 CLS               Clear the screen
 HELP              This list
 EXIT              Close the window";
@@ -99,6 +107,26 @@ pub(super) fn pc_commands(g: &mut Grammar, m: ModeId) {
             &["Network shell", "Interfaces", "IP", "Show", "Addressing"],
             IPCONFIG,
         ),
+        (
+            "syslogd start",
+            &["Syslog server", "Start listening on UDP 514"],
+            SYSLOGD_START,
+        ),
+        (
+            "syslogd stop",
+            &["Syslog server", "Stop listening"],
+            SYSLOGD_STOP,
+        ),
+        (
+            "syslogd show",
+            &["Syslog server", "Show the messages received"],
+            SYSLOGD_SHOW,
+        ),
+        (
+            "syslogd clear",
+            &["Syslog server", "Forget the messages received"],
+            SYSLOGD_CLEAR,
+        ),
         ("help", &["List the commands"], HELP),
         ("cls", &["Clear the screen"], CLS),
     ];
@@ -121,6 +149,42 @@ impl Shell {
                     h.gateway = gw;
                 });
                 String::new()
+            }
+            SYSLOGD_START => {
+                w.with_device::<Host, _>(self.device, |h, _| h.syslogd.running = true);
+                "Syslog server listening on UDP port 514.".to_string()
+            }
+            SYSLOGD_STOP => {
+                w.with_device::<Host, _>(self.device, |h, _| h.syslogd.running = false);
+                String::new()
+            }
+            SYSLOGD_CLEAR => {
+                w.with_device::<Host, _>(self.device, |h, _| h.syslogd.received.clear());
+                String::new()
+            }
+            SYSLOGD_SHOW => {
+                let h = w.device::<Host>(self.device);
+                let c = &h.syslogd;
+                let mut o = format!(
+                    "Syslog server is {}. {} message{} received.",
+                    if c.running { "running" } else { "stopped" },
+                    c.received.len(),
+                    if c.received.len() == 1 { "" } else { "s" }
+                );
+                for r in &c.received {
+                    let fac = if (16..24).contains(&r.msg.facility) {
+                        format!("local{}", r.msg.facility - 16)
+                    } else {
+                        format!("facility{}", r.msg.facility)
+                    };
+                    o += &format!(
+                        "\n{:<15} {fac}.{} {}",
+                        r.from.to_string(),
+                        netdev::log_level_name(r.msg.severity),
+                        r.msg.text
+                    );
+                }
+                o
             }
             HELP => HELP_TEXT.to_string(),
             CLS => CLEAR_SCREEN.to_string(),
