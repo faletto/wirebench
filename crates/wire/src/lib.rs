@@ -7,6 +7,7 @@ mod checksum;
 mod dhcp;
 mod discovery;
 mod dissect;
+mod dns;
 mod dtp;
 mod ethernet;
 mod fhrp;
@@ -32,6 +33,12 @@ pub use discovery::{
     cap as cdp_cap, lldp_cap, Cdp, Lldp, CDP_MULTICAST, LLDP_MULTICAST, LLDP_TYPE,
 };
 pub use dissect::{dissect, hexdump, protocols, Node};
+pub use dns::{
+    DnsMessage, Question as DnsQuestion, RData as DnsData, Record as DnsRecord,
+    CLASS_IN as DNS_CLASS_IN, DNS_PORT, RCODE_FORMERR as DNS_FORMERR, RCODE_NOTIMP as DNS_NOTIMP,
+    RCODE_NXDOMAIN as DNS_NXDOMAIN, RCODE_OK as DNS_OK, RCODE_REFUSED as DNS_REFUSED,
+    RCODE_SERVFAIL as DNS_SERVFAIL, TYPE_A as DNS_TYPE_A, TYPE_CNAME as DNS_TYPE_CNAME,
+};
 pub use dtp::{Dtp, DtpMode, DTP_MULTICAST};
 pub use ethernet::{EtherType, EthernetFrame, VlanTag};
 pub use fhrp::{

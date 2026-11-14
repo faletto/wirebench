@@ -810,7 +810,13 @@ impl L2Switch {
         }
         // Neighbours not heard for three intervals are gone; the rest hear from us every interval.
         let now = ctx.now();
-        self.psec_recover(now);
+        for i in self.psec_recover(now) {
+            let text = format!(
+                "Attempting to recover from psecure-violation err-disable state on Fa0/{}",
+                i + 1
+            );
+            self.originate(ctx, |r, ctx| r.syslog(ctx, 4, "PM-4-ERR_RECOVER", &text));
+        }
         self.lacp_tick(ctx);
         for p in 0..self.ports.len() {
             if let Some((_, heard)) = self.dtp_peer[p] {
@@ -1333,10 +1339,24 @@ impl L2Switch {
         let Some(cfg) = self.ports[i].psec.as_mut() else {
             return true;
         };
-        match self.psec.admit(i, cfg, src, vlan, ctx.now()) {
+        let violation = cfg.violation;
+        let verdict = self.psec.admit(i, cfg, src, vlan, ctx.now());
+        if verdict != PsecVerdict::Allow && violation != crate::PsecViolation::Protect {
+            let text = format!(
+                "Security violation occurred, caused by MAC address {src} on port FastEthernet0/{}.",
+                i + 1
+            );
+            self.originate(ctx, |r, ctx| {
+                r.syslog(ctx, 2, "PORT_SECURITY-2-PSECURE_VIOLATION", &text)
+            });
+        }
+        match verdict {
             PsecVerdict::Allow => true,
             PsecVerdict::Drop => false,
             PsecVerdict::Disable => {
+                let n = i + 1;
+                let text = format!("psecure-violation error detected on Fa0/{n}, putting Fa0/{n} in err-disable state");
+                self.originate(ctx, |r, ctx| r.syslog(ctx, 4, "PM-4-ERR_DISABLE", &text));
                 ctx.set_carrier(port, false);
                 self.psec.dynamic[i].clear();
                 self.table.retain(|_, (p, _)| *p != port);
@@ -1362,15 +1382,17 @@ impl L2Switch {
     }
 
     /// Bring back ports whose error-disabled time has run out, when recovery is on.
-    fn psec_recover(&mut self, now: SimTime) {
+    fn psec_recover(&mut self, now: SimTime) -> Vec<usize> {
+        let mut recovered = Vec::new();
         if !self.psec.recover {
-            return;
+            return recovered;
         }
         let wait = SimTime::from_secs(u64::from(self.psec.interval));
         let mut any = false;
         for i in 0..self.ports.len() {
             if self.psec.disabled[i].is_some_and(|t| now >= t + wait) {
                 self.psec.disabled[i] = None;
+                recovered.push(i);
                 any = true;
             }
         }
@@ -1378,6 +1400,7 @@ impl L2Switch {
             self.refresh_svis();
             self.sync_stp();
         }
+        recovered
     }
 
     /// `clear port-security dynamic`: forget every dynamically learned secure address.
@@ -1412,6 +1435,7 @@ impl Device for L2Switch {
                     self.watch_ports_for_log(ctx);
                 }
                 self.l3.on_timer(ctx, token);
+                self.l3.log_changes(ctx);
                 self.drain_l3(ctx);
                 return;
             }

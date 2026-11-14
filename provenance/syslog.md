@@ -28,6 +28,26 @@ a real device.
   SVIs (an SVI has no `%LINK` message); and `%SYS-5-CONFIG_I: Configured from console by console` when
   a session leaves configuration mode (always "console"; vty sessions are not told apart). The first
   look at an interface logs nothing. Switch ports are watched by the switch, SVIs by its router half.
+- **Protocol messages**: `%OSPF-5-ADJCHG` when an adjacency reaches FULL (`from LOADING to FULL,
+  Loading Done`, or `EXCHANGE ... Exchange Done`) and when it leaves it (`from FULL to DOWN, Neighbor
+  Down: Dead timer expired` or `Interface down or detached`), as `log-adjacency-changes` does by
+  default [verify]; the neighbour is named by router ID. `%STANDBY-6-STATECHANGE` (HSRP) and
+  `%VRRP-6-STATECHANGE`: `<interface> Grp <n> state <old> -> <new>`. `%PORT_SECURITY-2-PSECURE_VIOLATION`
+  for a violation in restrict or shutdown mode (protect is silent; every violating frame is logged,
+  a real device rate-limits), `%PM-4-ERR_DISABLE` when a port is shut by one and `%PM-4-ERR_RECOVER`
+  when errdisable recovery brings it back. The router looks at these after every event, so the old
+  state is the last one it saw, which can be a step before the true previous one. On a switch the
+  router half is looked at once a second.
+- **Protocol messages**: `%OSPF-5-ADJCHG` when an adjacency reaches FULL (`from LOADING to FULL,
+  Loading Done`, or `EXCHANGE ... Exchange Done`) and when it leaves it (`from FULL to DOWN, Neighbor
+  Down: Dead timer expired` or `Interface down or detached`), as `log-adjacency-changes` does by
+  default [verify]; the neighbour is named by router ID. `%STANDBY-6-STATECHANGE` (HSRP) and
+  `%VRRP-6-STATECHANGE`: `<interface> Grp <n> state <old> -> <new>`. `%PORT_SECURITY-2-PSECURE_VIOLATION`
+  for a violation in restrict or shutdown mode (protect is silent; every violating frame is logged,
+  a real device rate-limits), `%PM-4-ERR_DISABLE` when a port is shut by one and `%PM-4-ERR_RECOVER`
+  when errdisable recovery brings it back. The router looks at these after every event, so "old
+  state" is the last state it saw, which can be one step before the true previous one. On a switch
+  the router half is looked at once a second.
 - **PC collector**: `syslogd start | stop | show | clear` on a PC. It keeps up to 1000 messages with
   the sender and `facility.severity`. This is our own invention, not a Windows or IOS command: a PC
   command prompt has no syslog server, so the lab needs something to read what devices send.
@@ -37,6 +57,6 @@ a real device.
 
 `logging console`, `logging monitor`, `terminal monitor` (there is no console to print to),
 `logging source-interface`, `logging facility`, `logging on`, `service sequence-numbers`, rate
-limiting, TCP syslog, structured data (RFC 5424). Messages for OSPF adjacency changes, port security
-violations and HSRP/VRRP state changes are not generated yet. `show logging` follows the documented
+limiting, TCP syslog, structured data (RFC 5424). Messages for spanning tree, EtherChannel, DHCP, NAT,
+ACL `log` and NTP are not generated. `show logging` follows the documented
 layout approximately; the counters other than the message counts are placeholders.

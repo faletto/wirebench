@@ -1,6 +1,6 @@
 use crate::{
-    record_probe, Collector, Ctx, Device, DeviceEvent, ProbeBody, ProbeReply, Resolver, Tcp, TcpTx,
-    TftpOut, TftpServer,
+    record_probe, Collector, Ctx, Device, DeviceEvent, DnsServer, ProbeBody, ProbeReply, Resolver,
+    Tcp, TcpTx, TftpOut, TftpServer,
 };
 use kernel::{PortId, SimTime};
 use std::any::Any;
@@ -126,6 +126,8 @@ pub struct Host {
     pub syslogd: Collector,
     /// A TFTP server, when the PC runs one.
     pub tftpd: TftpServer,
+    /// A name server, when the PC runs one.
+    pub dnsd: DnsServer,
     tcp_armed: Option<SimTime>,
     tftp_timer: bool,
 }
@@ -152,6 +154,7 @@ impl Host {
             tcp: Tcp::new(mac.0[5] as u32 * 0x0101_0101),
             syslogd: Collector::default(),
             tftpd: TftpServer::default(),
+            dnsd: DnsServer::default(),
             tcp_armed: None,
             tftp_timer: false,
         }
@@ -382,6 +385,13 @@ impl Host {
                         self.tftpd
                             .on_packet(ctx.now(), p.src, u.src_port, u.dst_port, &u.payload);
                     self.tftp_send(ctx, out);
+                    return;
+                }
+                if self.dnsd.running && u.dst_port == wire::DNS_PORT {
+                    if let Some(reply) = crate::dns_answer(&self.dnsd.names, &u.payload) {
+                        self.dnsd.queries += 1;
+                        self.udp_send(ctx, p.src, wire::DNS_PORT, u.src_port, &reply);
+                    }
                     return;
                 }
                 if self.syslogd.running && u.dst_port == wire::SYSLOG_PORT {

@@ -1,0 +1,37 @@
+# pc1 is a name server; r1 resolves through it, r2 answers from its own host table for pc1.
+@pc1
+dnsd start
+dnsd add web.example.com 10.0.0.2
+dnsd list
+@r2
+enable
+configure terminal
+interface g0/0
+ip address 10.0.0.2 255.255.255.0
+no shutdown
+exit
+ip host files.example.com 10.0.0.1
+ip dns server
+end
+@r1
+enable
+configure terminal
+interface g0/0
+ip address 10.0.0.1 255.255.255.0
+no shutdown
+exit
+ip name-server 10.0.0.10
+ip domain-name example.com
+ip host printer 10.0.0.1
+end
+ping web
+ping nosuch
+ping printer
+show hosts
+@pc1
+nslookup files.example.com 10.0.0.2
+nslookup nothing.example.com 10.0.0.2
+netsh interface ip set dns eth0 static 10.0.0.2
+ping files.example.com
+ping nothing.example.com
+dnsd list

@@ -35,6 +35,10 @@ SSH -l user address
                   Open an SSH connection
 SYSLOGD START | STOP | SHOW | CLEAR
                   Run a syslog server and show what devices sent it
+DNSD START | STOP | ADD name address | DELETE name | LIST
+                  Run a DNS server for the lab's names
+NSLOOKUP name [server]
+                  Look a name up
 TFTPD START | STOP | LIST | LOG | SHOW file | DELETE file
                   Run a TFTP server for device backups
 CLS               Clear the screen
